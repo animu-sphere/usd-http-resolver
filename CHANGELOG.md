@@ -27,7 +27,9 @@ reader.
   rather than once per backend; and the metrics counters, latency histograms,
   and process aggregate.
 - Credential elision in every message and metrics dump, covering the query
-  string **and** the userinfo component of an authority.
+  string **and** the userinfo component of an authority — recognized only
+  where an authority can legally appear, so a filesystem path with a `//` in it
+  is left alone.
 - `libs/usd-asset-local`, the local-file backend and the correctness oracle:
   positional reads with no lock, size and range-support discovery at open, a
   filesystem-derived validator, and `AssetChanged` when an asset is republished

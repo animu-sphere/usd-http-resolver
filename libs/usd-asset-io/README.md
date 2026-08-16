@@ -85,6 +85,12 @@ here rather than left to producers:
   of an authority. `https://user:token@host/a` hides a credential in the part a
   query-only rule keeps.
 
+  An authority is only recognized where one can legally appear — after a valid
+  scheme, or at the start of a scheme-relative reference. Every local
+  identifier reaches this function too, and treating any `//` as a scheme
+  separator would turn `C:/tmp//a@2x.png` into `C:/tmp//<elided>@2x.png`,
+  naming a file the user never used in a `NotFound` message.
+
 ## Threading and ownership
 
 - `Status`, `Validator`, `AssetMetadata`, and `MetricsSnapshot` are plain

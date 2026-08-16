@@ -81,7 +81,7 @@ usdassetboundary::BackendUnderTest MakeLocalBackend() {
     backend.simulatesRevisionChange = true;
     backend.republish = [](const std::string& identifier,
                            const std::vector<unsigned char>& content) {
-        usdassetboundary::RepublishFile(identifier, content);
+        return usdassetboundary::RepublishFile(identifier, content);
     };
 
     return backend;

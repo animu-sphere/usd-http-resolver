@@ -6,6 +6,49 @@
 #include <utility>
 
 namespace usdasset {
+namespace {
+
+/// RFC 3986 §3.1: a scheme is ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+bool IsScheme(const std::string& text) {
+    if (text.empty()) {
+        return false;
+    }
+    const unsigned char first = static_cast<unsigned char>(text[0]);
+    if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z'))) {
+        return false;
+    }
+    for (const char character : text) {
+        const unsigned char c = static_cast<unsigned char>(character);
+        const bool legal = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+        if (!legal) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Where the authority starts, or npos when the identifier has none.
+///
+/// Treating any `//` as an authority marker is wrong on a filesystem path, and
+/// a local backend hands this function nothing but filesystem paths:
+/// `C:/tmp//a@2x.png` would come back as `C:/tmp//<elided>@2x.png`, naming a
+/// file the user never used in a NotFound message. So a `//` counts only where
+/// one can legally appear -- immediately after a scheme, or at the very start
+/// of a scheme-relative reference.
+std::string::size_type FindAuthority(const std::string& identifier) {
+    if (identifier.compare(0, 2, "//") == 0) {
+        return 2;
+    }
+    const std::string::size_type separator = identifier.find("://");
+    if (separator != std::string::npos &&
+        IsScheme(identifier.substr(0, separator))) {
+        return separator + 3;
+    }
+    return std::string::npos;
+}
+
+}  // namespace
 
 const char* StatusCodeName(StatusCode code) noexcept {
     switch (code) {
@@ -102,11 +145,20 @@ std::string ToString(const Status& status) {
         out += ": ";
         out += status.message;
     }
-    if (status.byteOffset) {
-        out += " [offset ";
-        out += std::to_string(*status.byteOffset);
+    // Each attachment prints on its own terms. Nesting the length inside the
+    // offset loses a status that carries only a length, and a producer that
+    // knows how much it wanted but not where is exactly the one worth reading.
+    if (status.byteOffset || status.byteLength) {
+        out += " [";
+        if (status.byteOffset) {
+            out += "offset ";
+            out += std::to_string(*status.byteOffset);
+        }
         if (status.byteLength) {
-            out += ", length ";
+            if (status.byteOffset) {
+                out += ", ";
+            }
+            out += "length ";
             out += std::to_string(*status.byteLength);
         }
         out += "]";
@@ -133,11 +185,10 @@ std::string ElideSecrets(std::string_view identifier) {
 
     // Userinfo. `scheme://user:token@host/path` hides a credential in the part
     // a query-only rule keeps. The authority ends at the first '/', '?', or
-    // '#' after the scheme separator, so an '@' in a path is not mistaken for
-    // one in an authority.
-    const std::string::size_type schemeEnd = out.find("//");
-    if (schemeEnd != std::string::npos) {
-        const std::string::size_type authorityBegin = schemeEnd + 2;
+    // '#' after it begins, so an '@' in a path is not mistaken for one in an
+    // authority.
+    const std::string::size_type authorityBegin = FindAuthority(out);
+    if (authorityBegin != std::string::npos) {
         std::string::size_type authorityEnd = out.find_first_of("/?#", authorityBegin);
         if (authorityEnd == std::string::npos) {
             authorityEnd = out.size();

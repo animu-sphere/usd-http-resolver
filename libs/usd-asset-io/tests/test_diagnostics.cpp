@@ -53,7 +53,24 @@ void AttachmentsSurviveChaining() {
     const std::string rendered = ToString(status);
     CHECK(rendered.find("InvalidResponse") != std::string::npos);
     CHECK(rendered.find("1258291") != std::string::npos);
+    CHECK(rendered.find("65536") != std::string::npos);
     CHECK(rendered.find("206") != std::string::npos);
+}
+
+void EachAttachmentRendersOnItsOwn() {
+    // A producer that knows how much it wanted but not where is exactly the
+    // one worth reading, so the length must not be nested inside the offset.
+    Status lengthOnly = Status::Error(StatusCode::Timeout, "elapsed");
+    lengthOnly.byteLength = 65536;
+    const std::string rendered = ToString(lengthOnly);
+    CHECK(rendered.find("65536") != std::string::npos);
+    CHECK(rendered.find("length") != std::string::npos);
+
+    Status offsetOnly = Status::Error(StatusCode::Timeout, "elapsed");
+    offsetOnly.byteOffset = 4096;
+    const std::string renderedOffset = ToString(offsetOnly);
+    CHECK(renderedOffset.find("4096") != std::string::npos);
+    CHECK(renderedOffset.find("length") == std::string::npos);
 }
 
 void QueryStringsAreElided() {
@@ -81,6 +98,27 @@ void UserinfoIsElided() {
           "https://example.org/a?<elided>");
 }
 
+void AFilesystemPathIsNotAURI() {
+    // Every local identifier reaches this function, so a `//` in a path must
+    // not be read as a scheme separator. `C:/tmp//a@2x.png` coming back as
+    // `C:/tmp//<elided>@2x.png` would put a filename the user never wrote into
+    // a NotFound message.
+    CHECK(ElideSecrets("C:/tmp//a@2x.png") == "C:/tmp//a@2x.png");
+    CHECK(ElideSecrets("/home/user//assets/a@2x.png") ==
+          "/home/user//assets/a@2x.png");
+    CHECK(ElideSecrets("C:\\assets\\a@2x.png") == "C:\\assets\\a@2x.png");
+    CHECK(ElideSecrets("relative//path/x@y.bin") == "relative//path/x@y.bin");
+}
+
+void AuthorityDetectionFollowsTheSchemeRule() {
+    // A scheme-relative reference has an authority at position 0.
+    CHECK(ElideSecrets("//user:token@example.org/a") == "//<elided>@example.org/a");
+    // An empty authority has no userinfo to find.
+    CHECK(ElideSecrets("file:///home/user/a@2x.png") == "file:///home/user/a@2x.png");
+    // Something that is not a legal scheme is not a scheme.
+    CHECK(ElideSecrets("2 files://a@b") == "2 files://a@b");
+}
+
 void ElisionIsVisible() {
     // A trimmed URL has to read as trimmed. A silent truncation invites the
     // reader to believe the asset really is at that path.
@@ -95,8 +133,11 @@ int main() {
     SeverityFollowsTheProjectionTable();
     DefaultConstructedStatusIsSuccess();
     AttachmentsSurviveChaining();
+    EachAttachmentRendersOnItsOwn();
     QueryStringsAreElided();
     UserinfoIsElided();
+    AFilesystemPathIsNotAURI();
+    AuthorityDetectionFollowsTheSchemeRule();
     ElisionIsVisible();
     return usdassettest::Report("usdAssetIo diagnostics");
 }

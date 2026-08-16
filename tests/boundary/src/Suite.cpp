@@ -286,7 +286,13 @@ void RunRevisionChangeCase(const BackendUnderTest& backend,
     // A new revision, of a different length and different content.
     const std::vector<unsigned char> republished =
         PositionalContent(static_cast<std::size_t>(kNominalBlockSize * 3), 42);
-    backend.republish(fixture.asset.identifier, republished);
+    if (!backend.republish(fixture.asset.identifier, republished)) {
+        // Reported as what it is. A fixture that did not change, presented as
+        // a backend that failed to notice, sends somebody to read the wrong
+        // repository's code.
+        reporter.Fail(caseName, "the backend could not republish the fixture");
+        return;
+    }
 
     std::vector<unsigned char> after(size + kGuardBytes, kGuardFill);
     const ReadResult second = opened.reader->Read(0, after.data(), size);
@@ -308,6 +314,37 @@ void RunRevisionChangeCase(const BackendUnderTest& backend,
         reporter.Fail(caseName + " (does not rebind)",
                       std::string("a later read returned ") +
                           usdasset::StatusCodeName(retry.status.code));
+        return;
+    }
+    reporter.Pass();
+
+    // A read that transfers nothing still returns Ok, and this is pinned rather
+    // than left to whichever branch a backend happens to take first.
+    //
+    // AssetChanged exists to stop one reader composing bytes from two
+    // revisions, and a read that returns no bytes cannot do that. An offset at
+    // or past the size captured at open is past the end *of the revision this
+    // reader is bound to*, whatever the file on disk now looks like, so `0, Ok`
+    // is that revision's truthful answer. Requiring AssetChanged here would
+    // also oblige a range transport to spend a round trip on every read that
+    // moves no bytes, which is the amplification this project exists to avoid.
+    unsigned char scratch[16];
+    const ReadResult atEnd =
+        opened.reader->Read(fixture.size, scratch, sizeof(scratch));
+    if (atEnd.status.code != StatusCode::Ok || atEnd.bytesRead != 0) {
+        reporter.Fail(caseName + " (a read past the bound revision's end is Ok)",
+                      std::string("status ") +
+                          usdasset::StatusCodeName(atEnd.status.code) + ", bytesRead " +
+                          std::to_string(atEnd.bytesRead));
+        return;
+    }
+    reporter.Pass();
+
+    const ReadResult empty = opened.reader->Read(0, scratch, 0);
+    if (empty.status.code != StatusCode::Ok || empty.bytesRead != 0) {
+        reporter.Fail(caseName + " (a zero-length read is Ok)",
+                      std::string("status ") +
+                          usdasset::StatusCodeName(empty.status.code));
         return;
     }
     reporter.Pass();

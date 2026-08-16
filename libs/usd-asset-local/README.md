@@ -97,7 +97,7 @@ capability to discover and none to fail on.
 | The identifier names a directory | `InvalidArgument` |
 | The identifier is not valid UTF-8 (Windows) | `InvalidArgument` |
 | `offset + size` overflows | `InvalidArgument` |
-| `dst` is null with a non-zero length | `InvalidArgument` |
+| `dst` is null with a non-zero length | `InvalidArgument`, wherever the offset lands |
 | A read stops below the size captured at open | `InvalidResponse` |
 | The file's identity changed while the reader was open | `AssetChanged` |
 | Any other filesystem error | `NetworkError` |
@@ -142,8 +142,20 @@ an earlier one would have plus the race between them.
 When the identity has moved, the read reports `AssetChanged` with `bytesRead`
 of zero. Zero rather than what was copied: those bytes may span two revisions,
 and reporting them as read invites exactly the composition the guarantee exists
-to prevent. The reader never rebinds; every subsequent read fails the same way,
-and `Metadata()` continues to describe the revision the reader was bound to.
+to prevent. The reader never rebinds — every subsequent read that reaches the
+filesystem fails the same way — and `Metadata()` continues to describe the
+revision the reader was bound to.
+
+Reads that transfer nothing are the exception, and deliberately so. A
+zero-length read, and a read at or past the size captured at open, return
+`0, Ok` after a republish just as they did before one. `AssetChanged` exists to
+stop one reader composing bytes from two revisions, and a read that returns no
+bytes cannot do that; an offset past the captured size is past the end *of the
+revision this reader is bound to*, whatever the file on disk now looks like, so
+`0, Ok` is that revision's truthful answer rather than a stale one. The
+zero-length case has a second reason: the read contract requires that it issue
+no request at all, so it is the one read that is forbidden from looking. The
+shared boundary suite pins both, so no backend has to guess.
 
 `AssetChanged` also takes precedence over the truncation a shrinking rewrite
 causes. The cause is the republish, and `InvalidResponse` would send a reader

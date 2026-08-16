@@ -65,10 +65,15 @@ std::string FixtureWorkspace::Write(const std::string& name,
     if (file == nullptr) {
         return std::string();
     }
-    if (!content.empty()) {
-        std::fwrite(content.data(), 1, content.size(), file);
+    // A fixture that was not fully written would make every case over it fail
+    // as though the backend were wrong.
+    const bool written =
+        content.empty() ||
+        std::fwrite(content.data(), 1, content.size(), file) == content.size();
+    const bool closed = std::fclose(file) == 0;
+    if (!written || !closed) {
+        return std::string();
     }
-    std::fclose(file);
     return path;
 }
 
@@ -81,10 +86,16 @@ bool RepublishFile(const std::string& path, const std::vector<unsigned char>& co
     if (file == nullptr) {
         return false;
     }
-    if (!content.empty()) {
-        std::fwrite(content.data(), 1, content.size(), file);
+    // A short or failed write here would otherwise surface as the backend
+    // failing to report AssetChanged, which is a fixture problem wearing a
+    // defect's clothes.
+    const bool written =
+        content.empty() ||
+        std::fwrite(content.data(), 1, content.size(), file) == content.size();
+    const bool closed = std::fclose(file) == 0;
+    if (!written || !closed) {
+        return false;
     }
-    std::fclose(file);
 
     if (!error) {
         std::filesystem::last_write_time(path, before + std::chrono::seconds(10),

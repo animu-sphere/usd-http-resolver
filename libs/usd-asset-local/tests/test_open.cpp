@@ -117,6 +117,28 @@ void TwoAssetsDoNotShareAnIdentity() {
     }
 }
 
+void ANullBufferIsACallerBugWhereverTheOffsetLands() {
+    TempDirectory directory("null-buffer");
+    const std::string path = directory.File("asset.bin");
+    CHECK(WriteFile(path, PositionalContent(1024)));
+
+    local::LocalOpenResult result = local::Open(path);
+    if (!result.reader) {
+        CHECK(false);
+        return;
+    }
+
+    // Inside the asset, which is the case that would be caught anyway.
+    CHECK(result.reader->Read(0, nullptr, 16).status.code ==
+          StatusCode::InvalidArgument);
+    // Past the end, where an empty-range short circuit would hide it until one
+    // day an offset happened to land lower.
+    CHECK(result.reader->Read(4096, nullptr, 16).status.code ==
+          StatusCode::InvalidArgument);
+    // A zero-length read writes nothing, so a null buffer is not a bug there.
+    CHECK(result.reader->Read(0, nullptr, 0).status.IsOk());
+}
+
 void MetadataIsImmutableForTheReaderLifetime() {
     TempDirectory directory("immutable");
     const std::string path = directory.File("asset.bin");
@@ -148,6 +170,7 @@ int main() {
     AFailedOpenReturnsNoReader();
     TheValidatorIsDerivedAndStrong();
     TwoAssetsDoNotShareAnIdentity();
+    ANullBufferIsACallerBugWhereverTheOffsetLands();
     MetadataIsImmutableForTheReaderLifetime();
     return usdassettest::Report("usdAssetLocal open");
 }

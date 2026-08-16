@@ -411,6 +411,12 @@ void MetricsRegistry::Dump(std::ostream& out) const {
         << "  openLatency us       p50 " << aggregate.openLatency.p50 << " p90 "
         << aggregate.openLatency.p90 << " p99 " << aggregate.openLatency.p99 << " max "
         << aggregate.openLatency.max << "\n"
+        // Per transport request, which is the distribution an operator
+        // investigating a slow stage is actually looking for: a caller-visible
+        // read can hide several requests, and their tail is where the stall is.
+        << "  requestLatency us    p50 " << aggregate.requestLatency.p50 << " p90 "
+        << aggregate.requestLatency.p90 << " p99 " << aggregate.requestLatency.p99
+        << " max " << aggregate.requestLatency.max << "\n"
         << "  readLatency us       p50 " << aggregate.readLatency.p50 << " p90 "
         << aggregate.readLatency.p90 << " p99 " << aggregate.readLatency.p99 << " max "
         << aggregate.readLatency.max << "\n";

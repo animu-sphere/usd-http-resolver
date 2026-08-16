@@ -76,7 +76,11 @@ struct BackendUnderTest {
 
     /// Required when `simulatesRevisionChange`. Replaces the asset's content
     /// while readers are open on it.
-    std::function<void(const std::string& identifier,
+    ///
+    /// Returns false when the republish did not happen. A fixture that failed
+    /// to change must not be reported as a backend that failed to notice: those
+    /// are different defects, in different repositories.
+    std::function<bool(const std::string& identifier,
                        const std::vector<unsigned char>& content)>
         republish;
 };

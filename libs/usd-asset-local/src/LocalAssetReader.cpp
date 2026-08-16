@@ -58,15 +58,20 @@ ReadResult LocalAssetReader::Read(std::uint64_t offset, void* dst, std::size_t s
     if (range.outcome == ReadRangeOutcome::Overflow) {
         return ReadResult{0, OverflowStatus(offset, size)};
     }
-    if (range.outcome == ReadRangeOutcome::Empty) {
-        // Nothing to transfer and nothing wrong. No request is issued, which is
-        // a counter assertion and not only a comment.
-        return ReadResult{0, Status::Ok()};
-    }
-    if (dst == nullptr) {
+    // Before the empty check, not after it. A null buffer with a non-zero
+    // length is a caller bug wherever the offset happens to land, and a check
+    // that only fires when the range turns out to be non-empty leaves that bug
+    // invisible until one day an offset lands inside the asset.
+    if (size > 0 && dst == nullptr) {
         return ReadResult{0, Status::Error(StatusCode::InvalidArgument,
                                            "read destination buffer is null")
                                  .WithRange(offset, size)};
+    }
+    if (range.outcome == ReadRangeOutcome::Empty) {
+        // Nothing to transfer and nothing wrong. No request is issued, which is
+        // a counter assertion and not only a comment -- and it is why this
+        // return does not revalidate: see the note on the revision check below.
+        return ReadResult{0, Status::Ok()};
     }
 
     unsigned char* out = static_cast<unsigned char*>(dst);
@@ -105,6 +110,16 @@ ReadResult LocalAssetReader::Read(std::uint64_t offset, void* dst, std::size_t s
     // including before the truncation that a shrinking rewrite causes: the
     // cause is the republish, and reporting InvalidResponse would send a reader
     // to look for a corrupt file that does not exist.
+    //
+    // Only reads that reach the transport get here, which is deliberate and is
+    // not a hole. AssetChanged exists to stop one reader composing bytes from
+    // two revisions, and a read that returns no bytes cannot do that. A read at
+    // or past the size captured at open is past the end *of the revision this
+    // reader is bound to*, so `0, Ok` is that revision's truthful answer rather
+    // than a stale one. Revalidating there would also make the rule
+    // unimplementable for a range transport without a wasted round trip on
+    // every read that transfers nothing, which is the amplification this
+    // project exists to avoid.
     detail::FileIdentity current;
     const Status identityStatus = detail::Stat(_impl->handle, &current);
     _impl->metrics.AddMetadataRequest();
