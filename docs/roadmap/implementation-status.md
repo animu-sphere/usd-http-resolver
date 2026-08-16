@@ -65,7 +65,7 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
 
 | Task | Status |
 | --- | --- |
-| HTTP client dependency decision, recorded as an ADR | Outstanding |
+| HTTP client dependency decision, recorded as an ADR | Accepted — libcurl, private `find_package`, [ADR-0003](../adr/0003-http-client-dependency.md) |
 | `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding |
 | `libs/usd-asset-http`: range, metadata, redirect, timeout, retry | Outstanding |
 | Response framing validation (`Content-Range` covers the request) | Outstanding |
@@ -121,11 +121,7 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
 
 ## Blocking items
 
-1. **The HTTP client dependency is unchosen.** It constrains licensing, binary
-   footprint, and the Wasm research track, so it is decided on those grounds
-   before features. It blocks `v0.2.0`, not `v0.1.0` — nothing in phase 1
-   touches a network.
-2. **`ost ci` cannot express a lane that pins no runtime.** Not blocking
+1. **`ost ci` cannot express a lane that pins no runtime.** Not blocking
    anything — the lanes landed hand-authored in `.github/workflows/core-ci.yml`
    and are green — but it is why `openstrata.ci.yaml` does not exist yet and why
    two cells will stay outside it after it does. Every `SupportCell` requires a
@@ -136,7 +132,7 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
    fails with `PRECONDITION_FAILED: no plugin bundles found in the workspace
    member set`. Full account and the two upstream asks:
    [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
-3. **`ost library build` cannot resolve a library-to-library edge on its own.**
+2. **`ost library build` cannot resolve a library-to-library edge on its own.**
    `libs/usd-asset-local` declares `requires.libraries: [usdAssetIo]` and builds
    through plain CMake, `ost library build libs/usd-asset-io`, and the root
    tree; `ost library build libs/usd-asset-local` fails to find the
@@ -147,18 +143,22 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
    and it is worth resolving before the bundle in `v0.2.0` consumes the closure.
 
 No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`. Also no
-longer blocking: the sanitizer runs, which now happen.
+longer blocking: the sanitizer runs, which now happen; and the HTTP client
+dependency, resolved as libcurl in
+[ADR-0003](../adr/0003-http-client-dependency.md), which unblocks phase 2.
 
 ## Next
 
-1. The HTTP client dependency decision, recorded as an ADR, on license,
-   footprint, and Wasm viability. Phase 2 starts with that rather than with
-   code; the boundary suite the backend will be written against is already
+1. The hostile-server fixture corpus, standing up before the backend rather than
+   beside it, per action 2 of §17 of the
+   [design policy](../design/DESIGN_POLICY.md). The backend is then written
+   against a passing oracle instead of debugged against a server.
+2. `libs/usd-asset-http` against the boundary suite unchanged, behind the narrow
+   transport seam [ADR-0003](../adr/0003-http-client-dependency.md) requires,
+   with validator capture and `If-Range` from its first commit rather than after
+   it — a range reader without them can compose two revisions into one byte
+   sequence with no request failing. The suite it is written against is already
    passing, which is the whole point of having built it first.
-2. Then `libs/usd-asset-http` against that suite unchanged, with validator
-   capture and `If-Range` from its first commit rather than after it — a range
-   reader without them can compose two revisions into one byte sequence with no
-   request failing.
 3. `openstrata.ci.yaml` lands within phase 2, once `plugins/http-resolver`
    exists to name, and never absorbs the two runtime-free lanes.
 4. `v0.2.0` is the first release that can record an I/O baseline, and the first

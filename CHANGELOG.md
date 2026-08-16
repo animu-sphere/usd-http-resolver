@@ -13,9 +13,38 @@ one.
 
 ## Unreleased
 
-Nothing has landed since `v0.1.0`. The next release is `v0.2.0`, which starts
-with the HTTP client dependency decision and its ADR rather than with code; the
-[roadmap](docs/roadmap/README.md) states the scope.
+Work toward `v0.2.0`, whose scope is in the [roadmap](docs/roadmap/README.md).
+It started with the HTTP client dependency decision rather than with code, and
+that decision is now made.
+
+### Added
+
+- [ADR-0003](docs/adr/0003-http-client-dependency.md): the HTTP client
+  dependency is **libcurl**, acquired through a private `find_package(CURL)` in
+  `libs/usd-asset-http` and reached only through a narrow internal transport
+  seam, so no libcurl type appears in a header and the choice stays cheap to
+  supersede. It is chosen for exact control rather than for convenience:
+  bounded redirects need `CURLOPT_FOLLOWLOCATION` off, ADR-0002's rule that a
+  `200` answering a `Range` request is `RangeNotSupported` needs the raw status
+  of a response whose body is valid, and framing validation needs
+  `Content-Range` before anything has interpreted it. Vendoring and pinned
+  `FetchContent` were considered and rejected, with the trigger for revisiting
+  each recorded.
+- The Wasm criterion in §13 of the [design policy](docs/design/DESIGN_POLICY.md)
+  is answered rather than deferred. libcurl does not build for Wasm; the
+  reserved `usdAssetWasm` backend over `fetch` is the answer, which the
+  workspace contract had already architected as a sibling backend on the
+  unchanged `AssetReader` contract. The ADR records this as an accepted cost
+  and states what would falsify the reasoning.
+
+### Changed
+
+- `NOTICE` names libcurl and its license, and no longer describes the client as
+  an open question. No third-party code is bundled or linked yet; the license
+  text arrives with the first `libs/usd-asset-http` commit.
+- The HTTP client is no longer a blocking item in
+  [implementation status](docs/roadmap/implementation-status.md). Phase 2's
+  remaining order is the fixture server first, then the backend against it.
 
 ## `v0.1.0` — 2026-08-16
 
