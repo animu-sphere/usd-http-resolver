@@ -148,9 +148,15 @@ jobs:
           # workaround and affects this runner only. Left conditional so that a
           # future image needing nothing pays nothing, and so the value this
           # lane actually ran under is in the log either way.
-          current="$(sysctl -n vm.mmap_rnd_bits)"
+          #
+          # The read needs sudo as much as the write does: on the hosted image
+          # the key is not world-readable, and a plain `sysctl -n` exits 1 with
+          # "permission denied", which under `set -e` fails the lane before it
+          # has built anything. An absent key is not an error either — it means
+          # this kernel has nothing to cap.
+          current="$(sudo sysctl -n vm.mmap_rnd_bits 2>/dev/null || echo absent)"
           echo "vm.mmap_rnd_bits=$current"
-          if [ "$current" -gt 28 ]; then
+          if [ "$current" != "absent" ] && [ "$current" -gt 28 ]; then
             sudo sysctl -w vm.mmap_rnd_bits=28
           fi
 
