@@ -6,6 +6,14 @@ belongs to no single module.
 | Directory | Contains |
 | --- | --- |
 | `boundary/` | The shared boundary suite: the executable form of the read contract, and the thing every backend is admitted by |
+| `fixture-server/` | The hostile-server corpus: a loopback HTTP origin that misbehaves on request, and the conditions only a server can produce |
+
+The two are not the same suite and neither substitutes for the other. The
+boundary suite carries the correctness argument, over an oracle, for every
+backend. The corpus covers what has no local analogue — a `200` answering a
+`Range`, a wrong `Content-Range`, a mid-read validator change, a reset — and it
+applies to the HTTP backend alone. See §7 of
+[BOUNDARY_SUITE.md](../docs/contributing/BOUNDARY_SUITE.md).
 
 ## The boundary suite
 
@@ -63,7 +71,10 @@ Adding a transport adds a row, not a suite. A row declares four things:
 
 `backends/boundary_local_main.cpp` is the whole of it. The HTTP backend's row in
 `v0.2.0` is a file of about that length beside it, running a byte-identical
-suite, and `tests/boundary/CMakeLists.txt` gains one line.
+suite, and `tests/boundary/CMakeLists.txt` gains one line. Its four declarations
+are already served: the factory and provisioning by `usdAssetHttp` when it
+lands, and the fixture behaviors and the republish by
+[`fixture-server/`](fixture-server/README.md) today.
 
 A backend that needs a case relaxed has either found a defect in the read
 contract -- in which case
@@ -76,8 +87,10 @@ stops being one.
 One case needs a transport that misbehaves: "short read below EOF ->
 `InvalidResponse`, never a hole". That is expressed as a fixture *behavior* a
 backend must be able to provision, not as a fifth declaration and not as a case
-a backend may decline. For a hostile HTTP server it is a truncated body; for a
-local file it is the read fault in `usdAssetLocal/Testing.h`.
+a backend may decline. For a hostile HTTP server it is a truncated body -- and
+that server now exists, as `Behavior::TruncatedBody` in
+[`fixture-server/`](fixture-server/README.md); for a local file it is the read
+fault in `usdAssetLocal/Testing.h`.
 
 ## Seeds and reproduction
 

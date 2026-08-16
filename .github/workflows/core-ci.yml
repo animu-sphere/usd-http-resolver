@@ -1,6 +1,12 @@
-# The OpenUSD-free contract lane: everything under libs/ and the shared
-# boundary suite, built and tested with no OpenUSD present, and run again under
-# AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer.
+# The OpenUSD-free contract lane: everything under libs/, the shared boundary
+# suite, and the hostile-server fixture corpus, built and tested with no OpenUSD
+# present, and run again under AddressSanitizer, UndefinedBehaviorSanitizer, and
+# ThreadSanitizer.
+#
+# The corpus needs no lane of its own and must never get one. It binds loopback
+# on an ephemeral port and reaches no network, which is what §11.2 of the design
+# policy requires of it, so `ctest` picks it up on all three platforms and both
+# sanitizer presets exactly like every other test here.
 #
 # This is the `v0.1.0` exit criterion in executable form
 # (docs/roadmap/README.md, docs/contributing/BOUNDARY_SUITE.md §5), which is

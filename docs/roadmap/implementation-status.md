@@ -10,7 +10,13 @@ Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
 core lane builds and tests on Windows, Linux, and macOS arm64 with no OpenUSD
 present; and the sanitizer lanes run green. The release gate and what it found
-are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
+are in [the release record](../releases/v0.1.0.md).
+
+Phase 2 is under way. Its two prerequisites are done, in the order §17 of the
+[design policy](../design/DESIGN_POLICY.md) fixed: the HTTP client is chosen and
+recorded, and the hostile-server corpus stands up and passes. Neither is code
+the release ships, and both exist so that the code it does ship is written
+against something that already works.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -66,6 +72,8 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
 | Task | Status |
 | --- | --- |
 | HTTP client dependency decision, recorded as an ADR | Accepted — libcurl, private `find_package`, [ADR-0003](../adr/0003-http-client-dependency.md) |
+| Hostile-server fixture corpus, standing up before the backend | Done — `tests/fixture-server`, 18 behaviors, self-checked over a raw socket |
+| Corpus covers all nine conditions in §11.2 of the design policy | Done — plus three from ADR-0003, §4.1, and DIAGNOSTICS.md §4.4; coverage asserted at runtime, not claimed |
 | `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding |
 | `libs/usd-asset-http`: range, metadata, redirect, timeout, retry | Outstanding |
 | Response framing validation (`Content-Range` covers the request) | Outstanding |
@@ -77,7 +85,7 @@ are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
 | `plugins/http-resolver`: registration, normalization, anchoring | Outstanding |
 | `ArAsset` adapter, with `GetBuffer()` null by contract | Outstanding |
 | `HTTPxxx` projection and OpenUSD diagnostics | Outstanding |
-| Hostile-server fixture corpus, including mid-read validator change | Outstanding |
+| Backend run against the hostile corpus, every behavior projected onto the typed vocabulary | Outstanding — the corpus is ready; nothing consumes it yet |
 | Boundary suite passing against the HTTP backend, unchanged | Outstanding |
 | Cross-platform CI cells (Windows, Linux, macOS arm64) | Outstanding |
 
@@ -149,16 +157,20 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. The hostile-server fixture corpus, standing up before the backend rather than
-   beside it, per action 2 of §17 of the
-   [design policy](../design/DESIGN_POLICY.md). The backend is then written
-   against a passing oracle instead of debugged against a server.
-2. `libs/usd-asset-http` against the boundary suite unchanged, behind the narrow
+1. `libs/usd-asset-http` against the boundary suite unchanged, behind the narrow
    transport seam [ADR-0003](../adr/0003-http-client-dependency.md) requires,
    with validator capture and `If-Range` from its first commit rather than after
    it — a range reader without them can compose two revisions into one byte
-   sequence with no request failing. The suite it is written against is already
-   passing, which is the whole point of having built it first.
+   sequence with no request failing. Both things it is written against are now
+   passing: the boundary suite, and the hostile corpus in
+   [tests/fixture-server](../../tests/fixture-server/README.md). That is the
+   whole point of having built them first, and it is what makes the first
+   argument about a failing range read a short one.
+2. The projection of each corpus behavior onto the typed vocabulary — which
+   `Behavior` produces which `StatusCode` — is the backend's first test file,
+   and the corpus deliberately states no opinion about it. Nothing in
+   `tests/fixture-server` knows what `InvalidResponse` is, so a disagreement
+   between the two is evidence rather than a tautology.
 3. `openstrata.ci.yaml` lands within phase 2, once `plugins/http-resolver`
    exists to name, and never absorbs the two runtime-free lanes.
 4. `v0.2.0` is the first release that can record an I/O baseline, and the first

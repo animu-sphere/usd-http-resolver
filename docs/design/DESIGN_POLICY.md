@@ -507,12 +507,10 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Stand up the fixture server before writing the HTTP backend, so the backend
-   is written against a passing oracle rather than debugged against a server.
-2. Ship validator capture, conditional range requests, and `AssetChanged` with
+1. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
-3. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
+2. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
    It could not be written for `v0.1.0`: every `ost` cell pins and materializes
    an OpenUSD runtime, which the core lanes must not, and no cell can name a
    workspace that contains no bundle. The runtime-free lanes stay hand-authored
@@ -536,3 +534,9 @@ Done and no longer pending:
 - The shared boundary suite exists, is parameterized over backends, and the
   local backend passes it. The HTTP backend is now written against a passing
   oracle, which is the whole reason this order was not negotiable.
+- The fixture server is up, and it was action 1 here. `tests/fixture-server`
+  serves the corpus in §11.2 over loopback, and its own self-test proves each
+  behavior puts on the wire what its name claims — checked against deliberately
+  broken servers before it was trusted, because an unchecked corpus is not an
+  oracle but a second unknown. Nothing consumes it yet, and that is the expected
+  state: it exists so that the backend has something to be wrong against.
