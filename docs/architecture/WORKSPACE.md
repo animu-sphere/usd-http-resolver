@@ -50,6 +50,24 @@ The suite library itself must never link a backend. The moment it can name one
 it can special-case one, and a per-backend exception is how a contract stops
 being one. A backend is reached only from its own row executable.
 
+The hostile-server corpus links nothing at all:
+
+```text
+tests/fixture-server (usdAssetFixtureServer)  -> the platform's sockets, and
+                                                 the standard library
+```
+
+Not `usdAssetIo`, not a backend, and above all not the HTTP client. It is the
+*server* side of the boundary `usdAssetHttp` sits on, and acquiring a second
+third-party dependency to test the one §13 of the
+[design policy](../design/DESIGN_POLICY.md) reasons about would be a dependency
+admitted without an argument. Not knowing `usdAssetIo` is the more important
+half: a corpus that could name `StatusCode` would start asserting the backend's
+interpretation, and a disagreement between the two would stop being evidence.
+
+Its reverse edge — `tests/boundary/backends/boundary_http_main.cpp` reaching the
+fixture server to provision remote fixtures — is legal and is the only one.
+
 Reserved future directions:
 
 ```text
@@ -165,6 +183,13 @@ libs/usd-asset-io/include/**
 tests/boundary/src/**
     The shared suite. Names no backend, and duplicates the read arithmetic in
     its oracle on purpose.
+
+tests/fixture-server/src/**
+    The hostile corpus: a loopback origin, its socket layer, and the request
+    parsing and range arithmetic it answers with. Stops at the wire. Nothing
+    here knows what a StatusCode is, and its self-test parses responses with
+    its own code rather than the server's, for the same reason the boundary
+    suite's oracle duplicates ResolveReadRange.
 ```
 
 Read orchestration does not live in the plugin. The plugin normalizes a URI,
@@ -197,7 +222,7 @@ The bundle declares `kind: usd-asset-resolver` and
 | `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-msvc` (the same, through the Visual Studio generator), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |
 | `LICENSE`, `NOTICE` | Apache-2.0, and the third-party record the release gate checks |
-| `tests/` | Cross-module tests. Today the shared boundary suite, which belongs to no single backend |
+| `tests/` | Cross-module tests: the shared boundary suite, which belongs to no single backend, and the hostile-server fixture corpus, which belongs to no module because it is the other side of the boundary |
 | `docs/` | Contracts, plans, and records |
 
 `openstrata.toml` gains a `[workspace] members` declaration once more than one

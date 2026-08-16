@@ -15,10 +15,35 @@ one.
 
 Work toward `v0.2.0`, whose scope is in the [roadmap](docs/roadmap/README.md).
 It started with the HTTP client dependency decision rather than with code, and
-that decision is now made.
+then with the server the code will be tested against rather than the code. Both
+prerequisites in §17 of the [design policy](docs/design/DESIGN_POLICY.md) are
+now done, in the order it fixed. Neither ships in the release.
 
 ### Added
 
+- `tests/fixture-server`, the hostile-server corpus, standing up **before** the
+  HTTP backend rather than beside it. A loopback HTTP/1.1 origin on an ephemeral
+  port, with 18 named behaviors covering all nine conditions §11.2 of the design
+  policy requires — no `Accept-Ranges`, a `200` answering a `Range`, a truncated
+  body, a wrong `Content-Range`, a mid-read `ETag` change, a redirect chain, a
+  slow response, a connection reset, and a `416` — plus three more from
+  constraints fixed elsewhere: an unknown `Content-Length` (ADR-0003), a
+  transient `503` for bounded retry (§4.1), and `403` against `404`
+  ([DIAGNOSTICS.md](docs/architecture/DIAGNOSTICS.md) §4.4). Behaviors are
+  enumerable at runtime and the self-test fails when one has no case, so the
+  coverage claim is checkable rather than asserted.
+- A self-test for the corpus, which is the part that makes it an oracle rather
+  than a second unknown. It asserts over a raw socket that each behavior puts on
+  the wire exactly what its name claims, with a client that shares the socket
+  layer with the server and no HTTP code at all — the same separation the
+  boundary suite keeps between its oracle and `usdAssetLocal`. It was checked
+  against deliberately broken servers before it was trusted: seven mutations
+  each produced a named failure, and the eighth is recorded as an equivalent
+  mutant rather than counted as coverage.
+- A request log on the fixture server — method, target, `Range`, `If-Range`, and
+  the answered status. Bounded redirects, "no request was issued for a
+  zero-length read", and "`If-Range` on every range request after open" are
+  properties of what was *sent*, and there is no other way to assert them.
 - [ADR-0003](docs/adr/0003-http-client-dependency.md): the HTTP client
   dependency is **libcurl**, acquired through a private `find_package(CURL)` in
   `libs/usd-asset-http` and reached only through a narrow internal transport
@@ -43,8 +68,71 @@ that decision is now made.
   an open question. No third-party code is bundled or linked yet; the license
   text arrives with the first `libs/usd-asset-http` commit.
 - The HTTP client is no longer a blocking item in
-  [implementation status](docs/roadmap/implementation-status.md). Phase 2's
-  remaining order is the fixture server first, then the backend against it.
+  [implementation status](docs/roadmap/implementation-status.md), and neither is
+  the fixture server. What remains in phase 2 is the backend itself.
+- The [workspace contract](docs/architecture/WORKSPACE.md) records the fixture
+  server's dependency direction, which is that it has none: not `usdAssetIo`,
+  not a backend, and not the HTTP client. It links the platform's sockets and
+  the standard library. Not knowing `usdAssetIo` is the load-bearing half — a
+  corpus that could name `StatusCode` would begin asserting the backend's
+  interpretation, and a disagreement between the two would stop being evidence.
+
+### Fixed
+
+Eight defects in the fixture server, found by reviewing it before the backend
+started depending on it rather than after. None of them ships; all of them would
+have been debugged as backend bugs.
+
+- **`Stop()` hung on a client that stopped reading.** "Shutdown never hangs" was
+  contract in `Server.h` and in the README and was not true: the condition
+  variable `Stop()` signals reaches the deliberate stalls and does not reach a
+  handler sitting in `send`. Accepted sockets are now non-blocking and every
+  write is abandoned when the stop flag is set. The regression case hangs
+  without the fix on Linux; Winsock buffers a whole 64 MiB response without
+  blocking, so it proves nothing there and says so.
+- **Connection threads were joined only at `Stop()`**, one unreaped stack per
+  request. The accept loop now reaps as they finish, and `OpenConnections()`
+  exists so the self-test can say it does.
+- **`ContentRangeShifted` served a correct response** for any range covering the
+  whole asset — `bytes=0-255`, `bytes=0-`, and `bytes=-256` alike. The window
+  now moves up one and clamps at EOF.
+- **`ContentRangeTooShort` was a no-op for a single-byte range.** It still is,
+  because `Content-Range` cannot describe an empty range; the difference is that
+  the floor is now stated beside the enumerator and pinned by a case, instead of
+  being discovered by a backend test that leaned on it.
+- **The `.hopN` redirect alias routed on half a match.** `/chain.hop` redirected
+  to `/chain.hop.hop1` and then `404`ed, and `/normal.hop` served `/normal`'s
+  body under a name nobody registered while counting the request against it. The
+  suffix must now parse as digits and name a `RedirectChain` asset.
+- **The accept loop spun at 100% of a core** on a persistent accept failure —
+  reachable through the thread leak above. It backs off at the poll cadence.
+- **A request was logged with a status that never reached the wire.** `Server.h`
+  gives `0` the meaning "deliberately never answered"; the log is now written
+  after the send, and records `0` when the send failed.
+- **A reset-mid-body assertion was really an assertion about the runner.** What
+  an `RST` destroys is measured, not assumed: Linux delivers the eight buffered
+  body bytes and Winsock discards them, and the headers survive on both only
+  because the reader gets to them first.
+
+### Known gaps
+
+- **Nothing consumes the corpus.** It is a passing oracle with no subject until
+  `libs/usd-asset-http` lands, and
+  [the capability matrix](docs/reference/CAPABILITY_MATRIX.md) says so rather
+  than letting 18 green behaviors read as HTTP support.
+- **The scheme-downgrade case is not in the corpus and cannot be.** §10 of the
+  design policy requires rejecting an `https` to `http` redirect; the fixture
+  server speaks plaintext HTTP, so there is no `https` to downgrade from.
+  Faking it with a `Location` a test declares was reached over TLS would assert
+  nothing, so the case is left out and named as absent. It is redirect policy
+  rather than server behavior, and belongs in `usdAssetHttp`'s own tests.
+- **`RST` against `FIN` is asserted only where it is portable.** The reset
+  behaviors close with `SO_LINGER{1, 0}`, which is a real reset; whether a peer
+  observes `ECONNRESET` or an orderly EOF is the platform's decision, and so is
+  how much of what was already sent survives it. The corpus asserts the fact a
+  backend must handle — the promise in the headers was not kept — and not the
+  errno, the byte count, or even the arrival of the headers, none of which the
+  runner promises.
 
 ## `v0.1.0` — 2026-08-16
 

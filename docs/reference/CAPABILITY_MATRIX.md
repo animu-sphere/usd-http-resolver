@@ -8,8 +8,8 @@ Last updated: 2026-08-16, against `main`.
 
 ## Summary
 
-**The read contract, the local backend, and the shared boundary suite are
-implemented. No network code exists.**
+**The read contract, the local backend, the shared boundary suite, and the
+hostile-server fixture corpus are implemented. No network client exists.**
 
 `libs/usd-asset-io` fixes the `AssetReader` contract, the typed diagnostic
 vocabulary, the validator value types, and the metrics counters.
@@ -18,6 +18,13 @@ filesystem-derived validator and `AssetChanged` on a mid-read republish.
 `tests/boundary` is the shared suite that admits every later backend, and the
 local backend passes it: the required boundary cases, biased property cases
 against an independent naive oracle, and the concurrency cases.
+
+`tests/fixture-server` is the second suite, and the newest thing here: the
+hostile-server corpus, standing up ahead of the backend it exists for. It serves
+18 named behaviors over loopback and its own self-test proves each one puts on
+the wire what its name claims. It is worth being exact about what that does and
+does not mean — the corpus is ready and **nothing consumes it**, because the
+HTTP backend does not exist. It is a passing oracle waiting for a subject.
 
 There is still no resolver, no HTTP, no cache, and no plugin bundle. The whole
 tree builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine
@@ -115,8 +122,10 @@ not planned                   explicitly out of scope
 | CI: core build and test, three platforms, no OpenUSD | implemented | `core-ci.yml`, `core` job: Windows, Linux, macOS arm64. Asserts from the configure log that `find_package(pxr)` was never reached |
 | CI: sanitizer cells | implemented | `core-ci.yml`, `sanitizers` job, Linux. A sanitizer is a property of the compiler, and MSVC implements only `address` — unverified at that |
 | CI: generated OpenStrata support matrix | planned (`v0.2.0`) | `openstrata.ci.yaml` needs a bundle to name; see [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md) |
-| Hostile-server fixture corpus | planned (`v0.2.0`) | Additional to the boundary suite, not a substitute |
-| Mid-read revision-change tests | planned (`v0.2.0`) | Local backend and fixture server both simulate it |
+| Hostile-server fixture corpus | implemented | `tests/fixture-server`; 18 behaviors covering all nine conditions in §11.2 of the design policy. Additional to the boundary suite, not a substitute. Nothing consumes it yet — the backend it exists for is still `planned` |
+| Fixture-server self-test | implemented | Asserts over a raw socket that each behavior puts on the wire what its name claims, with a client that shares no HTTP code with the server |
+| Redirect scheme-downgrade rejection | planned (`v0.2.0`) | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. It is redirect policy, tested in `usdAssetHttp` against a synthetic `Location` |
+| Mid-read revision-change tests, HTTP | planned (`v0.2.0`) | The fixture half exists — `ValidatorChangeMidRead` and `Server::Republish`, both self-tested. What is missing is a backend to notice |
 | Amplification baselines | planned (`v0.2.0` onward) | A release changing I/O records one |
 
 ## Consumers

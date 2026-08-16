@@ -177,7 +177,7 @@ cannot claim the case passes.
 
 ```text
 boundary suite          every backend, every release       this document
-hostile-server corpus   the HTTP backend only              v0.2.0
+hostile-server corpus   the HTTP backend only              tests/fixture-server
 amplification tests     assert a ratio, not correctness    METRICS.md
 consumer integration    a separate lane, never a gate      consumer-integration.md
 ```
@@ -188,3 +188,11 @@ suite, not a substitute: it covers conditions only a server can produce — a
 mid-read validator change, a redirect chain, a reset. Those cases have no local
 analogue, which is exactly why they cannot carry the correctness argument on
 their own.
+
+It is implemented, and it landed before the backend rather than beside it, per
+action 1 of §17 of the design policy: see
+[tests/fixture-server](../../tests/fixture-server/README.md). Two of the four
+declarations in §6 above are already served by it for the HTTP row —
+`FixtureBehavior::ShortReadBelowEof` is `Behavior::TruncatedBody`, and revision
+simulation is `Server::Republish` — so what `usdAssetHttp` still has to supply
+when it lands is the factory and the ordinary provisioning.
