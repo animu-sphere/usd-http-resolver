@@ -8,7 +8,7 @@ observed, repository-side fixes, and any follow-up asks for OpenStrata.
 
 | Report | Date | Subject | OST version | Result |
 | --- | --- | --- | --- | --- |
-| — | — | No report yet | — | — |
+| [01](01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md) | 2026-08-16 | The `v0.1.0` CI cells, and why they are hand-authored rather than generated | 0.22.2 | Landed, with two upstream asks |
 
 Reports are historical evidence. When a later OpenStrata version changes an
 observation, add a new report rather than rewriting the old one.

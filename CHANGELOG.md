@@ -42,17 +42,34 @@ reader.
   `tests/boundary/backends/boundary_local_main.cpp`.
 - Sanitizer build configuration: `USD_HTTP_RESOLVER_SANITIZER`, and the
   `core-asan` and `core-tsan` CMake presets.
+- `.github/workflows/core-ci.yml`, the runtime-free CI lanes: the core build and
+  test on Windows, Linux, and macOS arm64 with no OpenUSD present — asserted
+  from the configure log, not inferred from a green build — and `core-asan` and
+  `core-tsan` on Linux. Hand-authored rather than generated from
+  `openstrata.ci.yaml`, because every `ost` cell pins and materializes an
+  OpenUSD runtime and no cell can name a workspace that contains no bundle;
+  the account and the upstream asks are in
+  [report 01](docs/reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+- `core-msvc`, the `core` build through the Visual Studio generator, so the
+  Windows lane works outside a developer command prompt — in CI and on a
+  contributor's machine.
 - `VERSION`, `LICENSE`, `NOTICE`, and OpenStrata plain-library descriptors for
   both `libs/` modules.
 
+### Fixed
+
+- The UndefinedBehaviorSanitizer lane reported nothing it found.
+  `-fno-sanitize-recover=all` now accompanies the sanitizer flags: UBSan's
+  default is to print a violation and continue, so a signed overflow in the
+  offset arithmetic exited `0` and CTest reported a pass. Measured both ways in
+  [report 01](docs/reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md)
+  §4.
+
 ### Known gaps
 
-- No CI matrix exists, so no sanitizer run has happened. The `v0.1.0` exit
-  criterion that the local backend passes the suite *under* ASan, UBSan, and
-  TSan is therefore not met; the configuration is in place and the cells are
-  not. Tracked in
-  [implementation status](docs/roadmap/implementation-status.md).
 - The MSVC AddressSanitizer lane is unverified and the build says so. Sanitizer
-  evidence is a clang or GCC lane.
+  evidence is a clang or GCC lane, and the CI cells are Linux for that reason.
 - No I/O baseline is recorded. `v0.1.0` moves no bytes over a network, so there
   is nothing yet for the ratio this project claims to be measured against.
+- `openstrata.ci.yaml` does not exist. It arrives in `v0.2.0` with the first
+  bundle a cell can name; the runtime-free lanes stay outside it.

@@ -1,0 +1,182 @@
+# The OpenUSD-free contract lane: everything under libs/ and the shared
+# boundary suite, built and tested with no OpenUSD present, and run again under
+# AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer.
+#
+# This is the `v0.1.0` exit criterion in executable form
+# (docs/roadmap/README.md, docs/contributing/BOUNDARY_SUITE.md §5), which is
+# also why it is not `ost ci generate github` output.
+#
+#   WHY THIS IS HAND-AUTHORED, AND WHEN THAT STOPS. The house rule is that CI
+#   semantics live in `openstrata.ci.yaml` and the workflow YAML is generated.
+#   That rule cannot apply yet: at `v0.1.0` this workspace contains no plugin
+#   bundle, and every cell shape `ost` 0.22.2 offers needs one or needs a
+#   runtime. A `bundle:` cell has nothing to name; a `kind: workspace` cell
+#   pins and materializes an OpenUSD runtime and then runs `ost build` with no
+#   way to pass a preset, a sanitizer, or `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF`;
+#   and even the runtime-free `verify: graph` rung refuses to run, because
+#   `ost plugin test --workspace --graph-only` exits PRECONDITION_FAILED with
+#   "no plugin bundles found in the workspace member set". Pulling a 120 MB USD
+#   runtime into the one lane whose whole claim is that it needs none would also
+#   destroy the property it exists to prove.
+#
+#   `openstrata.ci.yaml` lands in `v0.2.0` alongside `plugins/http-resolver`,
+#   the first thing in this repository a cell can name. These two lanes stay
+#   here, hand-authored, because they will still be the lanes that need no
+#   runtime. See docs/reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md.
+#
+# Fork-PR safety: this workflow never publishes, uses no secrets, and takes only
+# `contents: read`. Keep it that way.
+name: core ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: core (${{ matrix.name }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            runs_on: ubuntu-24.04
+            preset: core
+          - name: macos-arm64
+            runs_on: macos-15
+            preset: core
+          # The Ninja presets need cl.exe already on PATH, which is true inside
+          # a VS developer prompt and false on a stock runner. `core-msvc` is
+          # `core` through the Visual Studio generator, which finds the
+          # toolchain itself; the cache variables are the same ones.
+          - name: windows
+            runs_on: windows-2022
+            preset: core-msvc
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Ensure Ninja is present
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v ninja >/dev/null 2>&1; then
+            ninja --version
+            exit 0
+          fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+          else
+            brew install ninja
+          fi
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset ${{ matrix.preset }} 2>&1 | tee "$RUNNER_TEMP/configure.log"
+
+      - name: Assert the configure never reached OpenUSD
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The criterion is not "it built". It is that the release builds and
+          # tests on a machine with no OpenUSD installed, and a green build on a
+          # runner that happens to have none does not demonstrate that: it would
+          # stay green the day a libs/ module acquires a USD dependency and the
+          # runner starts carrying one. What demonstrates it is the root
+          # returning before find_package(pxr), which is observable in the log.
+          grep -F "plugin bundles disabled; OpenUSD is not required" "$RUNNER_TEMP/configure.log"
+          if grep -Eq "Found pxr|pxrConfig|PXR_VERSION" "$RUNNER_TEMP/configure.log"; then
+            echo "::error::the core lane resolved OpenUSD; that branch is supposed to be unreachable" >&2
+            exit 1
+          fi
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        shell: bash
+        run: ctest --preset ${{ matrix.preset }}
+
+  sanitizers:
+    # ASan, UBSan, and TSan are contract rather than an optional lane
+    # (docs/contributing/BOUNDARY_SUITE.md §5): the concurrency properties in §7
+    # of the design policy are only actually verified here, and the offset
+    # arithmetic's overflow behavior is only actually verified under UBSan.
+    #
+    # Linux only, and that is a statement about compilers rather than about
+    # platforms. MSVC implements only `address` — the root CMakeLists fails the
+    # configure for anything else rather than emitting flags it would ignore —
+    # and its ASan lane is unverified: on MSVC 19.34 the instrumented binaries
+    # die at startup with STATUS_DLL_INIT_FAILED before main. The core lane
+    # above still covers all three platforms; only the sanitizer evidence is
+    # single-platform, because a sanitizer is a property of the compiler.
+    name: sanitizers (${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [core-asan, core-tsan]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Ensure Ninja is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ninja >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ninja-build; }
+          ninja --version
+
+      - name: Cap ASLR entropy to what the sanitizer runtimes assume
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ubuntu 24.04 raised vm.mmap_rnd_bits to 32, which is outside the
+          # shadow-memory layout the sanitizer runtimes of that era assume: the
+          # instrumented binary dies before main with "unexpected memory
+          # mapping" and no test has run. Capping it back is the documented
+          # workaround and affects this runner only. Left conditional so that a
+          # future image needing nothing pays nothing, and so the value this
+          # lane actually ran under is in the log either way.
+          current="$(sysctl -n vm.mmap_rnd_bits)"
+          echo "vm.mmap_rnd_bits=$current"
+          if [ "$current" -gt 28 ]; then
+            sudo sysctl -w vm.mmap_rnd_bits=28
+          fi
+
+      - name: Record the compiler this evidence comes from
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The runner's default GCC. The lane is deliberately not pinned to a
+          # specific compiler: a sanitizer report is evidence about the code,
+          # and a report only one toolchain produces is worth having either way.
+          cc="${CC:-cc}"
+          "$cc" --version | head -1
+
+      - name: Configure
+        shell: bash
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        shell: bash
+        # UBSAN_OPTIONS and TSAN_OPTIONS come from the test presets, so a
+        # contributor reproducing this locally runs what CI ran. Halting on a
+        # UBSan report comes from -fno-sanitize-recover=all in the root
+        # CMakeLists: without it UBSan prints and continues, and the lane is
+        # decorative.
+        run: ctest --preset ${{ matrix.preset }}

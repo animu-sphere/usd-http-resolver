@@ -6,10 +6,10 @@ tracks work.
 
 Last updated: 2026-08-16.
 
-Phase 1 is complete except for its CI cells. The read contract, the local
-backend, and the shared boundary suite are in the tree and passing; the
-sanitizer builds are configured but have not been run by any cell, which is
-tracked as a blocking item below.
+Phases 0 and 1 are complete. The read contract, the local backend, and the
+shared boundary suite are in the tree and passing; the core lane builds and
+tests on Windows, Linux, and macOS arm64 with no OpenUSD present; and the
+sanitizer lanes run green. `v0.1.0` has no unmet exit criterion.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -29,7 +29,8 @@ tracked as a blocking item below.
 | Libs-first, OpenUSD-optional root build graph | Done |
 | ADR-0001: consumer interface | Accepted |
 | ADR-0002: range-unsupported policy | Accepted — hard error in `v0.2.0` |
-| `openstrata.ci.yaml` and generated workflows | Outstanding |
+| CI: the runtime-free lanes, on three platforms | Done — `.github/workflows/core-ci.yml`, hand-authored |
+| `openstrata.ci.yaml` and generated workflows | Moved to phase 2 — no `ost` cell can name a workspace without a bundle, or decline to pin a runtime |
 | `LICENSE`, `NOTICE`, `VERSION` | Done |
 | Module README contract applied to real modules | Done — both `libs/` modules |
 | OpenStrata plain-library descriptors for `libs/` modules | Done |
@@ -53,7 +54,9 @@ tracked as a blocking item below.
 | Short-read-below-EOF case, via a provisioned misbehaving transport | Done |
 | Local revision-change simulation (rewrite underneath an open reader) | Done |
 | ASan, UBSan, and TSan **build configuration** for `libs/` | Done — `USD_HTTP_RESOLVER_SANITIZER`, `core-asan` and `core-tsan` presets |
-| ASan, UBSan, and TSan **test cells** actually run | Outstanding — needs the CI matrix below; see "Blocking items" |
+| ASan, UBSan, and TSan **test cells** actually run | Done — the `sanitizers` job in `core-ci.yml`, and locally under GCC 15.2 |
+| A UBSan report fails the run rather than printing | Done — `-fno-sanitize-recover=all`; it did not, before |
+| Core build and test on a machine with no OpenUSD, in CI | Done — the `core` job, three platforms, asserted from the configure log |
 | Module READMEs for both libraries | Done |
 
 ## Phase 2 — HTTP backend, resolver bundle, revision binding (`v0.2.0`)
@@ -61,6 +64,7 @@ tracked as a blocking item below.
 | Task | Status |
 | --- | --- |
 | HTTP client dependency decision, recorded as an ADR | Outstanding |
+| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding |
 | `libs/usd-asset-http`: range, metadata, redirect, timeout, retry | Outstanding |
 | Response framing validation (`Content-Range` covers the request) | Outstanding |
 | Range-unsupported hard error per ADR-0002, with no fallback path | Outstanding |
@@ -119,16 +123,17 @@ tracked as a blocking item below.
    footprint, and the Wasm research track, so it is decided on those grounds
    before features. It blocks `v0.2.0`, not `v0.1.0` — nothing in phase 1
    touches a network.
-2. **No CI matrix exists, so no sanitizer run has happened.** This is the one
-   `v0.1.0` exit criterion not met. The build configuration is in place —
-   `-DUSD_HTTP_RESOLVER_SANITIZER=address,undefined` and `=thread`, wired to the
-   `core-asan` and `core-tsan` presets — and it is a clang or GCC lane: MSVC
-   implements only `address`, and on MSVC 19.34 the instrumented binaries die at
-   startup with `STATUS_DLL_INIT_FAILED` before `main`, with the runtime both on
-   `PATH` and beside the executable. `openstrata.ci.yaml` must therefore include
-   a Linux cell that runs the sanitizer presets, alongside the core cell that
-   runs `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` with no OpenUSD present. Both are
-   contract rather than optional lanes.
+2. **`ost ci` cannot express a lane that pins no runtime.** Not blocking
+   anything — the lanes landed hand-authored in `.github/workflows/core-ci.yml`
+   and are green — but it is why `openstrata.ci.yaml` does not exist yet and why
+   two cells will stay outside it after it does. Every `SupportCell` requires a
+   `runtime_artifact` and materializes it before building, which would remove
+   the very property the core lane demonstrates; a `kind: workspace` cell's
+   build step takes no preset, `--intent`, or cache variable, so the sanitizer
+   presets are unreachable; and `verify: graph`, the one runtime-free rung,
+   fails with `PRECONDITION_FAILED: no plugin bundles found in the workspace
+   member set`. Full account and the two upstream asks:
+   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
 3. **`ost library build` cannot resolve a library-to-library edge on its own.**
    `libs/usd-asset-local` declares `requires.libraries: [usdAssetIo]` and builds
    through plain CMake, `ost library build libs/usd-asset-io`, and the root
@@ -139,14 +144,17 @@ tracked as a blocking item below.
    nothing in `v0.1.0` — the path the release is defined by is plain CMake —
    and it is worth resolving before the bundle in `v0.2.0` consumes the closure.
 
-No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`.
+No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`. Also no
+longer blocking: the sanitizer runs, which now happen.
 
 ## Next
 
-1. Write `openstrata.ci.yaml` with the core cell, the sanitizer cells, and the
-   Windows, Linux, and macOS arm64 rows, and generate the workflows from it.
-   Until it exists, `v0.1.0`'s sanitizer criterion is unmet, and everything else
-   in phase 1 is done.
+1. Tag `v0.1.0`: finalize the changelog, write the release record, and confirm
+   the gate in [docs/releases/README.md](../releases/README.md). Every technical
+   criterion is met; what remains is the first green CI run on the pull request
+   that carries these lanes, which is gate 2's evidence.
 2. Then phase 2, which starts with the HTTP client decision and its ADR rather
    than with code. The boundary suite the backend will be written against is
    already passing, which is the whole point of having built it first.
+3. `openstrata.ci.yaml` lands within phase 2, once `plugins/http-resolver`
+   exists to name, and never absorbs the two runtime-free lanes.

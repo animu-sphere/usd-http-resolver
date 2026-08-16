@@ -22,8 +22,9 @@ A release record is created only after:
 
 1. `VERSION`, `openstrata.toml`, the plugin manifest, the plugin CMake project,
    the tag, and the finalized changelog version agree;
-2. every declared CI cell in `openstrata.ci.yaml` passes on Windows, Linux, and
-   macOS arm64;
+2. every declared CI cell passes on Windows, Linux, and macOS arm64 — the
+   hand-authored runtime-free lanes in `.github/workflows/core-ci.yml`, and from
+   `v0.2.0` the generated cells in `openstrata.ci.yaml` as well;
 3. the [shared boundary suite](../contributing/BOUNDARY_SUITE.md) passes against
    every backend, unchanged;
 4. the hostile-server corpus passes;

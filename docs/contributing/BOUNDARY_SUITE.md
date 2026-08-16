@@ -10,11 +10,11 @@ This document fixes what the suite must contain and how a backend is entered
 into it.
 
 Status: implemented in `tests/boundary`, with the local backend entered as its
-first row. The fixed cases in §3, the property cases in §4, and the concurrency
-cases pass; the sanitizer builds in §5 are configured and wired to CMake presets
-but are not yet run by a CI cell, which is the one part of this document the
-tree does not yet satisfy. See
-[CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md) and
+first row. The fixed cases in §3, the property cases in §4, the concurrency
+cases, and the sanitizer builds in §5 all pass — the last of these under the
+`sanitizers` job in `.github/workflows/core-ci.yml`, and first recorded locally
+in [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+See [CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md) and
 [tests/README.md](../../tests/README.md).
 
 ## 1. Why the suite is the product
@@ -130,14 +130,21 @@ Because the core libraries build without OpenUSD, these builds need no USD
 runtime and run on every platform in CI:
 
 ```sh
-cmake -S . -B build-asan -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
+cmake --preset core-asan     # -DUSD_HTTP_RESOLVER_SANITIZER=address,undefined
+cmake --build --preset core-asan
+ctest --preset core-asan
 ```
 
 That is the practical argument for the libs-first build graph: a range-read
 test that needs a USD runtime is a test that gets skipped, and a sanitizer
 build that needs one is a sanitizer build that never runs.
+
+A sanitizer lane must also fail the run it finds something in, which is not the
+default. UBSan prints the violation and continues, so the process exits `0` and
+CTest reports a pass; `-fno-sanitize-recover=all`, set with the sanitizer flags
+in the root `CMakeLists.txt`, is what makes the report a failure. A lane that
+finds overflow in the offset arithmetic and stays green is worse than no lane,
+because it is believed.
 
 ## 6. Entering a backend into the suite
 

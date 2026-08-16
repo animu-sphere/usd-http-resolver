@@ -24,6 +24,18 @@
             }
         },
         {
+            "name": "core-msvc",
+            "inherits": "core",
+            "displayName": "Core libraries only, through the Visual Studio generator",
+            "description": "What `core` is on Windows outside a developer command prompt. The Ninja presets need cl.exe already on PATH, which is true inside a VS developer prompt and false in a plain shell and on a stock CI runner; the Visual Studio generator locates the toolchain itself. This is the generator the Windows CI cell uses, so the lane a contributor reproduces is the lane CI runs.",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build/core-msvc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": null
+            }
+        },
+        {
             "name": "core-asan",
             "inherits": "core",
             "displayName": "Core libraries under AddressSanitizer and UndefinedBehaviorSanitizer",
@@ -47,13 +59,29 @@
     "buildPresets": [
         { "name": "default", "configurePreset": "default" },
         { "name": "core", "configurePreset": "core" },
+        { "name": "core-msvc", "configurePreset": "core-msvc", "configuration": "Debug" },
         { "name": "core-asan", "configurePreset": "core-asan" },
         { "name": "core-tsan", "configurePreset": "core-tsan" }
     ],
     "testPresets": [
         { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
         { "name": "core", "configurePreset": "core", "output": { "outputOnFailure": true } },
-        { "name": "core-asan", "configurePreset": "core-asan", "output": { "outputOnFailure": true } },
-        { "name": "core-tsan", "configurePreset": "core-tsan", "output": { "outputOnFailure": true } }
+        { "name": "core-msvc", "configurePreset": "core-msvc", "configuration": "Debug", "output": { "outputOnFailure": true } },
+        {
+            "name": "core-asan",
+            "configurePreset": "core-asan",
+            "output": { "outputOnFailure": true },
+            "environment": {
+                "UBSAN_OPTIONS": "print_stacktrace=1"
+            }
+        },
+        {
+            "name": "core-tsan",
+            "configurePreset": "core-tsan",
+            "output": { "outputOnFailure": true },
+            "environment": {
+                "TSAN_OPTIONS": "halt_on_error=1"
+            }
+        }
     ]
 }
