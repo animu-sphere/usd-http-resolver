@@ -4,8 +4,12 @@ This document fixes block caching, request coalescing, single-flight
 de-duplication, and cache identity. It is the contract for `usdAssetCache`,
 which is a decorator over `AssetReader` and knows no transport concept.
 
-Status: planned for `v0.3.0`, with validator-keyed identity and optional
-persistence in `v0.4.0`. Nothing here is implemented.
+Status: planned for `v0.3.0`, with optional persistence in `v0.4.0`. Nothing
+here is implemented.
+
+The architecture below is unchanged by the `v0.2.0` reordering; what changed is
+that the validator it keys on already exists when the cache lands. There is no
+interim URL-keyed cache and no migration away from one.
 
 ## 1. Which cache this is
 
@@ -100,7 +104,16 @@ CacheKey = resolvedIdentifier + validator + blockSize + blockIndex
 ```
 
 `resolvedIdentifier` is the normalized absolute URI after redirects, per
-[RESOLVER.md](RESOLVER.md). `validator` is the opaque token captured at open.
+[RESOLVER.md](RESOLVER.md). `validator` is `Validator::value` — the opaque
+token captured at open, treated here as a byte string and nothing more.
+
+The cache never parses that value, never compares it to an `ETag`, and never
+infers recency from it. It reads exactly one other field, `strength`, and
+exactly once: to decide whether an entry may outlive the reader (§8). Every
+other validator question belongs to the backend, per §7.1 of
+[ASSET_READER.md](ASSET_READER.md). The moment this layer can parse an HTTP
+construct it has become an HTTP cache, and the local backend stops being a
+usable oracle for the cached path.
 
 The rule that follows is the whole point:
 
@@ -128,9 +141,26 @@ reader.
 An on-disk cache is admitted only after validators land, because a persistent
 cache without a validator is a stale-data generator that survives restarts.
 
+Persistence is admitted per asset, not per deployment, and the test is validator
+strength:
+
+| Validator strength | In-memory, for the reader's lifetime | Persistent across opens |
+| --- | --- | --- |
+| `Strong` | yes | yes |
+| `Weak` | yes | no |
+| `None` | yes | no |
+
+A weak validator cannot prove two responses are byte-identical — that is what
+weak means — and `Last-Modified` at one-second granularity cannot separate two
+revisions published inside the same second. Within one reader's lifetime the
+binding in §2.1 of [ASSET_READER.md](ASSET_READER.md) carries the guarantee, so
+in-memory caching is safe regardless. Across opens there is no binding left, and
+a weak match becomes a guess written to disk.
+
 Requirements when it lands:
 
 - entries are keyed by the same `CacheKey`, with the validator included;
+- an entry is written only when the reader's identity is `Stable`;
 - writes are atomic (write to a temporary path, then rename) so an interrupted
   process cannot publish a partial block;
 - the cache directory is owned by the process, and no filename component is

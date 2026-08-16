@@ -24,9 +24,11 @@ A release record is created only after:
    the tag, and the finalized changelog version agree;
 2. every declared CI cell in `openstrata.ci.yaml` passes on Windows, Linux, and
    macOS arm64;
-3. the shared boundary suite passes against every backend, unchanged;
+3. the [shared boundary suite](../contributing/BOUNDARY_SUITE.md) passes against
+   every backend, unchanged;
 4. the hostile-server corpus passes;
-5. sanitizer builds (ASan, UBSan, TSan) pass;
+5. sanitizer builds (ASan, UBSan, TSan) pass over the core path, which requires
+   no OpenUSD runtime;
 6. **an I/O baseline is recorded** for every scenario in
    [METRICS.md](../architecture/METRICS.md) §6, and any regression against the
    previous release is explained in the record;

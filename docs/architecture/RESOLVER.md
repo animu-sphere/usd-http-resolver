@@ -93,13 +93,20 @@ For a remote asset that requires a round trip, so:
 
 ## 3. Asset info and identity — Planned (`v0.4.0`)
 
-`GetModificationTimestamp` and `GetAssetInfo` expose what a consumer needs to
-decide whether *its own* generated-cache reuse is safe:
+Validators are captured in `v0.2.0`, because a range backend cannot be correct
+without them (§2.1 of [ASSET_READER.md](ASSET_READER.md)). What waits for
+`v0.4.0` is *exposing* identity outward, which is a different commitment: a
+consumer that keys its own generated cache on this surface turns a wrong
+validator into a durable wrong answer, so the surface opens only after capture
+has been correct for a release.
+
+`GetModificationTimestamp` and `GetAssetInfo` then expose what a consumer needs
+to decide whether *its own* generated-cache reuse is safe:
 
 ```text
 resolved identifier      the normalized absolute URI, after redirects
 size                     byte size at open
-validation token         opaque; derived from ETag, else Last-Modified + size
+validation token         opaque; the backend's captured validator value
 stability                Stable | Unstable | Unavailable
 ```
 
@@ -108,6 +115,15 @@ The token is opaque by contract. A consumer must not parse it, compare it to an
 content-addressed backend supply a completely different token shape without any
 consumer change — and it is the same neutrality the first consumer's contract
 demands from its side.
+
+`stability` is the field a consumer actually acts on, and it is the only
+projection of validator strength that crosses this boundary. The resolver does
+not expose, and does not itself read, the `ValidatorKind` and
+`ValidatorStrength` that the backend used to build its conditional requests:
+those are transport semantics, and §7.1 of the reader contract keeps them below
+this layer. A consumer reading `Unstable` knows not to persist a derived
+artifact against this asset; it does not know, and must not need to know, that
+the reason was a one-second `Last-Modified` granularity.
 
 Credentials, `Authorization` values, and signed-URL query strings never appear
 in asset info, in a timestamp, or in any string a consumer can read.
@@ -121,18 +137,59 @@ ArAsset::Read(buffer, count, offset)  ->  AssetReader::Read(offset, buffer, coun
 ArAsset::GetSize()                    ->  AssetMetadata::size
 ```
 
-`GetBuffer()` returns null. It is the "give me the whole asset in memory" call,
-and honoring it on a 10 GB remote asset defeats the entire project. A consumer
-that needs whole-asset bytes gets them by reading ranges; one that calls
-`GetBuffer` and dereferences without a null check has a bug that a local file
-happened to hide.
-
-`GetFileUnsafe()` returns `{nullptr, 0}`. There is no file.
-
 `ArAsset::Read`'s return semantics map exactly onto §3 of
 [ASSET_READER.md](ASSET_READER.md): a short read at EOF is normal, a short read
 below EOF is a failure, and the failure is reported as a diagnostic rather than
 as fewer bytes.
+
+### 4.1 `GetBuffer()` returns null, permanently
+
+```text
+GetBuffer()      -> nullptr
+GetFileUnsafe()  -> {nullptr, 0}
+```
+
+`Read` and `GetSize` are the primary path, and they are the whole path.
+`GetBuffer` asks for whole-asset materialization; honoring it on a 10 GB remote
+asset is the exact transfer this project exists to avoid, so implementing it
+would contradict the project's purpose rather than complete its API surface.
+`GetFileUnsafe` asks for a local file descriptor, and there is no file.
+
+This is a compatibility contract, not an omission, and it is stated as one so
+that neither a future contributor nor a consumer treats it as a gap to close.
+
+### 4.2 What interoperability is claimed
+
+The claim this resolver makes is bounded and specific:
+
+> interoperability with random-access-compatible FileFormat Plugins
+
+A FileFormat Plugin that reads through `ArAsset::Read` at offsets it computes
+itself is compatible. A FileFormat Plugin that requires whole-buffer access is
+**not compatible with the remote random-access path** — not because it is
+broken, but because it is asking for a different thing than this resolver
+provides. Such a plugin still works against a local asset through the primary
+resolver; what it cannot do is stream a remote one through this bundle.
+
+Stating the boundary this way puts the incompatibility where it belongs. A
+plugin that calls `GetBuffer` and dereferences without a null check has a bug
+that a local file happened to hide, and it will fail identically against any
+resolver that streams.
+
+### 4.3 Compatibility matrix — Planned
+
+As consumers are evaluated, they are recorded here rather than assessed
+repeatedly in conversation:
+
+| Consumer / format | Uses `ArAsset::Read` | Depends on `GetBuffer` | Remote capable |
+| --- | --- | --- | --- |
+| COPC (`usd-pointcloud-plugins`) | yes | no | yes |
+| 3DGS (`usd-3dgs-plugins`) | yes | no | expected, unverified |
+| Container formats (`usd-vrm-plugins`) | unknown | unknown | unknown |
+
+The third row is the honest one. A row moves out of `unknown` when someone has
+actually read the plugin's I/O path, and `expected` is never reported as `yes`
+until a fixture has been opened.
 
 ## 5. Writing
 

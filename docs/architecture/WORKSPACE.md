@@ -73,6 +73,36 @@ testable. The backends, the cache, and the contracts build and test with plain
 CMake and no OpenUSD runtime; only the bundle needs one. A test that requires a
 USD runtime to prove a range read is a test that will be skipped.
 
+### 2.1 The build graph is the enforcement
+
+A documented dependency direction that the build does not enforce is a
+convention, and conventions decay silently. The root `CMakeLists.txt` therefore
+has the same shape as this section:
+
+```text
+root
+ |- libs/*                      always built, OpenUSD never resolved
+ `- plugins/*                   built only when USD_HTTP_RESOLVER_BUILD_PLUGIN
+                                is ON, and only then is find_package(pxr) called
+```
+
+This path is supported, tested, and required to keep working:
+
+```sh
+cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF
+cmake --build build-core
+ctest --test-dir build-core
+```
+
+on a machine with no OpenUSD installed at all. A `libs/` module that acquires an
+OpenUSD dependency does not produce a review comment; it produces a configure
+failure on every developer machine and CI cell that runs the core path.
+
+`libs/` modules are added by an explicit ordered list rather than a directory
+glob, because a directory is created when its first tested capability exists
+(invariant 11) and the list is the landing order from the
+[roadmap](../roadmap/README.md).
+
 ## 3. Consumer direction
 
 The dependency edge toward a consumer does not exist, in either direction:
@@ -140,7 +170,8 @@ The bundle declares `kind: usd-asset-resolver` and
 | --- | --- |
 | `openstrata.toml` | Project identity, version, platform, and profile |
 | `openstrata.ci.yaml` | The CI support matrix; workflows are generated from it and never hand-edited |
-| `CMakeLists.txt` | Dual-mode root: resolves OpenUSD once and adds each bundle, so a plain CMake user can build without `ost` |
+| `CMakeLists.txt` | Libs-first root: always adds `libs/`, resolves OpenUSD and adds bundles only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`, so a plain CMake user can build with or without `ost` and with or without OpenUSD |
+| `CMakePresets.json` | The `default` (whole repo) and `core` (libs only, no OpenUSD) configure, build, and test presets |
 | `VERSION` | The single source of the release version |
 | `docs/` | Contracts, plans, and records |
 
@@ -150,7 +181,8 @@ member descriptor exists.
 ## 7. Invariants
 
 1. A structural change updates this document in the same change.
-2. No `libs/` module includes an OpenUSD header.
+2. No `libs/` module includes an OpenUSD header, and the whole of `libs/`
+   configures, builds, and tests with no OpenUSD installation present.
 3. No module in this repository parses an asset format.
 4. Only `usdAssetHttp` names an HTTP client dependency.
 5. The cache is a decorator over `AssetReader` and knows no transport concept.

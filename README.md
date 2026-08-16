@@ -59,8 +59,29 @@ document than across five consumers. What the tree actually does is in
   ([ADR-0001](docs/adr/0001-consumer-interface.md)).
 - **Correctness before speed.** The local backend is the oracle; a remote read
   is correct when it is byte-equivalent to a local one at every boundary.
+- **One reader, one revision.** An asset that changes underneath an open reader
+  fails with `AssetChanged`. It never silently produces bytes from two
+  revisions, and that guarantee ships with the first HTTP backend, not after
+  the cache.
 - **Measured, not asserted.** The claim is a ratio, so the ratio is a counter
   and a test assertion ([METRICS.md](docs/architecture/METRICS.md)).
+
+## What this resolver does not give you
+
+`ArAsset::Read` and `ArAsset::GetSize` are the whole surface. `GetBuffer()`
+returns null, permanently and by contract: it asks for the entire asset in
+memory, which is the exact transfer this project exists to avoid.
+
+So the interoperability claim is bounded, and worth stating plainly:
+
+> This resolver interoperates with random-access-compatible FileFormat Plugins.
+
+A plugin that computes offsets and reads them streams a remote asset. A plugin
+that requires whole-buffer access does not — not because it is broken, but
+because it is asking for something else. It keeps working against local assets
+through the primary resolver, which this bundle never changes. The details, and
+the per-format compatibility matrix, are in §4 of
+[docs/architecture/RESOLVER.md](docs/architecture/RESOLVER.md).
 
 ## First consumer
 
@@ -70,14 +91,25 @@ it needs one, the abstraction leaked and the fix belongs here.
 
 ## Building
 
-Nothing to build yet. The workflow the first modules land into is in
-[docs/guides/BUILDING.md](docs/guides/BUILDING.md).
+Nothing to build yet — no modules exist. The build graph they land into does,
+and it is libs-first: everything under `libs/` builds and tests with no OpenUSD
+installation present, and OpenUSD is resolved only for the plugin bundle.
+
+```sh
+cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF
+cmake --build build-core
+ctest --test-dir build-core
+```
+
+With `ost`, which resolves and composes a certified OpenUSD runtime:
 
 ```sh
 ost runtime pull cy2026 --profile usd
 ost build
 ost test
 ```
+
+See [docs/guides/BUILDING.md](docs/guides/BUILDING.md).
 
 ## License
 

@@ -21,10 +21,21 @@ behavior, in [capability matrix](../reference/CAPABILITY_MATRIX.md).
 
 ## Immediate direction
 
-The first three releases build one vertical slice: a read contract, a local
-backend that proves it, and an HTTP backend that is byte-equivalent to the
-local one over a hostile test server. Only then does caching enter, because a
-cache in front of an unproven reader hides its bugs.
+The first two releases build one vertical slice: a read contract with the
+shared boundary suite that enforces it, a local backend that proves the suite
+is satisfiable, and an HTTP backend that is byte-equivalent to the local one
+over a hostile test server — and that is bound to a single asset revision for
+each reader's lifetime. Only then does caching enter, because a cache in front
+of an unproven reader hides its bugs.
+
+Revision binding sits in `v0.2.0` and not later because it is a correctness
+property of range reads themselves, not a cache feature: a reader that issues
+three requests without a validator can compose three revisions into one byte
+sequence with no request failing. The argument is in §2.1 of the
+[asset reader contract](../architecture/ASSET_READER.md). Validators therefore
+ship with the first backend that can violate the guarantee, and `v0.4.0` keeps
+only what genuinely depends on them being trustworthy first: exposure to
+consumers, and persistence.
 
 `v0.5.0` is the first release with an external claim: `usd-pointcloud-plugins`
 opens a remote COPC asset through this resolver, and the recorded byte ratio
@@ -33,10 +44,10 @@ be right; everything after it is reach.
 
 | Release | Theme | Outcome |
 | --- | --- | --- |
-| `v0.1.0` | Read contract and local backend | One random-access contract, typed diagnostics, metrics counters, and a local backend that satisfies them |
-| `v0.2.0` | HTTP range reads and the resolver bundle | `http`/`https` resolve and serve ranges; byte-equivalent to local against a hostile fixture server |
+| `v0.1.0` | Read contract, local backend, shared boundary suite | One random-access contract, typed diagnostics, metrics counters, and the suite every later backend is admitted by |
+| `v0.2.0` | HTTP range reads, the resolver bundle, and revision binding | `http`/`https` resolve and serve ranges; byte-equivalent to local against a hostile fixture server; one reader, one revision |
 | `v0.3.0` | Block cache, coalescing, single-flight | Small scattered reads stop becoming small scattered requests |
-| `v0.4.0` | Validators and consistency | Validator-bound reads, `AssetChanged` detection, and identity classification exposed to consumers |
+| `v0.4.0` | Identity exposure and persistence | Stability metadata a consumer can act on, and a cache that may safely outlive a process |
 | `v0.5.0` | First consumer integration | Remote COPC through `usd-pointcloud-plugins`, with a recorded amplification baseline |
 | `v0.6.0` | Composition and extension points | OpenStrata formation composition, auth interception point, and configuration surface |
 | Research | Async, prefetch, and Wasm | Investigated in parallel; no release gate |
@@ -63,49 +74,69 @@ The layering that every release preserves:
                         S3 / package / Wasm  (later)
 ```
 
-### `v0.1.0` — read contract and local backend
+### `v0.1.0` — read contract, local backend, and the shared boundary suite
 
 The release that decides whether the rest of the project is buildable. It ships
-no network code.
+no network code, and its centre of gravity is the test suite rather than the
+reader.
 
-Scope: the `AssetReader` and `AssetMetadata` contracts fixed in
+Scope: the `AssetReader`, `AssetMetadata`, and validator value types fixed in
 [ASSET_READER.md](../architecture/ASSET_READER.md); the typed diagnostic
 vocabulary in [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md); the counter set
 in [METRICS.md](../architecture/METRICS.md); a local file backend implementing
-all of it; and the boundary test suite — zero-length reads, reads at EOF, reads
-straddling EOF, reads past EOF, oversized reads, and concurrent reads — that
-every later backend is required to pass unchanged.
+all of it, including a filesystem-derived validator; and the shared boundary
+suite fixed in [BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md) — the
+fixed cases, the biased property-test generators, and the sanitizer builds —
+that every later backend is admitted by.
+
+The deliverable is not "a local file reader". It is a small, boring, reusable
+core plus the harness that makes every subsequent transport cheap to verify.
+This release adds implementation, not documentation: the contracts it
+implements are already written.
 
 Out of scope: HTTP, caching, `ArResolver` registration, async.
 
 Exit criteria: the local backend passes the boundary suite under
-AddressSanitizer and ThreadSanitizer; the suite is written so that swapping the
-backend under test is a one-line change; counters are populated.
+AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer; the suite is
+written so that swapping the backend under test is a one-line change; the whole
+release builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a
+machine with no OpenUSD installed; counters are populated.
 
-### `v0.2.0` — HTTP range reads and the resolver bundle
+### `v0.2.0` — HTTP range reads, the resolver bundle, and revision binding
 
 The first release that touches a network, and the first that registers an
 OpenUSD plugin.
 
 Scope: an HTTP backend supporting `GET`, a metadata request, `Range`,
 `Content-Length`, `Content-Range`, `Accept-Ranges`, bounded redirects,
-timeouts, and bounded retry; the `plugins/http-resolver` bundle registering the
-`http` and `https` URI schemes and returning an `ArAsset` backed by that
-backend; URI normalization and relative resolution per
-[RESOLVER.md](../architecture/RESOLVER.md); and the fixture server that
-reproduces the hostile cases in §11.2 of the design policy.
+timeouts, and bounded retry; validator capture at open with its kind and
+strength classified, a conditional (`If-Range`) guard on every subsequent range
+request, mid-read change detection reported as `AssetChanged`, and the boundary
+test that forbids one reader from ever mixing revisions; the
+`plugins/http-resolver` bundle registering the `http` and `https` URI schemes
+and returning an `ArAsset` backed by that backend; URI normalization and
+relative resolution per [RESOLVER.md](../architecture/RESOLVER.md); and the
+fixture server that reproduces the hostile cases in §11.2 of the design policy.
+
+Range-unsupported is a hard error here — `RangeNotSupported`, no whole-asset
+fallback — per [ADR-0002](../adr/0002-range-unsupported-policy.md). Bounded
+fallback is a separate, later feature with its own residency model, and
+building it now would widen this release from "range reads are correct" to
+"range reads are correct, plus a second storage path with a threshold, a
+warning policy, a spill story, and its own metrics".
 
 The HTTP client dependency is chosen in this release, on license, footprint,
 and Wasm viability, and recorded as an ADR.
 
 Out of scope: caching of any kind — every read is a request, deliberately, so
 that the request pattern is visible before it is optimized. Also out of scope:
-authentication, and the range-unsupported fallback, which stays an explicit
-diagnostic until [ADR-0002](../adr/0002-range-unsupported-policy.md) is
-resolved.
+authentication; persistent identity; and exposure of stability to consumers,
+which waits for `v0.4.0` because a consumer acting on it needs it to have been
+right for a release first.
 
 Exit criteria: the `v0.1.0` boundary suite passes against the HTTP backend
-unchanged; the hostile-server corpus passes; `usdcat` on a remote `.usda`
+unchanged; the hostile-server corpus passes; a fixture mutated mid-read
+produces `AssetChanged` and never mixed bytes; `usdcat` on a remote `.usda`
 succeeds on Windows, Linux, and macOS in CI; no credential-shaped string
 appears in any diagnostic.
 
@@ -123,33 +154,41 @@ Block size, coalescing gap threshold, and budget are chosen from measurement
 against a fixture with a realistic access pattern — a header read, an index
 read, then scattered chunk reads — and the measurement is recorded.
 
-Out of scope: on-disk cache persistence, which requires the validator work in
-`v0.4.0` to be safe.
+The cache is keyed on the validator captured in `v0.2.0` from the start. There
+is no interim URL-keyed cache to migrate away from, which is the practical
+benefit of having moved validators forward.
+
+Out of scope: on-disk cache persistence. The validator it would key on exists
+by now; what does not yet exist is a release's worth of evidence that capture
+is correct, which is what `v0.4.0` waits for before letting an entry outlive
+the process that wrote it.
 
 Exit criteria: byte-for-byte equivalence with the uncached path over the full
-suite; a recorded before/after request count and amplification ratio for the
+suite; a cached entry from revision A never serves a read of revision B at the
+same URL; a recorded before/after request count and amplification ratio for the
 representative access pattern; single-flight proven under ThreadSanitizer.
 
-### `v0.4.0` — validators and consistency
+### `v0.4.0` — identity exposure and persistence
 
-The release that makes remote reads trustworthy rather than merely fast.
+The release that lets identity leave the process — first to a consumer, then to
+a disk. Both wait until validator capture has been correct for a release,
+because both turn a wrong validator into a durable wrong answer.
 
-Scope: validator capture at open (`ETag`, else `Last-Modified` plus size);
-`If-Range` on every subsequent range request; detection and typed reporting of
-mid-read asset change as `AssetChanged`; identity classification as `Stable`,
-`Unstable`, or `Unavailable`; and exposure of that classification to consumers
-through the resolver's asset-info surface, so a consumer can decide whether its
-own generated-cache reuse is safe.
+Scope: identity classification as `Stable`, `Unstable`, or `Unavailable`
+exposed to consumers through the resolver's asset-info surface, so a consumer
+can decide whether its own generated-cache reuse is safe; the rule that
+persistent reuse is admitted only for a strong validator, per §7.2 of the
+[asset reader contract](../architecture/ASSET_READER.md); optional on-disk
+cache persistence keyed on the same `CacheKey`, never on the URL alone; and the
+cross-stage reuse rules that follow.
 
-Optional on-disk cache persistence lands here or is deferred, keyed on the
-validator, never on the URL alone.
+Out of scope: content-addressed identity and cross-stage cache sharing beyond
+those rules.
 
-Out of scope: content-addressed identity and cross-stage cache sharing.
-
-Exit criteria: a test that mutates the fixture mid-read produces `AssetChanged`
-and never mixed bytes; a cached entry from revision A never serves a read of
-revision B at the same URL; the identity classification matches what the first
-consumer's contract expects.
+Exit criteria: the identity classification matches what the first consumer's
+contract expects; a weak or absent validator never produces a persistent entry;
+a persisted entry from revision A never serves a read of revision B; deleting
+the cache directory costs time and never correctness.
 
 ### `v0.5.0` — first consumer integration
 
@@ -192,10 +231,10 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | Phase | Scope | Status | Notes |
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | In progress | OpenStrata project initialized; architecture contracts written before implementation |
-| 1 | Read contract, diagnostics, metrics, local backend | Planned for `v0.1.0` | The boundary suite defined here is what every backend is held to |
-| 2 | HTTP backend and resolver bundle | Planned for `v0.2.0` | Includes the HTTP client dependency decision |
-| 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed |
-| 4 | Validators, consistency, identity classification | Planned for `v0.4.0` | Prerequisite for any persistent cache |
+| 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Planned for `v0.1.0` | The suite is the deliverable; the local backend is what proves it satisfiable |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | Planned for `v0.2.0` | Includes the HTTP client dependency decision |
+| 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
+| 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
 | 6 | Configuration, auth seam, formation composition, packaging | Planned for `v0.6.0` | Seams only, no providers |
 | 7 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
@@ -206,20 +245,25 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 
 | Workstream | Scope | Phases | Status |
 | --- | --- | --- | --- |
-| W1 | Read contract, metadata, typed diagnostics, metrics | 1 | Planned |
+| W1 | Read contract, metadata, validator value types, typed diagnostics, metrics | 1 | Planned |
 | W2 | Local backend and the shared boundary suite | 1 | Planned |
 | W3 | HTTP transport, redirects, timeouts, retry | 2 | Planned |
 | W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Planned |
 | W5 | Hostile-server fixture corpus | 2 | Planned |
-| W6 | Block cache, coalescing, single-flight, eviction | 3 | Planned |
-| W7 | Validators, `If-Range`, `AssetChanged`, identity classes | 4 | Planned |
-| W8 | Consumer integration and amplification baselines | 5 | Planned |
-| W9 | Configuration, auth seam, packaging, formation composition | 6 | Planned |
-| W10 | Async, prefetch, Wasm research | Parallel | No release gate |
+| W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Planned |
+| W7 | Block cache, coalescing, single-flight, eviction | 3 | Planned |
+| W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Planned |
+| W9 | Consumer integration and amplification baselines | 5 | Planned |
+| W10 | Configuration, auth seam, packaging, formation composition | 6 | Planned |
+| W11 | Async, prefetch, Wasm research | Parallel | No release gate |
 
 W1 and W2 exist to make W3 cheap and verifiable. The order is not negotiable:
 an HTTP backend written before the boundary suite is an HTTP backend whose bugs
 are indistinguishable from server behavior.
+
+W6 is deliberately in phase 2 rather than alongside W8. It is the part of
+validator work that a range backend cannot ship without; W8 is the part that
+only matters once identity is handed to somebody else.
 
 ## Documents
 
@@ -235,6 +279,7 @@ Related documents outside this directory:
 - [Cache contract](../architecture/CACHE.md)
 - [Diagnostics contract](../architecture/DIAGNOSTICS.md)
 - [Metrics contract](../architecture/METRICS.md)
+- [Boundary suite contract](../contributing/BOUNDARY_SUITE.md)
 - [Capability matrix](../reference/CAPABILITY_MATRIX.md)
 - [OpenUSD compatibility](../compatibility/OPENUSD.md)
 - [ADR-0001: consumer interface](../adr/0001-consumer-interface.md)

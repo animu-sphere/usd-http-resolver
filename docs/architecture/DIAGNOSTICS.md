@@ -3,7 +3,14 @@
 This document defines the typed error vocabulary shared by every module, and
 its projection onto the stable `HTTPxxx` codes the plugin bundle emits.
 
-Status: planned for `v0.1.0`. Nothing here is implemented.
+Status: the vocabulary is defined in `v0.1.0`; the `HTTPxxx` projection and the
+transport codes populate in `v0.2.0`. Nothing here is implemented.
+
+`AssetChanged` is emitted from `v0.2.0`, with the first HTTP backend, and not
+later. It is not a cache diagnostic: a range reader can compose two revisions
+into one byte sequence with no cache present at all, which is why validator
+capture ships with the backend that can violate the guarantee. See §2.1 of
+[ASSET_READER.md](ASSET_READER.md).
 
 ## 1. Principle
 
@@ -84,9 +91,13 @@ important distinction in this document.
 
 A server that ignores `Range` and returns `200` with a full body is not
 malformed — it is a server that does not do what this project requires. It gets
-its own code so that a caller can present a comprehensible message and so that
-the fallback policy has something to key on. See
-[ADR-0002](../adr/0002-range-unsupported-policy.md), which is open.
+its own code so that a caller can present a comprehensible message that names
+the server as the cause.
+
+In `v0.2.0` this code is terminal: the read fails and no whole-asset fallback
+is attempted, per [ADR-0002](../adr/0002-range-unsupported-policy.md). The code
+is also what a later bounded fallback would key on, which is why it is distinct
+even while only one policy exists.
 
 ### 4.3 `AssetChanged` is not a read error
 
@@ -119,10 +130,12 @@ diagnostics. The mapping is one-way and total:
 | `InvalidArgument` | `HTTP009` | coding error | overflowing offset and size |
 | `Unsupported` | `HTTP010` | error | write, or an unimplemented backend operation |
 | retry occurred | `HTTP101` | warning | a request succeeded after N retries |
-| range unsupported, full-download fallback | `HTTP102` | warning | reserved for ADR-0002 |
+| range unsupported, full-download fallback | `HTTP102` | warning | allocated, never emitted in v0.x; reserved for the deferred bounded fallback |
 
 Codes are allocated in this table. A new code is added here before it is
-emitted.
+emitted. `HTTP102` is the one entry that is allocated without a corresponding
+behavior: the fallback it describes is deferred by ADR-0002, and holding the
+number keeps a later feature from renumbering the ones around it.
 
 ## 6. Message form
 

@@ -106,6 +106,7 @@ it links to it. The normative sources are:
 | Block cache, coalescing, cache identity | [CACHE.md](../architecture/CACHE.md) |
 | Typed errors and `HTTPxxx` codes | [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md) |
 | Counters and baselines | [METRICS.md](../architecture/METRICS.md) |
+| The shared correctness suite every backend passes | [BOUNDARY_SUITE.md](BOUNDARY_SUITE.md) |
 | Configuration | [CONFIGURATION.md](../reference/CONFIGURATION.md) |
 | What is implemented today | [CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md) |
 

@@ -1,11 +1,12 @@
 # Building
 
 This repository is an OpenStrata project. It builds either through `ost`, which
-resolves and composes a certified OpenUSD runtime, or through plain CMake
-against an OpenUSD installation you supply.
+resolves and composes a certified OpenUSD runtime, or through plain CMake — and,
+for everything under `libs/`, with no OpenUSD at all.
 
-Status: there is nothing to build yet — no libraries and no bundles exist. This
-guide documents the workflow the first modules land into.
+Status: there is nothing to build yet — no libraries and no bundles exist. The
+root build graph, including the OpenUSD-free path, is in place and configures
+today. This guide documents the workflow the first modules land into.
 
 ## Requirements
 
@@ -44,8 +45,9 @@ about:
 
 ## Without `ost`
 
-The root is dual-mode: it resolves OpenUSD once and adds each bundle, so a
-plain CMake user can build everything.
+The root is libs-first. `libs/` is always built and never resolves OpenUSD; the
+plugin bundles are built only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`,
+which is the default, and OpenUSD is resolved only inside that branch.
 
 ```sh
 cmake -S . -B build -DCMAKE_PREFIX_PATH=<your-openusd-install>
@@ -53,19 +55,29 @@ cmake --build build
 ctest --test-dir build
 ```
 
-## Building the libraries without OpenUSD
+## Building the core without OpenUSD
 
-Everything under `libs/` builds with no OpenUSD at all, and this is the normal
-way to work on the read contract, the backends, and the cache:
+This is the normal way to work on the read contract, the backends, the cache,
+and the boundary suite. It requires no OpenUSD installation:
 
 ```sh
-cmake -S libs -B build-core
+cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF
 cmake --build build-core
 ctest --test-dir build-core
 ```
 
-If this stops working, a `libs/` module has acquired an OpenUSD dependency,
-which the [workspace contract](../architecture/WORKSPACE.md) forbids.
+or, equivalently, through the preset:
+
+```sh
+cmake --preset core
+cmake --build --preset core
+ctest --preset core
+```
+
+This path is a contract, not a convenience — it is invariant 2 of the
+[workspace contract](../architecture/WORKSPACE.md). If it stops working, a
+`libs/` module has acquired an OpenUSD dependency, and the failure is the point:
+the boundary is checked by the build rather than by review.
 
 ## Tests and the fixture server
 
@@ -76,12 +88,15 @@ it on every platform without a hosting dependency.
 Sanitizer builds are part of the contract rather than an optional extra: the
 concurrency properties in §7 of the
 [design policy](../design/DESIGN_POLICY.md) are only actually verified under
-ThreadSanitizer.
+ThreadSanitizer. They run over the core path, so they need no USD runtime — see
+the [boundary suite contract](../contributing/BOUNDARY_SUITE.md).
 
 ```sh
-cmake -S libs -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+cmake -S . -B build-asan -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF \
+      -DCMAKE_BUILD_TYPE=Debug \
       -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
-cmake -S libs -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+cmake -S . -B build-tsan -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF \
+      -DCMAKE_BUILD_TYPE=Debug \
       -DCMAKE_CXX_FLAGS="-fsanitize=thread"
 ```
 

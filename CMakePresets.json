@@ -5,15 +5,31 @@
         {
             "name": "default",
             "displayName": "Plain CMake build (no ost)",
-            "description": "Build the whole repo without ost. Point CMAKE_PREFIX_PATH at your OpenUSD install, or pass -DCMAKE_PREFIX_PATH=<path> on the command line. `ost configure` instead writes per-target presets into the tool-owned CMakeUserPresets.json.",
+            "description": "Build the whole repo without ost, including the ArResolver bundle. Point CMAKE_PREFIX_PATH at your OpenUSD install, or pass -DCMAKE_PREFIX_PATH=<path> on the command line. `ost configure` instead writes per-target presets into the tool-owned CMakeUserPresets.json.",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "core",
+            "displayName": "Core libraries only (no OpenUSD)",
+            "description": "Build and test everything under libs/ with no OpenUSD installation present. This is the normal way to work on the read contract, the backends, the cache, and the shared boundary suite; if it stops working, a libs/ module has acquired an OpenUSD dependency.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/core",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "USD_HTTP_RESOLVER_BUILD_PLUGIN": "OFF"
+            }
         }
     ],
     "buildPresets": [
-        { "name": "default", "configurePreset": "default" }
+        { "name": "default", "configurePreset": "default" },
+        { "name": "core", "configurePreset": "core" }
+    ],
+    "testPresets": [
+        { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
+        { "name": "core", "configurePreset": "core", "output": { "outputOnFailure": true } }
     ]
 }

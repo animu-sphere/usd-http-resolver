@@ -56,13 +56,27 @@ implementation, which is deliberate: the boundary is the product, and it is
 cheaper to fix here than in five consumers.
 
 The properties to establish, in order, are in the
-[roadmap](../roadmap/README.md). The properties to preserve from the first
-commit are:
+[roadmap](../roadmap/README.md). The invariants to preserve from the first
+commit, through every reordering of that roadmap, are:
 
-- Consumers see only OpenUSD abstractions. No consumer links this repository.
-- Backends are interchangeable behind one internal read contract.
-- Correctness is defined against the local backend, not against a server.
-- Every byte that crosses the network is counted and attributable.
+1. `usdAssetIo` does not know OpenUSD exists.
+2. A backend does not know another backend exists.
+3. The cache does not know a transport exists.
+4. A consumer does not know the internal `AssetReader` API exists.
+5. No build-time dependency exists between a consumer and this repository, in
+   either direction.
+6. Remote correctness is proven by comparison against the local backend.
+7. No asset format is parsed anywhere in this repository.
+8. No credential reaches a cache key, a diagnostic, a log, or a persisted
+   artifact.
+9. A whole-asset download is never a silent fallback.
+10. Correctness is implemented before optimization.
+11. A performance parameter is decided by measurement, not by choice.
+12. A new transport is evaluated first against the existing `AssetReader`
+    contract, and a transport that does not fit is a question about the
+    contract before it is a request for an exception.
+
+A change that violates one of these is a change to this document first.
 
 ## 3. Design Principles
 
@@ -172,12 +186,14 @@ one is split.
 A server may not honor `Range`. The resolver detects this from
 `Accept-Ranges` and from the actual response status, and reports it as a
 distinct, non-generic condition. Whether the fallback is a full download or a
-hard error is a policy decision, not an implementation accident. That policy is
-the subject of [ADR-0002](../adr/0002-range-unsupported-policy.md), which is
-open.
+hard error is a policy decision, not an implementation accident, and it is
+decided in [ADR-0002](../adr/0002-range-unsupported-policy.md): in `v0.2.0` a
+server without range support is a hard error, with no whole-asset fallback.
 
 Silently downloading a 10 GB asset because a header was missing is the specific
-failure that ADR exists to prevent.
+failure that ADR exists to prevent. Bounded fallback for small assets is a
+deferred feature with its own residency model, admitted on a demonstrated need
+and a new ADR — never as a quiet widening of the first HTTP release.
 
 ### 4.3 Authentication is an extension point, not a parameter
 
@@ -237,7 +253,8 @@ revisions produces corruption that looks like a decoder bug.
 
 The policy is:
 
-- An asset is bound to a validator at open time.
+- An asset is bound to a validator at open time, and one reader is bound to one
+  revision for its whole lifetime.
 - Every subsequent range read carries that validator (`If-Range`, or an
   equivalent for the transport).
 - A detected change is surfaced as a distinct `AssetChanged` condition. It is
@@ -247,9 +264,20 @@ The policy is:
   the supported editing model; in-place mutation is not a use case this project
   optimizes for.
 
-When a server supplies no usable validator, the asset is `Unvalidated`. Reads
-still work; the cache does not persist across opens, and consumers are told the
-identity is not stable so they can disable their own generated-cache reuse.
+This is an obligation of the first HTTP backend, not of the cache. A reader
+issuing three range requests without a validator can return a header from one
+revision and records from another, with every request succeeding and nothing to
+report — a corruption that appears at the format plugin as a malformed asset.
+Validator capture therefore ships in `v0.2.0`, alongside the first backend that
+can violate the guarantee. The mechanism is §2.1 and §7 of the
+[asset reader contract](../architecture/ASSET_READER.md).
+
+Validator strength is transport knowledge and stays in the backend. What
+crosses the boundary upward is one classification — `Stable`, `Unstable`, or
+`Unavailable` — which is what a consumer needs and all it may act on. When a
+server supplies no usable validator, reads still work, in-memory caching works
+for the reader's lifetime, nothing persists beyond it, and the consumer is told
+the identity is not stable so it can disable its own generated-cache reuse.
 
 ## 7. Concurrency
 
@@ -326,15 +354,25 @@ A remote server is untrusted input.
 
 ### 11.1 Local backend as oracle
 
-Every correctness property is expressed as an equivalence:
+Every correctness property is expressed as an equivalence, over the whole
+result rather than the bytes alone:
 
 ```text
-bytes(local backend, offset, size) == bytes(http backend, offset, size)
+local.Read(offset, size).bytes     == http.Read(offset, size).bytes
+local.Read(offset, size).bytesRead == http.Read(offset, size).bytesRead
+local.Read(offset, size).status    == http.Read(offset, size).status
 ```
 
 for all boundaries — start, end, block edges, past-EOF, zero-length, and
-oversized reads. A remote result that cannot be compared to a local result is
-not a test.
+oversized reads — plus property-generated cases biased toward those same
+boundaries. A remote result that cannot be compared to a local result is not a
+test.
+
+The shared suite that expresses this is the primary deliverable of `v0.1.0`,
+not a by-product of it, and its contract is
+[BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md). Every backend passes it
+unchanged; a backend that needs a case relaxed is either a defect in the read
+contract or is not admissible.
 
 ### 11.2 Server behavior corpus
 
@@ -352,7 +390,10 @@ of a large fixture transfers on the order of one block, not the asset.
 ### 11.4 Concurrency tests
 
 Parallel readers over the same asset, with sanitizers, asserting single-flight
-behavior on shared blocks.
+behavior on shared blocks. The core libraries are tested under
+AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer from
+`v0.1.0`; UBSan is named explicitly because offset and size arithmetic is where
+this project's overflow lives.
 
 ### 11.5 Cross-repository integration
 
@@ -422,6 +463,26 @@ fixture.
 - Format knowledge of any kind.
 - Async and prefetch APIs before synchronous reads are correct and measured.
 
+Not doing *yet*, and deliberately not designed until the `AssetReader` contract
+and the HTTP implementation have actually run:
+
+```text
+concrete authentication provider
+S3, package, and Wasm backend implementations
+async API and speculative prefetch
+persistent cache implementation
+bounded whole-asset fallback
+write and upload
+content-addressed storage
+generated USD caching
+```
+
+Each is a candidate, not a commitment, and each is admitted on the same test:
+whether it fits the existing contract. The failure mode to avoid is the
+inverted one — adding a backend-specific API because a backend does not fit.
+A backend that does not fit is evidence about the contract's generality, and it
+is investigated as that before it is accommodated.
+
 ## 16. Definition of Done
 
 A transport backend counts as supported only when all of the following hold:
@@ -438,11 +499,23 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Fix the read contract and diagnostic vocabulary in code, and implement the
-   local backend against them.
-2. Stand up the fixture server and the equivalence harness before writing the
+The boundary is settled. `v0.1.0` is not a stage for producing more
+documentation; it is the stage for producing a small, boring, reusable core and
+the suite that holds every later transport to it.
+
+1. Fix the read contract, the validator value types, and the diagnostic
+   vocabulary in code, and implement the local backend against them.
+2. Build the shared boundary suite — fixed cases, property generators,
+   sanitizer builds — as `v0.1.0`'s primary deliverable, per
+   [BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md).
+3. Stand up the fixture server and the equivalence harness before writing the
    HTTP backend, so the HTTP backend is written against a passing oracle.
-3. Choose the HTTP client dependency on license, footprint, and Wasm viability,
+4. Choose the HTTP client dependency on license, footprint, and Wasm viability,
    and record the decision as an ADR.
-4. Resolve [ADR-0002](../adr/0002-range-unsupported-policy.md) before the HTTP
-   backend ships, not after a user hits it.
+5. Ship validator capture, conditional range requests, and `AssetChanged` with
+   the first HTTP backend rather than after it. A range backend without
+   revision binding is not a correct range backend.
+
+Done and no longer pending: [ADR-0002](../adr/0002-range-unsupported-policy.md)
+is resolved — hard error in `v0.2.0` — and the root build graph is libs-first,
+so the core path builds and tests with no OpenUSD installation present.
