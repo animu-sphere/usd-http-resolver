@@ -3,8 +3,10 @@
 This document defines the typed error vocabulary shared by every module, and
 its projection onto the stable `HTTPxxx` codes the plugin bundle emits.
 
-Status: the vocabulary is defined in `v0.1.0`; the `HTTPxxx` projection and the
-transport codes populate in `v0.2.0`. Nothing here is implemented.
+Status: the vocabulary is implemented in `libs/usd-asset-io`
+(`usdAssetIo/Diagnostics.h`), and the local backend maps its failures onto it.
+The `HTTPxxx` projection in §5 and the transport codes populate in `v0.2.0` with
+the plugin bundle; nothing emits an `HTTPxxx` code today.
 
 `AssetChanged` is emitted from `v0.2.0`, with the first HTTP backend, and not
 later. It is not a cache diagnostic: a range reader can compose two revisions

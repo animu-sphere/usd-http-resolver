@@ -1,8 +1,35 @@
-# OpenStrata-generated build state and tool-owned presets.
+# --- OpenStrata / build state (tool-owned, never committed) ---
+#
+# Not root-anchored: `ost library build libs/<module>` writes its build tree and
+# its .strata target state beside the module it built, not at the repository
+# root, so an anchored pattern would leave those tracked.
 /build/
+**/build/
 /.strata/
+**/.strata/
 CMakeUserPresets.json
+strata.lock
 
-# Python bytecode.
+# --- CMake / MSVC generated ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+
+# --- Python cache ---
 __pycache__/
 *.pyc
+*.pyo
+
+# --- Editor / OS noise ---
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

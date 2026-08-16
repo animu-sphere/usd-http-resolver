@@ -8,19 +8,25 @@ Last updated: 2026-08-16, against `main`.
 
 ## Summary
 
-**No behavior is implemented.** The repository contains an OpenStrata project
-root and this documentation set. There is no resolver, no backend, no cache,
-and no plugin bundle.
+**The read contract, the local backend, and the shared boundary suite are
+implemented. No network code exists.**
 
-One thing beyond documentation is real: the root build graph is libs-first, and
-`-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` configures and tests without an OpenUSD
-installation present. There is nothing under `libs/` for it to build yet, but
-the path the first module lands into is in place rather than promised.
+`libs/usd-asset-io` fixes the `AssetReader` contract, the typed diagnostic
+vocabulary, the validator value types, and the metrics counters.
+`libs/usd-asset-local` implements all of it over a local file, including a
+filesystem-derived validator and `AssetChanged` on a mid-read republish.
+`tests/boundary` is the shared suite that admits every later backend, and the
+local backend passes it: the required boundary cases, biased property cases
+against an independent naive oracle, and the concurrency cases.
 
-A reader arriving from the design documents should read them as specifications
-written before their implementation, which is deliberate: the boundary is this
-project's product, and it is cheaper to settle in a document than across five
-consumer repositories.
+There is still no resolver, no HTTP, no cache, and no plugin bundle. The whole
+tree builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine
+with no OpenUSD installation present, which is the path `v0.1.0` is defined by.
+
+A reader arriving from the design documents should read the parts still marked
+*planned* as specifications written before their implementation, which is
+deliberate: the boundary is this project's product, and it is cheaper to settle
+in a document than across five consumer repositories.
 
 ## Status language
 
@@ -35,7 +41,7 @@ not planned                   explicitly out of scope
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Local file random access | planned (`v0.1.0`) | The correctness oracle; see [ASSET_READER.md](../architecture/ASSET_READER.md) |
+| Local file random access | implemented | `libs/usd-asset-local`; the correctness oracle. Positional reads, no lock, no network |
 | HTTP / HTTPS `GET` | planned (`v0.2.0`) | |
 | HTTP range requests | planned (`v0.2.0`) | Single ranges only |
 | Metadata request (`HEAD` or equivalent) | planned (`v0.2.0`) | Size, range support, validator |
@@ -69,10 +75,12 @@ not planned                   explicitly out of scope
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Validator capture and classification | planned (`v0.2.0`) | Kind and strength; `ETag`, else `Last-Modified` plus size |
+| Validator value types and stability classification | implemented | `libs/usd-asset-io`; `Stable` / `Unstable` / `Unavailable` derived once, at open |
+| Validator capture, local | implemented | Derived from device, file id, size, and mtime; declared strong, with the caveat in the [module README](../../libs/usd-asset-local/README.md) |
+| Validator capture, HTTP | planned (`v0.2.0`) | Kind and strength; `ETag`, else `Last-Modified` plus size |
 | Conditional range requests (`If-Range`) | planned (`v0.2.0`) | On every range request after open |
-| Revision binding, one reader to one revision | planned (`v0.2.0`) | A correctness property of range reads, not of the cache |
-| `AssetChanged` detection | planned (`v0.2.0`) | Never repaired silently, never rebound |
+| Revision binding, one reader to one revision | implemented for the local backend | A correctness property of range reads, not of the cache. The HTTP half lands in `v0.2.0` |
+| `AssetChanged` detection | implemented for the local backend | Re-derived after every transferring read; never repaired silently, never rebound |
 | In-memory block cache | planned (`v0.3.0`) | See [CACHE.md](../architecture/CACHE.md); validator-keyed from the start |
 | Request coalescing | planned (`v0.3.0`) | Measured gap and length thresholds |
 | Single-flight de-duplication | planned (`v0.3.0`) | Tested under ThreadSanitizer |
@@ -85,21 +93,25 @@ not planned                   explicitly out of scope
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Typed status vocabulary | planned (`v0.1.0`) | See [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md) |
+| Typed status vocabulary | implemented | `StatusCode`, `Severity`, `Status`; see [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md) |
+| Credential elision in messages and dumps | implemented | Query string and authority userinfo both removed, visibly |
 | `HTTPxxx` plugin codes | planned (`v0.2.0`) | Allocated in the diagnostics contract |
-| Per-asset I/O counters | planned (`v0.1.0`) | Definitions; populated per backend |
-| Cache counters | planned (`v0.3.0`) | Including `bytesOverFetched` |
-| Latency distributions | planned (`v0.2.0`) | p50 / p90 / p99 / max |
-| Recorded baselines | planned (`v0.2.0` onward) | A release changing I/O records one |
+| Per-asset I/O counters | implemented | Defined in `usdAssetIo`, populated by the local backend, folded into a process aggregate |
+| Cache counters | defined, not populated | Fields exist and stay at zero until `libs/usd-asset-cache` in `v0.3.0` |
+| Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
+| Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr |
+| Recorded baselines | planned (`v0.2.0` onward) | A release changing I/O records one; `v0.1.0` moves no bytes over a network |
 
 ## Testing and build
 
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Libs-first root, OpenUSD-optional | implemented | `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF`; the `core` CMake preset |
-| Shared boundary suite | planned (`v0.1.0`) | The release's primary deliverable; see [BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md) |
-| Property-based read tests | planned (`v0.1.0`) | Biased generators over `assetSize`, `offset`, `readSize` |
-| ASan / UBSan / TSan builds of `libs/` | planned (`v0.1.0`) | Required, not an optional lane |
+| Shared boundary suite | implemented | `tests/boundary`; parameterized over backends, one row per transport |
+| Property-based read tests | implemented | Biased generators over `assetSize`, `offset`, `readSize`, with shrinking and a reported seed |
+| Concurrency tests | implemented | Concurrent reads on one reader, and concurrent readers on one asset |
+| Local revision-change simulation | implemented | The suite rewrites the fixture underneath an open reader |
+| ASan / UBSan / TSan builds of `libs/` | implemented as build configuration | `USD_HTTP_RESOLVER_SANITIZER`, and the `core-asan` / `core-tsan` presets. Not yet run by a CI cell; see [implementation status](../roadmap/implementation-status.md) |
 | Hostile-server fixture corpus | planned (`v0.2.0`) | Additional to the boundary suite, not a substitute |
 | Mid-read revision-change tests | planned (`v0.2.0`) | Local backend and fixture server both simulate it |
 | Amplification baselines | planned (`v0.2.0` onward) | A release changing I/O records one |

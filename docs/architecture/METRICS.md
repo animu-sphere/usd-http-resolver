@@ -3,10 +3,13 @@
 This document defines the I/O counters that make the project's central claim
 checkable.
 
-Status: counter definitions land in `v0.1.0` and are populated by the local
-backend there; the HTTP counters populate in `v0.2.0`, including the requests
-issued by validator capture and by conditional range requests; the cache
-counters in `v0.3.0`. Nothing here is implemented.
+Status: the counters in §2.1 and §2.3, the derived ratios in §2.4, the per-reader
+lifetime and process aggregate in §3, and the environment-keyed dump in §5 are
+implemented in `libs/usd-asset-io` (`usdAssetIo/Metrics.h`) and populated by the
+local backend. The cache counters in §2.2 are defined and stay at zero until
+`v0.3.0`. The HTTP counters populate in `v0.2.0`, including the requests issued
+by validator capture and by conditional range requests. No baseline in §6 is
+recorded yet: `v0.1.0` moves no bytes over a network.
 
 ## 1. Why this is a contract and not a debug feature
 

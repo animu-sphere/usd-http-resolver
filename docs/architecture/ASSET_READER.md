@@ -11,6 +11,15 @@ Sections marked **Planned** are direction, not shipped behavior. What the tree
 implements today is in
 [CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md).
 
+Status: §1 through §7 are implemented. The types are in `libs/usd-asset-io`
+(`usdAssetIo/AssetReader.h`, `Validator.h`, `RangeMath.h`), the local backend in
+`libs/usd-asset-local` satisfies §3 and §4 at every boundary, and the suite in
+§5 is `tests/boundary`. The revision binding in §2.1 holds for the local backend
+today; its HTTP half — validator capture, `If-Range`, and the request-level
+obligations in that section's table — lands with the first HTTP backend in
+`v0.2.0`, which is the release that can first violate the guarantee. §8 is
+unimplemented by design.
+
 ## 1. Shape
 
 The contract is deliberately small. It is the narrowest surface that supports

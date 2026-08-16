@@ -6,6 +6,11 @@ tracks work.
 
 Last updated: 2026-08-16.
 
+Phase 1 is complete except for its CI cells. The read contract, the local
+backend, and the shared boundary suite are in the tree and passing; the
+sanitizer builds are configured but have not been run by any cell, which is
+tracked as a blocking item below.
+
 ## Phase 0 — scaffolding and contracts
 
 | Task | Status |
@@ -25,22 +30,31 @@ Last updated: 2026-08-16.
 | ADR-0001: consumer interface | Accepted |
 | ADR-0002: range-unsupported policy | Accepted — hard error in `v0.2.0` |
 | `openstrata.ci.yaml` and generated workflows | Outstanding |
-| `LICENSE`, `NOTICE`, `VERSION` | Outstanding |
-| Module README contract applied to real modules | Outstanding (no modules yet) |
+| `LICENSE`, `NOTICE`, `VERSION` | Done |
+| Module README contract applied to real modules | Done — both `libs/` modules |
+| OpenStrata plain-library descriptors for `libs/` modules | Done |
 
 ## Phase 1 — read contract, local backend, boundary suite (`v0.1.0`)
 
 | Task | Status |
 | --- | --- |
-| `libs/usd-asset-io`: `AssetReader`, `AssetMetadata`, `Status` | Outstanding |
-| Validator value types: `ValidatorKind`, `ValidatorStrength`, `Validator` | Outstanding |
-| Metrics counter definitions and per-reader storage | Outstanding |
-| `libs/usd-asset-local`: positional reads, size, derived validator | Outstanding |
-| Boundary suite, parameterized over backends | Outstanding |
-| Property tests with biased generators over size, offset, length | Outstanding |
-| ASan, UBSan, and TSan build and test cells for `libs/` | Outstanding |
-| Local revision-change simulation (rewrite underneath an open reader) | Outstanding |
-| Module READMEs for both libraries | Outstanding |
+| `libs/usd-asset-io`: `AssetReader`, `AssetMetadata`, `Status` | Done |
+| Validator value types: `ValidatorKind`, `ValidatorStrength`, `Validator` | Done |
+| Shared offset arithmetic (`ResolveReadRange`), so the EOF and overflow rules exist once | Done |
+| Metrics counter definitions and per-reader storage | Done |
+| Metrics process aggregate and `USD_HTTP_RESOLVER_METRICS_DUMP` | Done |
+| `libs/usd-asset-local`: positional reads, size, derived validator | Done |
+| Local `AssetChanged` on a republish underneath an open reader | Done |
+| Counters populated by the local backend | Done |
+| Boundary suite, parameterized over backends | Done — `tests/boundary`, one row per backend |
+| Independent naive oracle, sharing no code with `usdAssetLocal` | Done |
+| Property tests with biased generators over size, offset, length | Done — with shrinking and a reported seed |
+| Concurrency cases: many threads on one reader, many readers on one asset | Done |
+| Short-read-below-EOF case, via a provisioned misbehaving transport | Done |
+| Local revision-change simulation (rewrite underneath an open reader) | Done |
+| ASan, UBSan, and TSan **build configuration** for `libs/` | Done — `USD_HTTP_RESOLVER_SANITIZER`, `core-asan` and `core-tsan` presets |
+| ASan, UBSan, and TSan **test cells** actually run | Outstanding — needs the CI matrix below; see "Blocking items" |
+| Module READMEs for both libraries | Done |
 
 ## Phase 2 — HTTP backend, resolver bundle, revision binding (`v0.2.0`)
 
@@ -105,17 +119,34 @@ Last updated: 2026-08-16.
    footprint, and the Wasm research track, so it is decided on those grounds
    before features. It blocks `v0.2.0`, not `v0.1.0` — nothing in phase 1
    touches a network.
-2. **No CI matrix exists.** `openstrata.ci.yaml` is written before the first
-   bundle so that `v0.1.0` lands with cross-platform evidence rather than
-   acquiring it later. It must include a core cell that runs
-   `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` with no OpenUSD present, and the
-   sanitizer cells, since both are contract rather than optional lanes.
+2. **No CI matrix exists, so no sanitizer run has happened.** This is the one
+   `v0.1.0` exit criterion not met. The build configuration is in place —
+   `-DUSD_HTTP_RESOLVER_SANITIZER=address,undefined` and `=thread`, wired to the
+   `core-asan` and `core-tsan` presets — and it is a clang or GCC lane: MSVC
+   implements only `address`, and on MSVC 19.34 the instrumented binaries die at
+   startup with `STATUS_DLL_INIT_FAILED` before `main`, with the runtime both on
+   `PATH` and beside the executable. `openstrata.ci.yaml` must therefore include
+   a Linux cell that runs the sanitizer presets, alongside the core cell that
+   runs `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` with no OpenUSD present. Both are
+   contract rather than optional lanes.
+3. **`ost library build` cannot resolve a library-to-library edge on its own.**
+   `libs/usd-asset-local` declares `requires.libraries: [usdAssetIo]` and builds
+   through plain CMake, `ost library build libs/usd-asset-io`, and the root
+   tree; `ost library build libs/usd-asset-local` fails to find the
+   `usdAssetIo` package because nothing has installed it into a shared prefix
+   first. The same is reproducible in `usd-vrm-plugins`, so it is an `ost`
+   workflow question rather than a defect in these descriptors. It blocks
+   nothing in `v0.1.0` — the path the release is defined by is plain CMake —
+   and it is worth resolving before the bundle in `v0.2.0` consumes the closure.
 
 No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`.
 
 ## Next
 
-Phase 1, in this order: the read contract and validator value types, the local
-backend, then the boundary suite and its property and sanitizer cells. Nothing
-in it requires a network, an HTTP client decision, or OpenUSD — which is why it
-is the work that can start immediately.
+1. Write `openstrata.ci.yaml` with the core cell, the sanitizer cells, and the
+   Windows, Linux, and macOS arm64 rows, and generate the workflows from it.
+   Until it exists, `v0.1.0`'s sanitizer criterion is unmet, and everything else
+   in phase 1 is done.
+2. Then phase 2, which starts with the HTTP client decision and its ADR rather
+   than with code. The boundary suite the backend will be written against is
+   already passing, which is the whole point of having built it first.

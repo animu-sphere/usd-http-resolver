@@ -1,0 +1,18 @@
+# OpenStrata plain-library descriptor.
+#
+# usdAssetIo is a plain static CMake library and deliberately not a plugin
+# bundle: no plugInfo.json, no registration, no OpenUSD dependency
+# (docs/architecture/WORKSPACE.md §1). This descriptor gives it a workspace
+# identity, so that the plugins/http-resolver bundle can declare the edge as
+# `requires.libraries` in v0.2.0 and ost can build and install it into the
+# workspace prefix before configuring the bundle.
+schema: openstrata.library/v1alpha1
+library:
+  id: usdAssetIo
+  # Mirrors the repo-root VERSION file.
+  version: 0.1.0
+cmake:
+  # The find_package() name and the imported target consumers link against,
+  # per WORKSPACE.md §5.
+  package: usdAssetIo
+  target: usdasset::io
