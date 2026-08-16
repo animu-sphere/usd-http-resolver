@@ -23,10 +23,16 @@ Third-party components
 This release bundles no third-party source and links no third-party library.
 
 The core libraries under libs/ depend on the C++17 standard library and on
-platform system calls only. The HTTP client dependency that libs/usd-asset-http
-will own is chosen in v0.2.0, on license, footprint, and Wasm viability, and is
-recorded as an ADR at that time; see docs/design/DESIGN_POLICY.md §13. When it
-lands, its license obligations are recorded in this file.
+platform system calls only.
+
+The HTTP client dependency that libs/usd-asset-http will own has been chosen:
+libcurl (https://curl.se), under the curl license, an MIT/X11 derivative that
+places no constraint on redistribution of a plugin binary. The decision and its
+grounds are docs/adr/0003-http-client-dependency.md; the criteria it was made
+against are docs/design/DESIGN_POLICY.md §13. No libcurl code is bundled here
+and none is linked yet — it is acquired through find_package, and it arrives
+with the first libs/usd-asset-http commit in v0.2.0. Its copyright notice and
+license text are recorded in this file at that point.
 
 OpenUSD (https://openusd.org), which the plugin bundle under plugins/ links
 against from v0.2.0, is licensed under the Apache License, Version 2.0 with the

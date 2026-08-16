@@ -441,6 +441,14 @@ cannot build for the Wasm target is a strategic liability. The choice is
 recorded as an ADR when it is made, with the Wasm path considered at the time
 of choosing rather than after.
 
+It has been made: [ADR-0003](../adr/0003-http-client-dependency.md) selects
+libcurl, under the curl license, linked privately and statically by
+`usdAssetHttp` alone. No license criterion disqualified any serious candidate,
+and the Wasm criterion is the one this decision pays for: libcurl does not
+build for the Wasm target, and the answer is the reserved `usdAssetWasm`
+backend over `fetch` rather than a rebuild of the HTTP one. The ADR records
+that as an accepted cost.
+
 ## 14. Documentation
 
 Documented support matches implemented behavior exactly.
@@ -499,15 +507,12 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Choose the HTTP client dependency on license, footprint, and Wasm viability,
-   and record the decision as an ADR. This is a decision, not code, and it
-   precedes the backend.
-2. Stand up the fixture server before writing the HTTP backend, so the backend
+1. Stand up the fixture server before writing the HTTP backend, so the backend
    is written against a passing oracle rather than debugged against a server.
-3. Ship validator capture, conditional range requests, and `AssetChanged` with
+2. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
-4. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
+3. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
    It could not be written for `v0.1.0`: every `ost` cell pins and materializes
    an OpenUSD runtime, which the core lanes must not, and no cell can name a
    workspace that contains no bundle. The runtime-free lanes stay hand-authored
@@ -518,6 +523,9 @@ Done and no longer pending:
 
 - [ADR-0002](../adr/0002-range-unsupported-policy.md) is resolved — hard error
   in `v0.2.0`.
+- [ADR-0003](../adr/0003-http-client-dependency.md) is resolved — libcurl,
+  acquired through a private `find_package` and reached only through a narrow
+  internal transport seam. It was action 1 here, and it precedes the backend.
 - The sanitizer lanes run. ASan, UBSan, and TSan pass over the core path, in CI
   and locally, so the concurrency and overflow properties are verified rather
   than configured.

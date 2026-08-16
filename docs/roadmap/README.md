@@ -141,7 +141,12 @@ building it now would widen this release from "range reads are correct" to
 warning policy, a spill story, and its own metrics".
 
 The HTTP client dependency is chosen in this release, on license, footprint,
-and Wasm viability, and recorded as an ADR.
+and Wasm viability, and recorded as an ADR. It is decided:
+[ADR-0003](../adr/0003-http-client-dependency.md) selects libcurl, acquired
+through a private `find_package` and reached only through a narrow internal
+transport seam. libcurl does not build for Wasm; the reserved `usdAssetWasm`
+backend is the answer to that, and the ADR records it as a cost rather than a
+technicality.
 
 Out of scope: caching of any kind — every read is a request, deliberately, so
 that the request pattern is visible before it is optimized. Also out of scope:
@@ -247,14 +252,14 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
-| 2 | HTTP backend, resolver bundle, validator capture and revision binding | Planned for `v0.2.0` | Includes the HTTP client dependency decision |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The client dependency is decided — libcurl, ADR-0003 |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
 | 6 | Configuration, auth seam, formation composition, packaging | Planned for `v0.6.0` | Seams only, no providers |
 | 7 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
 | 8 | Additional transports | Deferred | S3, package-internal, content-addressed |
-| 9 | Wasm and browser composition | Research | Depends on the client dependency choice made in phase 2 |
+| 9 | Wasm and browser composition | Research | Constrained by ADR-0003: a `usdAssetWasm` backend over `fetch`, not a rebuild of `usdAssetHttp` |
 
 ## Workstreams
 
@@ -299,6 +304,7 @@ Related documents outside this directory:
 - [OpenUSD compatibility](../compatibility/OPENUSD.md)
 - [ADR-0001: consumer interface](../adr/0001-consumer-interface.md)
 - [ADR-0002: range-unsupported policy](../adr/0002-range-unsupported-policy.md)
+- [ADR-0003: HTTP client dependency](../adr/0003-http-client-dependency.md)
 
 ## Consumer order
 
