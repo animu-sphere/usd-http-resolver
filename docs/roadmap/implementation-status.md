@@ -6,10 +6,11 @@ tracks work.
 
 Last updated: 2026-08-16.
 
-Phases 0 and 1 are complete. The read contract, the local backend, and the
-shared boundary suite are in the tree and passing; the core lane builds and
-tests on Windows, Linux, and macOS arm64 with no OpenUSD present; and the
-sanitizer lanes run green. `v0.1.0` has no unmet exit criterion.
+Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
+local backend, and the shared boundary suite are in the tree and passing; the
+core lane builds and tests on Windows, Linux, and macOS arm64 with no OpenUSD
+present; and the sanitizer lanes run green. The release gate and what it found
+are in [the release record](../releases/v0.1.0.md). Work now moves to phase 2.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -58,6 +59,7 @@ sanitizer lanes run green. `v0.1.0` has no unmet exit criterion.
 | A UBSan report fails the run rather than printing | Done — `-fno-sanitize-recover=all`; it did not, before |
 | Core build and test on a machine with no OpenUSD, in CI | Done — the `core` job, three platforms, asserted from the configure log |
 | Module READMEs for both libraries | Done |
+| Release gate walked, record written, `v0.1.0` tagged | Done — [record](../releases/v0.1.0.md); gates 4, 6, and 9 not applicable before a transport exists, per [the gate](../releases/README.md) |
 
 ## Phase 2 — HTTP backend, resolver bundle, revision binding (`v0.2.0`)
 
@@ -149,12 +151,15 @@ longer blocking: the sanitizer runs, which now happen.
 
 ## Next
 
-1. Tag `v0.1.0`: finalize the changelog, write the release record, and confirm
-   the gate in [docs/releases/README.md](../releases/README.md). Every technical
-   criterion is met; what remains is the first green CI run on the pull request
-   that carries these lanes, which is gate 2's evidence.
-2. Then phase 2, which starts with the HTTP client decision and its ADR rather
-   than with code. The boundary suite the backend will be written against is
-   already passing, which is the whole point of having built it first.
+1. The HTTP client dependency decision, recorded as an ADR, on license,
+   footprint, and Wasm viability. Phase 2 starts with that rather than with
+   code; the boundary suite the backend will be written against is already
+   passing, which is the whole point of having built it first.
+2. Then `libs/usd-asset-http` against that suite unchanged, with validator
+   capture and `If-Range` from its first commit rather than after it — a range
+   reader without them can compose two revisions into one byte sequence with no
+   request failing.
 3. `openstrata.ci.yaml` lands within phase 2, once `plugins/http-resolver`
    exists to name, and never absorbs the two runtime-free lanes.
+4. `v0.2.0` is the first release that can record an I/O baseline, and the first
+   for which gates 4, 6, and 9 bind.

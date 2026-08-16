@@ -11,11 +11,18 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
-## Unreleased — `v0.1.0`
+## Unreleased
+
+Nothing has landed since `v0.1.0`. The next release is `v0.2.0`, which starts
+with the HTTP client dependency decision and its ADR rather than with code; the
+[roadmap](docs/roadmap/README.md) states the scope.
+
+## `v0.1.0` — 2026-08-16
 
 The release that decides whether the rest of the project is buildable. It ships
 no network code, and its centre of gravity is the test suite rather than the
-reader.
+reader. The immutable record, including the release gate and what it found, is
+[docs/releases/v0.1.0.md](docs/releases/v0.1.0.md).
 
 ### Added
 

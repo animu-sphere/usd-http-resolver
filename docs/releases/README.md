@@ -7,7 +7,9 @@ rewritten after publication.
 
 | Version | Date | Record |
 | --- | --- | --- |
-| — | — | No release yet. The planned sequence is in the [roadmap](../roadmap/README.md). |
+| [`v0.1.0`](v0.1.0.md) | 2026-08-16 | Read contract, local backend, and the shared boundary suite. No network code. |
+
+The rest of the planned sequence is in the [roadmap](../roadmap/README.md).
 
 Prepare the record in the release commit immediately before creating its tag.
 The tag pins the source commit and the record pins the release scope.
@@ -45,6 +47,28 @@ property it exists to provide, and no functional test would catch it.
 Gate 7 is checked mechanically, not by reading. A grep over test output,
 diagnostics, and the metrics dump for `Authorization`, `token`, `X-Amz-`,
 `Signature`, and `sig=` is part of the release run.
+
+## Gates before a transport exists
+
+Gates 4, 6, and 9 describe a release that moves bytes over a network or ships a
+package. `v0.1.0` does neither, and it is the only release planned that does
+neither. Rather than argue the point once per record, the rule is stated here:
+
+- **Gate 4** binds any release in which a backend can talk to a server. Until
+  one can, there is no corpus to pass and no fixture server to pass it against.
+- **Gate 6** follows [METRICS.md](../architecture/METRICS.md) §6, which binds a
+  release that *changes I/O behavior*. A release with no transport and no cache
+  changes none, and a scenario table whose rows measure requests, cache hits,
+  and selectivity cannot be filled in by a `pread`. A record claiming a baseline
+  it did not measure would be worse than one stating it had nothing to measure.
+- **Gate 9** binds any release that publishes a binary package. A source tag is
+  pinned by the tag.
+
+A record marks such a gate *not applicable* and says why in the same row. It
+never marks one *waived*, and it never marks one *pass* on the strength of an
+argument. From the first release that can meet a gate, that gate is binding
+forever after; a gate that stopped applying would be a change to this document,
+argued on its own.
 
 ## Record contents
 

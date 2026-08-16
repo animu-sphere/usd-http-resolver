@@ -29,7 +29,7 @@ index, and the chunks actually in view — not 10 GB.
 
 ## Status
 
-**`v0.1.0` in progress: the read contract, the local backend, and the shared
+**`v0.1.0` is released: the read contract, the local backend, and the shared
 boundary suite are in the tree and passing. No network code exists.**
 
 That ordering is the point. `v0.1.0` ships a local file reader, which is not
