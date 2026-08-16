@@ -29,13 +29,19 @@ index, and the chunks actually in view — not 10 GB.
 
 ## Status
 
-**Pre-implementation.** The repository contains the OpenStrata project root and
-a complete documentation set. There is no resolver, no backend, and no cache
-yet.
+**`v0.1.0` in progress: the read contract, the local backend, and the shared
+boundary suite are in the tree and passing. No network code exists.**
 
-The contracts were written first on purpose: this project's product is a
-boundary between repositories, and a boundary is cheaper to settle in a
-document than across five consumers. What the tree actually does is in
+That ordering is the point. `v0.1.0` ships a local file reader, which is not
+interesting; what is interesting is that it arrives with the harness that makes
+every later transport cheap to verify and impossible to fake. An HTTP backend
+written before that harness is an HTTP backend whose bugs are
+indistinguishable from server behavior.
+
+There is no resolver, no HTTP, no cache, and no plugin bundle. The contracts
+were written first on purpose: this project's product is a boundary between
+repositories, and a boundary is cheaper to settle in a document than across five
+consumers. What the tree actually does is in
 [docs/reference/CAPABILITY_MATRIX.md](docs/reference/CAPABILITY_MATRIX.md).
 
 ## Start here
@@ -91,14 +97,23 @@ it needs one, the abstraction leaked and the fix belongs here.
 
 ## Building
 
-Nothing to build yet — no modules exist. The build graph they land into does,
-and it is libs-first: everything under `libs/` builds and tests with no OpenUSD
-installation present, and OpenUSD is resolved only for the plugin bundle.
+The build graph is libs-first: everything under `libs/` and `tests/` builds and
+tests with no OpenUSD installation present, and OpenUSD is resolved only for the
+plugin bundle. This is the path `v0.1.0` is defined by, and it is the normal way
+to work on the read contract, the backends, and the boundary suite.
 
 ```sh
 cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF
 cmake --build build-core
 ctest --test-dir build-core
+```
+
+Under sanitizers, which are contract rather than an optional lane — clang or
+GCC, since MSVC implements only `address`:
+
+```sh
+cmake --preset core-asan && cmake --build build/core-asan && ctest --preset core-asan
+cmake --preset core-tsan && cmake --build build/core-tsan && ctest --preset core-tsan
 ```
 
 With `ost`, which resolves and composes a certified OpenUSD runtime:

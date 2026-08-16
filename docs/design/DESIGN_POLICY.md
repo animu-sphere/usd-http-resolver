@@ -49,9 +49,9 @@ possible later consequences of that abstraction, not inputs to it.
 
 ## 2. Current Assessment
 
-The repository contains OpenStrata project scaffolding and this documentation
-set. No resolver, no backend, and no cache is implemented. Everything under
-[architecture/](../architecture/) is a contract written before its
+The read contract, the local backend, and the shared boundary suite are
+implemented and passing. No resolver, no transport, and no cache is. The
+contracts under [architecture/](../architecture/) were written before their
 implementation, which is deliberate: the boundary is the product, and it is
 cheaper to fix here than in five consumers.
 
@@ -499,23 +499,27 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-The boundary is settled. `v0.1.0` is not a stage for producing more
-documentation; it is the stage for producing a small, boring, reusable core and
-the suite that holds every later transport to it.
-
-1. Fix the read contract, the validator value types, and the diagnostic
-   vocabulary in code, and implement the local backend against them.
-2. Build the shared boundary suite — fixed cases, property generators,
-   sanitizer builds — as `v0.1.0`'s primary deliverable, per
-   [BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md).
-3. Stand up the fixture server and the equivalence harness before writing the
-   HTTP backend, so the HTTP backend is written against a passing oracle.
-4. Choose the HTTP client dependency on license, footprint, and Wasm viability,
-   and record the decision as an ADR.
-5. Ship validator capture, conditional range requests, and `AssetChanged` with
+1. Write `openstrata.ci.yaml` and generate the workflows from it. It is the last
+   `v0.1.0` item: the sanitizer builds are configured and wired to presets, and
+   until a cell runs them the concurrency and overflow properties are configured
+   rather than verified.
+2. Choose the HTTP client dependency on license, footprint, and Wasm viability,
+   and record the decision as an ADR. This is a decision, not code, and it
+   precedes the backend.
+3. Stand up the fixture server before writing the HTTP backend, so the backend
+   is written against a passing oracle rather than debugged against a server.
+4. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
 
-Done and no longer pending: [ADR-0002](../adr/0002-range-unsupported-policy.md)
-is resolved — hard error in `v0.2.0` — and the root build graph is libs-first,
-so the core path builds and tests with no OpenUSD installation present.
+Done and no longer pending:
+
+- [ADR-0002](../adr/0002-range-unsupported-policy.md) is resolved — hard error
+  in `v0.2.0`.
+- The root build graph is libs-first, and the core path builds and tests with no
+  OpenUSD installation present.
+- The read contract, the validator value types, the diagnostic vocabulary, and
+  the metrics counters are fixed in code, and the local backend implements them.
+- The shared boundary suite exists, is parameterized over backends, and the
+  local backend passes it. The HTTP backend is now written against a passing
+  oracle, which is the whole reason this order was not negotiable.

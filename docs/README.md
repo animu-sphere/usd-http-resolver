@@ -9,7 +9,8 @@ the summary is a documentation bug. When a summary disagrees with
 [architecture/WORKSPACE.md](architecture/WORKSPACE.md) about structure, the
 workspace contract wins; structural changes must update that contract first.
 
-This repository is at `v0.1.0-dev`. No transport is implemented yet. What the
+This repository is at `v0.1.0-dev`. The read contract, the local backend, and
+the shared boundary suite are implemented; no network transport is. What the
 tree actually contains is stated in
 [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md); everything
 else here is contract and plan.

@@ -5,18 +5,17 @@ module identities, dependency directions, root responsibilities, artifact
 naming, and change invariants. A structural change that contradicts this
 document must change this document first.
 
-Status: nothing in §1 is implemented. The repository currently contains the
-OpenStrata project root and this documentation set. The table describes the
-ownership boundaries that the implementation is required to respect, not
-directories that exist today. A directory is created when its first tested
-capability exists; see the [roadmap](../roadmap/README.md).
+Status: `usdAssetIo` and `usdAssetLocal` exist and are tested; everything else
+in §1 is still a boundary the implementation is required to respect rather than
+a directory that exists. A directory is created when its first tested capability
+exists; see the [roadmap](../roadmap/README.md).
 
 ## 1. Components
 
 | Identity | Directory | Kind | Status | Responsibility |
 | --- | --- | --- | --- | --- |
-| `usdAssetIo` | `libs/usd-asset-io` | plain CMake/OpenStrata static library | planned (`v0.1.0`) | The transport-independent core: the `AssetReader` random-access contract, `AssetMetadata`, byte-range and validator value types, the typed diagnostic vocabulary, and the metrics counter definitions. Contains no transport, no cache, and no OpenUSD. |
-| `usdAssetLocal` | `libs/usd-asset-local` | plain CMake/OpenStrata static library | planned (`v0.1.0`) | The local-file backend: positional reads against a file handle, size discovery, and filesystem-derived validators. It is the correctness oracle every other backend is compared against. |
+| `usdAssetIo` | `libs/usd-asset-io` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The transport-independent core: the `AssetReader` random-access contract, `AssetMetadata`, byte-range and validator value types, the typed diagnostic vocabulary, and the metrics counter definitions. Contains no transport, no cache, and no OpenUSD. |
+| `usdAssetLocal` | `libs/usd-asset-local` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The local-file backend: positional reads against a file handle, size discovery, and filesystem-derived validators. It is the correctness oracle every other backend is compared against. |
 | `usdAssetHttp` | `libs/usd-asset-http` | plain CMake/OpenStrata static library | planned (`v0.2.0`) | The HTTP backend: range requests, metadata requests, redirects, timeouts, bounded retry, response framing validation, and validator extraction. Owns the third-party HTTP client dependency; it is the only module that may name one. |
 | `usdAssetCache` | `libs/usd-asset-cache` | plain CMake/OpenStrata static library | planned (`v0.3.0`) | Aligned block caching, read expansion, request coalescing, single-flight de-duplication, eviction under a memory budget, and cache statistics. It is a decorator over `AssetReader`, keyed by an opaque validator. |
 | `http-resolver` | `plugins/http-resolver` | OpenStrata plugin bundle (`usd-asset-resolver`) | planned (`v0.2.0`) | The OpenUSD `ArResolver` implementation: URI scheme registration for `http` and `https`, URI normalization, relative and anchored resolution, asset-info exposure, and the `ArAsset` adapter over `AssetReader`. It is the only module that includes an OpenUSD header. Owns its `HTTPxxx` diagnostic codes. |
@@ -38,6 +37,18 @@ usdAssetCache   -> usdAssetIo
 http-resolver   -> usdAssetIo, usdAssetCache, usdAssetLocal, usdAssetHttp
 http-resolver   -> OpenUSD (ar, tf, arch)
 ```
+
+The shared boundary suite is the one thing outside `libs/` that links a backend,
+and the direction is one-way:
+
+```text
+tests/boundary (usdAssetBoundary)  -> usdAssetIo
+tests/boundary/backends/*          -> usdAssetBoundary, and one backend each
+```
+
+The suite library itself must never link a backend. The moment it can name one
+it can special-case one, and a per-backend exception is how a contract stops
+being one. A backend is reached only from its own row executable.
 
 Reserved future directions:
 
@@ -133,6 +144,10 @@ plugins/http-resolver/src/ResolvedAsset.cpp
     ArAsset over AssetReader: Read(), GetSize(), buffer lifetime.
     No policy of its own.
 
+libs/usd-asset-local/src/*.cpp
+    The platform layer -- open, stat, positional read, close -- and the reader
+    over it. No caching, no URI handling, no OpenUSD.
+
 libs/usd-asset-http/src/*.cpp
     Request construction, response framing validation, retry, redirect,
     validator extraction. No caching, no ArAsset, no OpenUSD.
@@ -142,7 +157,14 @@ libs/usd-asset-cache/src/*.cpp
 
 libs/usd-asset-io/include/**
     Contracts only. Header-heavy by design; an implementation that belongs to
-    a backend must not appear here.
+    a backend must not appear here. The one thing here that is shared logic
+    rather than a value type is ResolveReadRange, and it is shared for the
+    reason it exists: the EOF boundary and the overflow check are where every
+    backend gets it wrong, and one copy is one place to be right.
+
+tests/boundary/src/**
+    The shared suite. Names no backend, and duplicates the read arithmetic in
+    its oracle on purpose.
 ```
 
 Read orchestration does not live in the plugin. The plugin normalizes a URI,
@@ -170,9 +192,11 @@ The bundle declares `kind: usd-asset-resolver` and
 | --- | --- |
 | `openstrata.toml` | Project identity, version, platform, and profile |
 | `openstrata.ci.yaml` | The CI support matrix; workflows are generated from it and never hand-edited |
-| `CMakeLists.txt` | Libs-first root: always adds `libs/`, resolves OpenUSD and adds bundles only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`, so a plain CMake user can build with or without `ost` and with or without OpenUSD |
-| `CMakePresets.json` | The `default` (whole repo) and `core` (libs only, no OpenUSD) configure, build, and test presets |
+| `CMakeLists.txt` | Libs-first root: always adds `libs/` and `tests/`, resolves OpenUSD and adds bundles only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`, so a plain CMake user can build with or without `ost` and with or without OpenUSD. Also owns `USD_HTTP_RESOLVER_SANITIZER`, because a sanitizer must cover the libraries and the suite that drives them with one switch |
+| `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |
+| `LICENSE`, `NOTICE` | Apache-2.0, and the third-party record the release gate checks |
+| `tests/` | Cross-module tests. Today the shared boundary suite, which belongs to no single backend |
 | `docs/` | Contracts, plans, and records |
 
 `openstrata.toml` gains a `[workspace] members` declaration once more than one

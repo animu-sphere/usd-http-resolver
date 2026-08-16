@@ -9,9 +9,13 @@ Wasm — is admitted by.
 This document fixes what the suite must contain and how a backend is entered
 into it.
 
-Status: the suite is specified here and implemented in `v0.1.0`. Nothing exists
-in the tree yet; see
-[CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md).
+Status: implemented in `tests/boundary`, with the local backend entered as its
+first row. The fixed cases in §3, the property cases in §4, and the concurrency
+cases pass; the sanitizer builds in §5 are configured and wired to CMake presets
+but are not yet run by a CI cell, which is the one part of this document the
+tree does not yet satisfy. See
+[CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md) and
+[tests/README.md](../../tests/README.md).
 
 ## 1. Why the suite is the product
 
@@ -151,6 +155,16 @@ either found a defect in the contract — in which case
 [ASSET_READER.md](../architecture/ASSET_READER.md) changes first, for every
 backend — or it is not admissible. A per-backend exception is how a contract
 stops being one.
+
+Fixture provisioning is asked for a *behavior*, not only a size. One case in §3
+needs a transport that misbehaves — the short read below EOF — and expressing
+that as a fixture characteristic is what keeps it an unconditional case rather
+than a fifth declaration a backend could decline. "An asset that short-reads"
+is something a backend must be able to make exist, in the same sense that "an
+asset of 65536 bytes" is: for a hostile server it is a truncated body, and for a
+local file it is an injected read fault. A backend that cannot produce the
+behavior has not finished implementing its transport's failure handling, and it
+cannot claim the case passes.
 
 ## 7. Relationship to other suites
 

@@ -102,6 +102,14 @@ written so that swapping the backend under test is a one-line change; the whole
 release builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a
 machine with no OpenUSD installed; counters are populated.
 
+Met today: the suite exists and the local backend passes it, entering a backend
+is a row rather than a suite, the OpenUSD-free path builds and tests, and the
+counters are populated. Not met: the sanitizer runs. Their build configuration
+is in place and wired to the `core-asan` and `core-tsan` presets, and no cell
+runs them, because `openstrata.ci.yaml` does not exist yet — which is why that
+file is the next thing written and not the HTTP backend. See
+[implementation status](implementation-status.md).
+
 ### `v0.2.0` — HTTP range reads, the resolver bundle, and revision binding
 
 The first release that touches a network, and the first that registers an
@@ -230,8 +238,8 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 
 | Phase | Scope | Status | Notes |
 | --- | --- | --- | --- |
-| 0 | Project scaffolding, boundary documentation, and contracts | In progress | OpenStrata project initialized; architecture contracts written before implementation |
-| 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Planned for `v0.1.0` | The suite is the deliverable; the local backend is what proves it satisfiable |
+| 0 | Project scaffolding, boundary documentation, and contracts | Complete except CI | `openstrata.ci.yaml` and its generated workflows are the remaining item |
+| 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete except sanitizer cells | The suite is in `tests/boundary` and the local backend passes it; the sanitizer builds are configured but not yet run by a cell |
 | 2 | HTTP backend, resolver bundle, validator capture and revision binding | Planned for `v0.2.0` | Includes the HTTP client dependency decision |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
@@ -245,8 +253,8 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 
 | Workstream | Scope | Phases | Status |
 | --- | --- | --- | --- |
-| W1 | Read contract, metadata, validator value types, typed diagnostics, metrics | 1 | Planned |
-| W2 | Local backend and the shared boundary suite | 1 | Planned |
+| W1 | Read contract, metadata, validator value types, typed diagnostics, metrics | 1 | Done |
+| W2 | Local backend and the shared boundary suite | 1 | Done |
 | W3 | HTTP transport, redirects, timeouts, retry | 2 | Planned |
 | W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Planned |
 | W5 | Hostile-server fixture corpus | 2 | Planned |

@@ -4,9 +4,10 @@ This repository is an OpenStrata project. It builds either through `ost`, which
 resolves and composes a certified OpenUSD runtime, or through plain CMake — and,
 for everything under `libs/`, with no OpenUSD at all.
 
-Status: there is nothing to build yet — no libraries and no bundles exist. The
-root build graph, including the OpenUSD-free path, is in place and configures
-today. This guide documents the workflow the first modules land into.
+Status: `libs/usd-asset-io`, `libs/usd-asset-local`, and the shared boundary
+suite in `tests/` build and test today. No bundle exists yet, so the `ost
+plugin` steps below are the workflow the first bundle lands into rather than
+something you can run.
 
 ## Requirements
 
@@ -25,13 +26,24 @@ The project targets platform `cy2026`, profile `usd`, per `openstrata.toml`.
 ost runtime pull cy2026 --profile usd     # or adopt one: --from-usd <path>
 ost doctor
 
-ost build                                  # libraries
-ost test
+ost library build libs/usd-asset-io        # one descriptor-owned library
+ost library test  libs/usd-asset-io
 
 ost plugin build http-resolver             # once the bundle exists
 ost plugin test  http-resolver
 ost plugin test --workspace --up-to 4
 ```
+
+Each `libs/` module carries an `openstrata.library.yaml`, so `ost` has a
+workspace identity for it and the bundle can declare the edge as
+`requires.libraries` in `v0.2.0`.
+
+One caveat today: `ost library build libs/usd-asset-local` fails to find the
+`usdAssetIo` package, because nothing has installed it into a shared prefix
+first and `ost` does not resolve a library-to-library edge on its own for this
+command. The plain CMake paths below build the same module without that step,
+and they are what `v0.1.0` is defined by. See the blocking items in
+[implementation status](../roadmap/implementation-status.md).
 
 `ost plugin test` runs the verification pyramid. The levels this project cares
 about:
@@ -79,26 +91,48 @@ This path is a contract, not a convenience — it is invariant 2 of the
 `libs/` module has acquired an OpenUSD dependency, and the failure is the point:
 the boundary is checked by the build rather than by review.
 
-## Tests and the fixture server
+## Tests
 
-The hostile-server corpus runs against a local fixture server started by the
-test harness. It requires no network access and no external service, so CI runs
-it on every platform without a hosting dependency.
+```sh
+ctest --test-dir build-core                       # everything
+ctest --test-dir build-core -R boundary_local     # the shared suite, one backend
+```
+
+The boundary suite registers three tests per backend — `fixed`, `property`, and
+`concurrent` — so a failure names which part of the read contract broke. How to
+run it, how to reproduce a property failure from its seed, and how to enter a
+new backend into it are in [tests/README.md](../../tests/README.md).
+
+The hostile-server corpus, which is additional to the boundary suite rather than
+a substitute for it, arrives with the HTTP backend in `v0.2.0`. It will run
+against a local fixture server started by the test harness, requiring no network
+access and no external service.
+
+## Sanitizers
 
 Sanitizer builds are part of the contract rather than an optional extra: the
 concurrency properties in §7 of the
 [design policy](../design/DESIGN_POLICY.md) are only actually verified under
-ThreadSanitizer. They run over the core path, so they need no USD runtime — see
-the [boundary suite contract](../contributing/BOUNDARY_SUITE.md).
+ThreadSanitizer, and asserting them in prose asserts nothing. They run over the
+core path, so they need no USD runtime — see the
+[boundary suite contract](../contributing/BOUNDARY_SUITE.md).
 
 ```sh
-cmake -S . -B build-asan -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
-cmake -S . -B build-tsan -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+cmake --preset core-asan     # -DUSD_HTTP_RESOLVER_SANITIZER=address,undefined
+cmake --build --preset core-asan
+ctest --preset core-asan
+
+cmake --preset core-tsan     # -DUSD_HTTP_RESOLVER_SANITIZER=thread
+cmake --build --preset core-tsan
+ctest --preset core-tsan
 ```
+
+Use clang or GCC. MSVC implements only `address`, and the root
+`CMakeLists.txt` fails the configure with a message rather than emitting flags
+that would be ignored into a green build that checked nothing. The MSVC
+AddressSanitizer branch is present but unverified: on MSVC 19.34 the
+instrumented binaries build and then exit with `STATUS_DLL_INIT_FAILED` before
+`main`, with the runtime both on `PATH` and beside the executable.
 
 ## CI
 
