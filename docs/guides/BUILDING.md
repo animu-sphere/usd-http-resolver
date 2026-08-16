@@ -86,6 +86,14 @@ cmake --build --preset core
 ctest --preset core
 ```
 
+On Windows, use `core-msvc` instead of `core` unless you are already in a Visual
+Studio developer command prompt. The `core` preset pins the Ninja generator,
+which needs `cl.exe` on `PATH` already; `core-msvc` sets the same cache
+variables through the Visual Studio generator, which finds the toolchain itself.
+The symptom of getting this wrong is `fatal error C1083: cannot open include
+file: 'atomic'` — a standard header, missing because the compiler was started
+without its environment. `core-msvc` is what the Windows CI cell runs.
+
 This path is a contract, not a convenience — it is invariant 2 of the
 [workspace contract](../architecture/WORKSPACE.md). If it stops working, a
 `libs/` module has acquired an OpenUSD dependency, and the failure is the point:
@@ -134,10 +142,32 @@ AddressSanitizer branch is present but unverified: on MSVC 19.34 the
 instrumented binaries build and then exit with `STATUS_DLL_INIT_FAILED` before
 `main`, with the runtime both on `PATH` and beside the executable.
 
+The sanitizer flags include `-fno-sanitize-recover=all`. Without it,
+UndefinedBehaviorSanitizer prints a violation and continues, the process exits
+`0`, and CTest reports a pass — a lane that reports nothing it finds. ASan
+already aborts and TSan already sets a non-zero exit code when it has reported,
+so the flag changes only the UBSan lane. `UBSAN_OPTIONS` and `TSAN_OPTIONS` are
+set by the test presets, so a local run uses what CI uses.
+
 ## CI
 
-The support matrix is `openstrata.ci.yaml`, and workflows are generated from
-it:
+Two workflows, with two different owners.
+
+`.github/workflows/core-ci.yml` is hand-authored and runs the lanes above: the
+core build and test on Windows, Linux, and macOS arm64 with no OpenUSD present,
+and `core-asan` and `core-tsan` on Linux. It is the `v0.1.0` exit criterion in
+executable form.
+
+It is hand-authored because no `ost` cell shape can express it: every cell must
+pin and materialize an OpenUSD runtime, which is the one thing this lane must
+not do, and a workspace cell's build step accepts no preset or cache variable,
+so the sanitizer lanes are unreachable from a matrix. The reasoning and the
+upstream asks are in
+[docs/reports/ost/01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+
+`openstrata.ci.yaml` arrives in `v0.2.0` with `plugins/http-resolver`, the first
+thing here a cell can name. From then on it is the support matrix and its
+workflows are generated:
 
 ```sh
 ost ci validate
@@ -146,4 +176,5 @@ ost ci generate github
 
 Never hand-edit the generated workflow YAML. A host package requirement is
 declared in `openstrata.ci.yaml` so regeneration re-renders it instead of
-dropping a hand-added step.
+dropping a hand-added step. `core-ci.yml` stays hand-authored and outside that
+rule, because it stays runtime-free.

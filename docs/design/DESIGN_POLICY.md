@@ -499,23 +499,28 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Write `openstrata.ci.yaml` and generate the workflows from it. It is the last
-   `v0.1.0` item: the sanitizer builds are configured and wired to presets, and
-   until a cell runs them the concurrency and overflow properties are configured
-   rather than verified.
-2. Choose the HTTP client dependency on license, footprint, and Wasm viability,
+1. Choose the HTTP client dependency on license, footprint, and Wasm viability,
    and record the decision as an ADR. This is a decision, not code, and it
    precedes the backend.
-3. Stand up the fixture server before writing the HTTP backend, so the backend
+2. Stand up the fixture server before writing the HTTP backend, so the backend
    is written against a passing oracle rather than debugged against a server.
-4. Ship validator capture, conditional range requests, and `AssetChanged` with
+3. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
+4. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
+   It could not be written for `v0.1.0`: every `ost` cell pins and materializes
+   an OpenUSD runtime, which the core lanes must not, and no cell can name a
+   workspace that contains no bundle. The runtime-free lanes stay hand-authored
+   in `.github/workflows/core-ci.yml` even then. See
+   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
 
 Done and no longer pending:
 
 - [ADR-0002](../adr/0002-range-unsupported-policy.md) is resolved — hard error
   in `v0.2.0`.
+- The sanitizer lanes run. ASan, UBSan, and TSan pass over the core path, in CI
+  and locally, so the concurrency and overflow properties are verified rather
+  than configured.
 - The root build graph is libs-first, and the core path builds and tests with no
   OpenUSD installation present.
 - The read contract, the validator value types, the diagnostic vocabulary, and

@@ -108,13 +108,19 @@ cmake --build build-core
 ctest --test-dir build-core
 ```
 
+On Windows, use `cmake --preset core-msvc` unless you are in a Visual Studio
+developer command prompt: the Ninja presets need `cl.exe` on `PATH` already.
+
 Under sanitizers, which are contract rather than an optional lane — clang or
 GCC, since MSVC implements only `address`:
 
 ```sh
-cmake --preset core-asan && cmake --build build/core-asan && ctest --preset core-asan
-cmake --preset core-tsan && cmake --build build/core-tsan && ctest --preset core-tsan
+cmake --preset core-asan && cmake --build --preset core-asan && ctest --preset core-asan
+cmake --preset core-tsan && cmake --build --preset core-tsan && ctest --preset core-tsan
 ```
+
+Both lanes, and the core build on Windows, Linux, and macOS arm64, run on every
+pull request in [`.github/workflows/core-ci.yml`](.github/workflows/core-ci.yml).
 
 With `ost`, which resolves and composes a certified OpenUSD runtime:
 

@@ -191,9 +191,10 @@ The bundle declares `kind: usd-asset-resolver` and
 | File | Owns |
 | --- | --- |
 | `openstrata.toml` | Project identity, version, platform, and profile |
-| `openstrata.ci.yaml` | The CI support matrix; workflows are generated from it and never hand-edited |
+| `.github/workflows/core-ci.yml` | The runtime-free lanes, hand-authored: the core build and test on three platforms with no OpenUSD present, and the sanitizer builds. No `ost` cell can express a lane that pins no runtime |
+| `openstrata.ci.yaml` | The CI support matrix, from `v0.2.0` and its first bundle; workflows are generated from it and never hand-edited |
 | `CMakeLists.txt` | Libs-first root: always adds `libs/` and `tests/`, resolves OpenUSD and adds bundles only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`, so a plain CMake user can build with or without `ost` and with or without OpenUSD. Also owns `USD_HTTP_RESOLVER_SANITIZER`, because a sanitizer must cover the libraries and the suite that drives them with one switch |
-| `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-asan`, and `core-tsan` configure, build, and test presets |
+| `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-msvc` (the same, through the Visual Studio generator), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |
 | `LICENSE`, `NOTICE` | Apache-2.0, and the third-party record the release gate checks |
 | `tests/` | Cross-module tests. Today the shared boundary suite, which belongs to no single backend |

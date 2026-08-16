@@ -86,7 +86,18 @@ if(USD_HTTP_RESOLVER_SANITIZER)
                 "usd-http-resolver: the MSVC AddressSanitizer lane is unverified; "
                 "run sanitizers under clang or GCC")
     else()
+        # -fno-sanitize-recover is not a hardening extra: without it the
+        # UndefinedBehaviorSanitizer lane is decorative. UBSan's default is to
+        # print the violation to stderr and *continue*, so a signed-overflow in
+        # the offset arithmetic this project exists to get right leaves the
+        # process exiting 0, CTest reporting a pass, and the report scrolling
+        # past in the log. Measured: an int overflow under
+        # `-fsanitize=address,undefined` exits 0; the same binary with this flag
+        # exits 1. ASan already aborts and TSan already sets a non-zero exit
+        # code when it has reported, so `=all` changes only the lane that needed
+        # it.
         add_compile_options(-fsanitize=${USD_HTTP_RESOLVER_SANITIZER}
+                            -fno-sanitize-recover=all
                             -fno-omit-frame-pointer -g)
         add_link_options(-fsanitize=${USD_HTTP_RESOLVER_SANITIZER})
     endif()

@@ -106,12 +106,15 @@ not planned                   explicitly out of scope
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Libs-first root, OpenUSD-optional | implemented | `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF`; the `core` CMake preset |
+| Libs-first root, OpenUSD-optional | implemented | `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF`; the `core` CMake preset, and `core-msvc` for the same build through the Visual Studio generator |
 | Shared boundary suite | implemented | `tests/boundary`; parameterized over backends, one row per transport |
 | Property-based read tests | implemented | Biased generators over `assetSize`, `offset`, `readSize`, with shrinking and a reported seed |
 | Concurrency tests | implemented | Concurrent reads on one reader, and concurrent readers on one asset |
 | Local revision-change simulation | implemented | The suite rewrites the fixture underneath an open reader |
-| ASan / UBSan / TSan builds of `libs/` | implemented as build configuration | `USD_HTTP_RESOLVER_SANITIZER`, and the `core-asan` / `core-tsan` presets. Not yet run by a CI cell; see [implementation status](../roadmap/implementation-status.md) |
+| ASan / UBSan / TSan builds of `libs/` | implemented | `USD_HTTP_RESOLVER_SANITIZER`, the `core-asan` / `core-tsan` presets, and the `sanitizers` job in `core-ci.yml`. Halting on a UBSan report is `-fno-sanitize-recover=all`; without it the lane reports and passes |
+| CI: core build and test, three platforms, no OpenUSD | implemented | `core-ci.yml`, `core` job: Windows, Linux, macOS arm64. Asserts from the configure log that `find_package(pxr)` was never reached |
+| CI: sanitizer cells | implemented | `core-ci.yml`, `sanitizers` job, Linux. A sanitizer is a property of the compiler, and MSVC implements only `address` — unverified at that |
+| CI: generated OpenStrata support matrix | planned (`v0.2.0`) | `openstrata.ci.yaml` needs a bundle to name; see [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md) |
 | Hostile-server fixture corpus | planned (`v0.2.0`) | Additional to the boundary suite, not a substitute |
 | Mid-read revision-change tests | planned (`v0.2.0`) | Local backend and fixture server both simulate it |
 | Amplification baselines | planned (`v0.2.0` onward) | A release changing I/O records one |

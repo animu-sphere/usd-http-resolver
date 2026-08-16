@@ -102,13 +102,18 @@ written so that swapping the backend under test is a one-line change; the whole
 release builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a
 machine with no OpenUSD installed; counters are populated.
 
-Met today: the suite exists and the local backend passes it, entering a backend
-is a row rather than a suite, the OpenUSD-free path builds and tests, and the
-counters are populated. Not met: the sanitizer runs. Their build configuration
-is in place and wired to the `core-asan` and `core-tsan` presets, and no cell
-runs them, because `openstrata.ci.yaml` does not exist yet — which is why that
-file is the next thing written and not the HTTP backend. See
-[implementation status](implementation-status.md).
+Met: the suite exists and the local backend passes it, entering a backend is a
+row rather than a suite, the OpenUSD-free path builds and tests on all three
+platforms, the counters are populated, and the sanitizer lanes run — ASan,
+UBSan, and TSan, green over the core path.
+
+The sanitizer cells are hand-authored in `.github/workflows/core-ci.yml` rather
+than generated from `openstrata.ci.yaml`, which does not exist yet and could
+not: every `ost` cell pins and materializes an OpenUSD runtime, and a lane whose
+contract is that it needs none must not. The matrix arrives in `v0.2.0` with the
+first bundle. See
+[report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md)
+and [implementation status](implementation-status.md).
 
 ### `v0.2.0` — HTTP range reads, the resolver bundle, and revision binding
 
@@ -238,8 +243,8 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 
 | Phase | Scope | Status | Notes |
 | --- | --- | --- | --- |
-| 0 | Project scaffolding, boundary documentation, and contracts | Complete except CI | `openstrata.ci.yaml` and its generated workflows are the remaining item |
-| 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete except sanitizer cells | The suite is in `tests/boundary` and the local backend passes it; the sanitizer builds are configured but not yet run by a cell |
+| 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
+| 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
 | 2 | HTTP backend, resolver bundle, validator capture and revision binding | Planned for `v0.2.0` | Includes the HTTP client dependency decision |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
