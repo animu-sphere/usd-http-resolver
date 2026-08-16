@@ -87,6 +87,20 @@ redirect *policy*, not server behavior, and it belongs in `usdAssetHttp`'s own
 tests against a synthetic `Location` — where it is a decision about a string,
 and needs no server at all.
 
+### Two rows have a floor
+
+`ContentRangeTooShort` and `ContentRangeShifted` both need room to be wrong in,
+and at the smallest sizes there is none. Half of one byte is nothing and
+`Content-Range` cannot describe an empty range, so a request for a single byte
+gets a correct response from the short-range fixture; a shift needs a second
+offset to move to, so an asset of fewer than two bytes cannot carry the shifted
+row at all. A request covering a whole representation *is* shifted — the window
+moves up one and clamps its end at EOF, losing a byte of length rather than
+describing bytes past the end — because a hostile row that quietly answers a
+whole class of requests correctly is a hole in the corpus rather than an edge
+case. Both floors are stated beside their enumerators in `Corpus.h` and pinned
+by the self-test, so they are properties rather than discoveries.
+
 ## The self-test is the point
 
 `tests/test_corpus.cpp` asserts, over a raw socket, that each behavior puts on
@@ -154,12 +168,32 @@ code the real lane rejects.
 
 ## Threading
 
-One thread accepts, one thread per connection. Two properties are contract:
+One thread accepts, one thread per connection. Three properties are contract,
+and each has a case in the self-test, because a threading property asserted in
+prose is asserted nowhere.
 
 - **Shutdown never hangs.** The accept loop polls rather than blocking, so
-  stopping does not require closing a descriptor another thread is inside; and
-  every deliberate stall waits on a condition variable that `Stop()` signals, so
-  a `SlowBody` handler cannot hold a test process open past the end of its case.
+  stopping does not require closing a descriptor another thread is inside; every
+  deliberate stall waits on a condition variable that `Stop()` signals, so a
+  `SlowBody` handler cannot hold a test process open past the end of its case;
+  and every write is abandoned when the stop flag is set.
+
+  That last clause is the one that had to be learned. A condition variable
+  reaches the stalls that are waiting on it and does not reach a handler sitting
+  in `send` on a client that stopped reading — and a client that asked for a
+  large asset, hit its own deadline, and walked away is not misbehaving in any
+  way the corpus forbids. Accepted sockets are therefore non-blocking, so that a
+  full window is a bounded wait this process can end rather than an unbounded
+  one only the client can. On Linux and macOS the case that pins this hangs
+  without the flag; Winsock is measured to buffer a whole 64 MiB response
+  without ever blocking, so that cell passes it for an unrelated reason.
+
+- **Finished connections are reaped as they finish.** The accept loop joins and
+  drops them; before it did, they accumulated until `Stop()` — one thread stack
+  per request, which is invisible in a passing test and gigabytes of address
+  space by the time the boundary suite has finished with one server.
+  `OpenConnections()` exists so the self-test can say so.
+
 - **Concurrent requests are correct.** The boundary suite runs concurrent
   readers over one asset under ThreadSanitizer, and every one of those cases
   will run against this server. A fixture server that were only correct

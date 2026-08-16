@@ -14,6 +14,7 @@
 #ifndef USDASSETFIXTURE_SOCKET_H
 #define USDASSETFIXTURE_SOCKET_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -52,6 +53,12 @@ NativeSocket Listen(unsigned short* portOut, std::string* errorOut);
 /// Waits up to `timeoutMs` for a connection. Returns `InvalidSocket()` with
 /// `*timedOut` set when nothing arrived, which is how the accept loop stays
 /// responsive to `Stop()` without another thread closing the listener.
+///
+/// The accepted peer is put in non-blocking mode. That is not an optimization:
+/// a blocking `send` to a client that has stopped reading waits for as long as
+/// the client likes, and nothing this process owns can end that wait. Every
+/// wait below is therefore bounded and retried, and `SendAll` gets a flag it can
+/// be told to give up on.
 NativeSocket AcceptWithTimeout(NativeSocket listener, int timeoutMs, bool* timedOut);
 
 NativeSocket Connect(unsigned short port, std::string* errorOut);
@@ -69,7 +76,17 @@ ReceiveState Receive(NativeSocket socket,
 /// Writes all of `size`, or returns false because the peer went away. A
 /// partial write is never reported as success: a fixture that half-sent a body
 /// it meant to send whole is a fixture defect, not a hostile case.
-bool SendAll(NativeSocket socket, const void* src, std::size_t size);
+///
+/// `abandon` is consulted every time the peer's window is full, and a set flag
+/// gives the write up. A client that has stopped reading blocks a write for as
+/// long as it pleases, and a condition variable does not reach a thread sitting
+/// in `send` -- so without this, shutting a server down while such a write is in
+/// flight is a hang, whatever the stalling behaviors were told. Null waits
+/// indefinitely, which is what a client that has only itself to answer to wants.
+bool SendAll(NativeSocket socket,
+             const void* src,
+             std::size_t size,
+             const std::atomic<bool>* abandon = nullptr);
 
 void Close(NativeSocket socket) noexcept;
 

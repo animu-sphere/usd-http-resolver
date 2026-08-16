@@ -17,6 +17,7 @@
 #else
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -107,9 +108,7 @@ void SuppressSigPipe(NativeSocket socket) noexcept {
 #endif
 }
 
-/// One readiness wait, on the platform's own poll. `WSAPoll` is only trusted
-/// here for `POLLIN`; its `POLLOUT` connect semantics are a known Windows
-/// defect and nothing in this file needs them.
+/// One readiness wait, on the platform's own poll.
 int PollReadable(NativeSocket socket, int timeoutMs) {
 #if defined(_WIN32)
     WSAPOLLFD entry{};
@@ -121,6 +120,45 @@ int PollReadable(NativeSocket socket, int timeoutMs) {
     entry.fd = socket;
     entry.events = POLLIN;
     return ::poll(&entry, 1, timeoutMs);
+#endif
+}
+
+/// The same wait, for room in the send buffer.
+///
+/// `WSAPoll`'s known defect is that it does not report a *failed connect* in
+/// `POLLOUT`, and this is deliberately not that call: the socket here is already
+/// connected and the question is only whether the peer has drained anything. A
+/// spurious wakeup costs one extra `send` that returns `WSAEWOULDBLOCK`, which
+/// the caller's loop already handles.
+int PollWritable(NativeSocket socket, int timeoutMs) {
+#if defined(_WIN32)
+    WSAPOLLFD entry{};
+    entry.fd = static_cast<SOCKET>(socket);
+    entry.events = POLLWRNORM;
+    return ::WSAPoll(&entry, 1, timeoutMs);
+#else
+    struct pollfd entry {};
+    entry.fd = socket;
+    entry.events = POLLOUT;
+    return ::poll(&entry, 1, timeoutMs);
+#endif
+}
+
+/// How long one wait for a writable peer lasts. The cadence the accept loop
+/// polls at, and for the same reason: it bounds how long a caller that has been
+/// told to stop keeps waiting on a client that stopped reading.
+constexpr int kSendWaitMs = 25;
+
+/// Puts a socket in non-blocking mode. Applied to accepted peers, so that a
+/// write to a client that stopped reading is a wait this process can end.
+/// `Receive` already polls before it reads, so nothing else changes shape.
+void SetNonBlocking(NativeSocket socket) noexcept {
+#if defined(_WIN32)
+    u_long mode = 1;
+    ::ioctlsocket(Sys(socket), FIONBIO, &mode);
+#else
+    const int flags = ::fcntl(Sys(socket), F_GETFL, 0);
+    if (flags >= 0) ::fcntl(Sys(socket), F_SETFL, flags | O_NONBLOCK);
 #endif
 }
 
@@ -236,7 +274,10 @@ NativeSocket AcceptWithTimeout(NativeSocket listener, int timeoutMs, bool* timed
 
     const NativeSocket peer =
         static_cast<NativeSocket>(::accept(Sys(listener), nullptr, nullptr));
-    if (IsValidSocket(peer)) SuppressSigPipe(peer);
+    if (IsValidSocket(peer)) {
+        SuppressSigPipe(peer);
+        SetNonBlocking(peer);
+    }
     return peer;
 }
 
@@ -298,11 +339,16 @@ ReceiveState Receive(NativeSocket socket,
     return ReceiveState::Error;
 }
 
-bool SendAll(NativeSocket socket, const void* src, std::size_t size) {
+bool SendAll(NativeSocket socket,
+             const void* src,
+             std::size_t size,
+             const std::atomic<bool>* abandon) {
     const char* cursor = static_cast<const char*>(src);
     std::size_t remaining = size;
 
     while (remaining > 0) {
+        if (abandon && abandon->load()) return false;
+
 #if defined(_WIN32)
         const int sent =
             ::send(Sys(socket), cursor, static_cast<int>(remaining), kSendFlags);
@@ -314,7 +360,14 @@ bool SendAll(NativeSocket socket, const void* src, std::size_t size) {
             remaining -= static_cast<std::size_t>(sent);
             continue;
         }
-        if (sent < 0 && WouldBlock(LastError())) continue;
+        if (sent < 0 && WouldBlock(LastError())) {
+            // The peer's window is full, or nothing was ready. Waiting in
+            // bounded steps rather than in one unbounded call is what lets the
+            // check at the top of this loop ever run again.
+            const int ready = PollWritable(socket, kSendWaitMs);
+            if (ready < 0 && !WouldBlock(LastError())) return false;
+            continue;
+        }
         return false;
     }
     return true;

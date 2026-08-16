@@ -93,14 +93,27 @@ public:
                    const std::vector<unsigned char>& content,
                    const std::string& etag);
 
+    /// Connection threads the server is still holding: the live ones, plus any
+    /// that have finished and not yet been reaped.
+    ///
+    /// Exposed because the alternative to asserting this is asserting nothing.
+    /// Connections that were joined only at `Stop()` cost one unreaped thread
+    /// stack per request, which is invisible in a passing test and gigabytes of
+    /// address space by the time the boundary suite has finished with one
+    /// server. The self-test is what keeps it from coming back.
+    std::size_t OpenConnections() const;
+
     /// Every request answered so far, in the order the server finished them.
     std::vector<RequestRecord> Log() const;
     std::size_t RequestCount() const;
     void ClearLog();
 
-    /// Stops accepting, wakes every stalled connection, and joins. Idempotent,
-    /// and called by the destructor. A stalled SlowBody connection must not be
-    /// able to hold a test process open past the end of its case.
+    /// Stops accepting, wakes every stalled connection, abandons every write in
+    /// flight, and joins. Idempotent, and called by the destructor. A stalled
+    /// SlowBody connection must not be able to hold a test process open past
+    /// the end of its case -- and neither must a client that asked for a large
+    /// asset and then stopped reading it, which is a stall on the *client's*
+    /// clock and reaches no condition variable this class owns.
     void Stop();
 
 private:

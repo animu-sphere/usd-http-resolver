@@ -56,11 +56,26 @@ enum class Behavior {
     /// against the request. This is the example in DIAGNOSTICS.md §6, and it is
     /// the case a backend that validates framing against itself will pass and a
     /// backend that validates against the request will catch.
+    ///
+    /// Half the requested length, rounded down, and never below one byte. A
+    /// request for a *single* byte therefore gets a correct response: shorter
+    /// than one byte is nothing, and `Content-Range` cannot describe an empty
+    /// range. A test that needs this row to fail must ask for at least two
+    /// bytes -- the limit is the header's grammar, not a choice the server
+    /// makes, and the self-test pins it so it is a stated property rather than
+    /// a surprise.
     ContentRangeTooShort,
 
     /// `206` whose `Content-Range` describes a range at a different offset.
     /// Detected by a different check than the row above -- start, not length --
     /// which is why it is a separate row.
+    ///
+    /// The window moves one byte toward zero where there is room below it, and
+    /// away from zero otherwise; a request covering the whole representation
+    /// has room in neither direction, so it moves up by one and its end clamps
+    /// to EOF, losing a byte of length rather than describing bytes past the
+    /// end. An asset of fewer than two bytes has no second offset to shift to
+    /// and cannot carry this row at all.
     ContentRangeShifted,
 
     /// `200` with neither `Content-Length` nor `Transfer-Encoding`, the body

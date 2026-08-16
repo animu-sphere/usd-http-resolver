@@ -6,8 +6,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
+#include <cstddef>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -83,7 +84,26 @@ std::string FormatEtag(const Knobs& knobs, const Revision& revision) {
 /// query parameter, so that a chain can be followed without the fixture
 /// depending on a backend preserving a query string -- which is a separate
 /// property, asserted separately.
-const char* kHopMarker = ".hop";
+constexpr char kHopMarker[] = ".hop";
+constexpr std::size_t kHopMarkerLength = sizeof(kHopMarker) - 1;
+
+/// Parses the `N` of a `.hopN` suffix. Digits only, and a bare `.hop` is not
+/// one: `atoi` reads both `.hop` and `.hopx` as hop zero, which turns a chain
+/// into a loop wearing a chain's name, and makes every path ending in the
+/// marker a second alias for an asset that never asked for one.
+///
+/// Four digits is more hops than any case will stage and keeps the accumulation
+/// clear of `int` overflow without arithmetic that needs its own argument.
+bool ParseHopIndex(const std::string& text, int* out) {
+    if (text.empty() || text.size() > 4) return false;
+    int value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') return false;
+        value = value * 10 + (c - '0');
+    }
+    *out = value;
+    return true;
+}
 
 }  // namespace
 
@@ -158,6 +178,11 @@ public:
         _log.clear();
     }
 
+    std::size_t OpenConnections() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+        return _connections.size();
+    }
+
     void Stop() {
         {
             // Under `_wakeMutex`, not merely before the notify. A stalling
@@ -168,17 +193,23 @@ public:
             std::lock_guard<std::mutex> lock(_wakeMutex);
             if (_stopping.exchange(true)) return;
         }
+        // Two mechanisms, because there are two ways to be stuck. This notify
+        // reaches the deliberate stalls, which are waiting on it. The flag set
+        // above reaches a handler inside `send` on a client that stopped
+        // reading, which is waiting on nothing this process owns -- no
+        // condition variable reaches that thread, and before `SendAll` was
+        // given the flag to check, `Stop()` waited on it forever.
         _wake.notify_all();
 
         if (_acceptor.joinable()) _acceptor.join();
 
-        std::vector<std::thread> connections;
+        std::vector<Connection> connections;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             connections.swap(_connections);
         }
         for (auto& connection : connections) {
-            if (connection.joinable()) connection.join();
+            if (connection.worker.joinable()) connection.worker.join();
         }
 
         detail::Close(_listener);
@@ -190,12 +221,28 @@ private:
 
     void AcceptLoop() {
         while (!_stopping.load()) {
+            {
+                // Here rather than in `Stop()`: a connection thread that has
+                // finished must be joined and forgotten while the server runs,
+                // or a long-lived fixture accumulates one unreaped stack per
+                // request. At the boundary suite's request counts that is
+                // gigabytes of address space for connections that ended
+                // seconds ago.
+                std::lock_guard<std::mutex> lock(_mutex);
+                ReapFinishedLocked();
+            }
+
             bool timedOut = false;
             const NativeSocket peer =
                 detail::AcceptWithTimeout(_listener, kAcceptPollMs, &timedOut);
             if (timedOut) continue;
             if (!detail::IsValidSocket(peer)) {
                 if (_stopping.load()) break;
+                // A persistent accept failure -- `EMFILE` is the realistic one
+                // -- leaves the listener readable and the accept failing, which
+                // is a spin at 100% of a core rather than a stall. Back off at
+                // the poll cadence, which `Stop()` still cuts short.
+                if (!Sleep(kAcceptPollMs)) break;
                 continue;
             }
             if (_stopping.load()) {
@@ -204,7 +251,32 @@ private:
             }
 
             std::lock_guard<std::mutex> lock(_mutex);
-            _connections.emplace_back([this, peer] { HandleConnection(peer); });
+            Connection connection;
+            connection.finished = std::make_shared<std::atomic<bool>>(false);
+            // The flag is set after `HandleConnection` returns and is the last
+            // thing the thread does, so a reaper that sees it set is joining a
+            // thread that is already on its way out.
+            auto finished = connection.finished;
+            connection.worker = std::thread([this, peer, finished] {
+                HandleConnection(peer);
+                finished->store(true);
+            });
+            _connections.push_back(std::move(connection));
+        }
+    }
+
+    /// Joins and drops every connection whose thread has finished. Called with
+    /// `_mutex` held; the threads it joins want nothing from that lock, having
+    /// already run to the end of their bodies.
+    void ReapFinishedLocked() {
+        for (std::size_t i = 0; i < _connections.size();) {
+            if (!_connections[i].finished->load()) {
+                ++i;
+                continue;
+            }
+            if (_connections[i].worker.joinable()) _connections[i].worker.join();
+            _connections.erase(_connections.begin() +
+                               static_cast<std::ptrdiff_t>(i));
         }
     }
 
@@ -295,14 +367,27 @@ private:
 
         auto found = _assets.find(assetPath);
         if (found == _assets.end()) {
+            // `/asset.hopN` is a RedirectChain's own alias, and every part of
+            // it has to be right before it routes anywhere. `found` assigned
+            // outside this guard is how `/normal.hop` came to serve `/normal`'s
+            // body under a path that is not `/normal` -- bumping its request
+            // counter on the way -- and how `/chain.hop` came to redirect to
+            // `/chain.hop.hop1` and then `404`.
             const std::size_t marker = path.rfind(kHopMarker);
-            if (marker != std::string::npos) {
+            int index = 0;
+            if (marker != std::string::npos &&
+                ParseHopIndex(path.substr(marker + kHopMarkerLength), &index)) {
                 const std::string base = path.substr(0, marker);
-                const std::string index = path.substr(marker + 4);
-                found = _assets.find(base);
-                if (found != _assets.end() && !index.empty()) {
+                const auto chain = _assets.find(base);
+                // The alias belongs to the chain alone. An ordinary asset does
+                // not acquire a second path by suffix, because a fixture
+                // reachable under a name nobody registered is a fixture a test
+                // cannot reason about.
+                if (chain != _assets.end() &&
+                    chain->second.knobs.behavior == Behavior::RedirectChain) {
+                    found = chain;
                     assetPath = base;
-                    hop = std::atoi(index.c_str());
+                    hop = index;
                 }
             }
         }
@@ -343,35 +428,46 @@ private:
 
     // --- dispatch -------------------------------------------------------------
 
+    /// Sends a bodyless response and logs the status that reached the wire.
+    ///
+    /// The order is the point. `Server.h` gives `0` the meaning "deliberately
+    /// never answered", and a status recorded before the send gives that
+    /// meaning away: a request the client abandoned would be logged with a
+    /// status no client could have seen, and a test asserting "never answered"
+    /// would be reading a status the server invented for itself.
+    bool Respond(NativeSocket peer,
+                 const Request& request,
+                 int status,
+                 const std::vector<std::pair<std::string, std::string>>& extra) {
+        const bool sent = WriteSimple(peer, status, extra);
+        Record(request, sent ? status : 0);
+        return sent;
+    }
+
     Disposition Dispatch(NativeSocket* peer, const Request& request) {
         if (request.method != "GET" && request.method != "HEAD") {
-            Record(request, 405);
-            return WriteSimple(*peer, 405, {}) ? Disposition::Close
-                                               : Disposition::Aborted;
+            return Respond(*peer, request, 405, {}) ? Disposition::Close
+                                                    : Disposition::Aborted;
         }
 
         const Plan plan = MakePlan(request.path);
         if (!plan.found) {
-            Record(request, 404);
-            return WriteSimple(*peer, 404, {}) ? Disposition::KeepAlive
-                                               : Disposition::Aborted;
+            return Respond(*peer, request, 404, {}) ? Disposition::KeepAlive
+                                                    : Disposition::Aborted;
         }
 
         switch (plan.knobs.behavior) {
             case Behavior::NotFound:
-                Record(request, 404);
-                return WriteSimple(*peer, 404, {}) ? Disposition::KeepAlive
-                                                   : Disposition::Aborted;
+                return Respond(*peer, request, 404, {}) ? Disposition::KeepAlive
+                                                        : Disposition::Aborted;
 
             case Behavior::AccessDenied:
-                Record(request, 403);
-                return WriteSimple(*peer, 403, {}) ? Disposition::KeepAlive
-                                                   : Disposition::Aborted;
+                return Respond(*peer, request, 403, {}) ? Disposition::KeepAlive
+                                                        : Disposition::Aborted;
 
             case Behavior::TransientServerError:
                 if (plan.requestIndex <= plan.knobs.transientFailures) {
-                    Record(request, 503);
-                    return WriteSimple(*peer, 503, {{"Retry-After", "0"}})
+                    return Respond(*peer, request, 503, {{"Retry-After", "0"}})
                                ? Disposition::KeepAlive
                                : Disposition::Aborted;
                 }
@@ -382,20 +478,18 @@ private:
                 Abort(peer);
                 return Disposition::Aborted;
 
-            case Behavior::RedirectLoop: {
-                Record(request, 302);
-                const bool sent =
-                    WriteSimple(*peer, 302, {{"Location", request.path}});
-                return sent ? Disposition::KeepAlive : Disposition::Aborted;
-            }
+            case Behavior::RedirectLoop:
+                return Respond(*peer, request, 302, {{"Location", request.path}})
+                           ? Disposition::KeepAlive
+                           : Disposition::Aborted;
 
             case Behavior::RedirectChain: {
                 if (plan.hop < plan.knobs.redirectHops) {
                     const std::string next = plan.assetPath + kHopMarker +
                                              std::to_string(plan.hop + 1);
-                    Record(request, 302);
-                    const bool sent = WriteSimple(*peer, 302, {{"Location", next}});
-                    return sent ? Disposition::KeepAlive : Disposition::Aborted;
+                    return Respond(*peer, request, 302, {{"Location", next}})
+                               ? Disposition::KeepAlive
+                               : Disposition::Aborted;
                 }
                 return ServeAsset(peer, request, plan, Behavior::Normal);
             }
@@ -465,9 +559,8 @@ private:
              parsed == RangeParse::Unsatisfiable);
 
         if (refuses) {
-            Record(request, 416);
-            const bool sent = WriteSimple(
-                *peer, 416,
+            const bool sent = Respond(
+                *peer, request, 416,
                 {{"Content-Range", "bytes */" + std::to_string(size)},
                  {"Accept-Ranges", "bytes"}});
             return sent ? Disposition::KeepAlive : Disposition::Aborted;
@@ -498,22 +591,48 @@ private:
             if (effective == Behavior::ContentRangeTooShort) {
                 // Serve, and honestly describe, less than was asked for. The
                 // response is self-consistent; only the request disagrees.
-                claimedLast = range.first + (range.Length() - 1) / 2;
-                bodyLength = claimedLast - claimedFirst + 1;
+                //
+                // Half, rounded down, but never below one byte: `Content-Range`
+                // has no way to describe an empty range, so a single-byte
+                // request has nothing shorter it could be answered with and is
+                // served correctly. That is a limit of the header's grammar
+                // rather than a choice made here, and Corpus.h states it beside
+                // the enumerator so that no test leans on the row for a range
+                // it cannot be hostile about.
+                const std::uint64_t shortened =
+                    range.Length() > 1 ? range.Length() / 2 : 1;
+                claimedLast = claimedFirst + shortened - 1;
+                bodyLength = shortened;
             } else if (effective == Behavior::ContentRangeShifted) {
-                // Same length, wrong place. Shifted toward zero when there is
-                // room below and away from it otherwise, so the case works at
-                // offset zero too.
-                const std::uint64_t shift = range.first > 0 ? 1 : 0;
-                if (shift > 0) {
+                // Wrong place. Shifted toward zero when there is room below and
+                // away from it otherwise -- and when the request already covers
+                // the whole representation there is room in neither direction,
+                // so the window moves up by one and its end clamps to EOF.
+                //
+                // That last branch is the one that matters. Without it,
+                // `bytes=0-255` over 256 bytes -- and `bytes=0-` and
+                // `bytes=-256`, which parse to the same range -- got a
+                // perfectly correct `bytes 0-255/256` back, and a row whose
+                // whole job is to be wrong answered a whole class of requests
+                // right. Clamping costs a byte of length; describing bytes past
+                // EOF instead would make the response internally inconsistent,
+                // which is a different row's defect.
+                if (range.first > 0) {
                     claimedFirst = range.first - 1;
                     claimedLast = range.last - 1;
-                    bodyFirst = claimedFirst;
                 } else if (range.last + 1 < size) {
                     claimedFirst = range.first + 1;
                     claimedLast = range.last + 1;
-                    bodyFirst = claimedFirst;
+                } else if (size > 1) {
+                    claimedFirst = 1;
+                    claimedLast = size - 1;
                 }
+                // No fourth branch: a shift needs somewhere to shift to, and an
+                // asset of fewer than two bytes has no second offset. The row
+                // cannot express itself there at all, and Corpus.h states that
+                // floor beside the enumerator.
+                bodyFirst = claimedFirst;
+                bodyLength = claimedLast - claimedFirst + 1;
             }
 
             headers.emplace_back("Content-Range",
@@ -535,12 +654,15 @@ private:
             headers.emplace_back("Connection", "close");
         }
 
-        Record(request, status);
-
+        // Logged once the status line is on the wire, and logged as `0` when it
+        // never got there. The body may still fail after this -- half the
+        // corpus is built on that -- but the status this record names is one a
+        // client did receive.
         const std::string head = detail::BuildHead(status, headers);
-        if (!detail::SendAll(*peer, head.data(), head.size())) {
-            return Disposition::Aborted;
-        }
+        const bool sentHead =
+            detail::SendAll(*peer, head.data(), head.size(), &_stopping);
+        Record(request, sentHead ? status : 0);
+        if (!sentHead) return Disposition::Aborted;
 
         if (request.method == "HEAD") {
             // A HEAD that announced a close-delimited body must still close,
@@ -577,18 +699,18 @@ private:
 
         if (effective == Behavior::SlowBody) {
             const std::uint64_t head = promised > 0 ? 1 : 0;
-            if (head > 0 && !detail::SendAll(*peer, body, head)) {
+            if (head > 0 && !detail::SendAll(*peer, body, head, &_stopping)) {
                 return Disposition::Aborted;
             }
             if (!Sleep(knobs.delayMs)) return Disposition::Aborted;
             if (promised > head &&
-                !detail::SendAll(*peer, body + head, promised - head)) {
+                !detail::SendAll(*peer, body + head, promised - head, &_stopping)) {
                 return Disposition::Aborted;
             }
             return Disposition::KeepAlive;
         }
 
-        if (deliver > 0 && !detail::SendAll(*peer, body, deliver)) {
+        if (deliver > 0 && !detail::SendAll(*peer, body, deliver, &_stopping)) {
             return Disposition::Aborted;
         }
 
@@ -610,10 +732,20 @@ private:
         std::vector<std::pair<std::string, std::string>> headers = extra;
         headers.emplace_back("Content-Length", "0");
         const std::string head = detail::BuildHead(status, headers);
-        return detail::SendAll(peer, head.data(), head.size());
+        return detail::SendAll(peer, head.data(), head.size(), &_stopping);
     }
 
     // --- state ----------------------------------------------------------------
+
+    /// One connection thread, and a flag it sets once it has nothing left to
+    /// touch. The flag is what lets the accept loop join a finished thread
+    /// without blocking on a live one -- and the shared pointer is what lets
+    /// the flag outlive the thread that sets it, whatever order the reap and
+    /// the exit happen in.
+    struct Connection {
+        std::thread worker;
+        std::shared_ptr<std::atomic<bool>> finished;
+    };
 
     detail::Platform _platform;
     NativeSocket _listener = detail::InvalidSocket();
@@ -626,7 +758,7 @@ private:
     mutable std::mutex _mutex;
     std::map<std::string, AssetState> _assets;
     std::vector<RequestRecord> _log;
-    std::vector<std::thread> _connections;
+    std::vector<Connection> _connections;
 
     std::mutex _wakeMutex;
     std::condition_variable _wake;
@@ -661,6 +793,8 @@ bool Server::Republish(const std::string& path,
                        const std::string& etag) {
     return _impl->Republish(path, content, etag);
 }
+
+std::size_t Server::OpenConnections() const { return _impl->OpenConnections(); }
 
 std::vector<RequestRecord> Server::Log() const { return _impl->Log(); }
 

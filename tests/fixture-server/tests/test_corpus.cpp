@@ -16,6 +16,7 @@
 // starts asserting the backend's interpretation, the two stop being independent.
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <set>
@@ -325,6 +326,28 @@ void TestContentRangeTooShort(Server& server,
     CHECK_EQ(response.Header("Content-Length"), std::string("32"));
     CHECK_EQ(response.end, ResponseEnd::Complete);
     CHECK(BodyEquals(response, content, 0, 32));
+
+    // Two bytes is the shortest request this row can be hostile about: one is
+    // half of two, and half of one is nothing.
+    const RawResponse pair =
+        FetchOnce(port, GetRequest("/short-range", {{"Range", "bytes=8-9"}}));
+    CHECK_STATUS(pair, 206);
+    CHECK_EQ(pair.Header("Content-Range"),
+             std::string("bytes 8-8/") + std::to_string(kSize));
+    CHECK_EQ(pair.Header("Content-Length"), std::string("1"));
+    CHECK(BodyEquals(pair, content, 8, 1));
+
+    // And a single-byte request is answered correctly, because `Content-Range`
+    // has no way to describe an empty range. Pinned here rather than left to be
+    // discovered: a backend test that leaned on this row for a one-byte read
+    // would otherwise be asserting against a server that was behaving.
+    const RawResponse single =
+        FetchOnce(port, GetRequest("/short-range", {{"Range", "bytes=8-8"}}));
+    CHECK_STATUS(single, 206);
+    CHECK_EQ(single.Header("Content-Range"),
+             std::string("bytes 8-8/") + std::to_string(kSize));
+    CHECK_EQ(single.Header("Content-Length"), std::string("1"));
+    CHECK(BodyEquals(single, content, 8, 1));
 }
 
 void TestContentRangeShifted(Server& server,
@@ -353,6 +376,30 @@ void TestContentRangeShifted(Server& server,
     CHECK_EQ(atZero.Header("Content-Range"),
              std::string("bytes 1-10/") + std::to_string(kSize));
     CHECK(BodyEquals(atZero, content, 1, 10));
+
+    // A range covering the whole representation has room in neither direction,
+    // and all three spellings of it parse to the same range. This is where the
+    // row used to stop being hostile: `bytes 0-255/256` came back, correct in
+    // every particular, from the fixture whose entire job is a wrong offset.
+    // The window now moves up by one and clamps at EOF.
+    const char* const whole[] = {"bytes=0-255", "bytes=0-", "bytes=-256"};
+    for (const char* spec : whole) {
+        const RawResponse all =
+            FetchOnce(port, GetRequest("/shifted-range", {{"Range", spec}}));
+        CHECK_STATUS(all, 206);
+        CHECK_EQ(all.Header("Content-Range"),
+                 std::string("bytes 1-255/") + std::to_string(kSize));
+        CHECK_EQ(all.Header("Content-Length"), std::string("255"));
+        CHECK(BodyEquals(all, content, 1, 255));
+    }
+
+    // Two bytes is the smallest asset with a second offset to shift to, and so
+    // the smallest one this row can be carried by at all.
+    const RawResponse tiny =
+        FetchOnce(port, GetRequest("/shifted-tiny", {{"Range", "bytes=0-1"}}));
+    CHECK_STATUS(tiny, 206);
+    CHECK_EQ(tiny.Header("Content-Range"), std::string("bytes 1-1/2"));
+    CHECK(BodyEquals(tiny, content, 1, 1));
 }
 
 void TestUnknownContentLength(Server& server,
@@ -466,6 +513,21 @@ void TestRedirectChain(Server& server, const std::vector<unsigned char>& content
         break;
     }
     CHECK_EQ(hops, 3);
+
+    // The `.hopN` suffix is the chain's own alias, and every part of it has to
+    // be right before it routes anywhere. A bare `.hop` names no hop, so it
+    // names no asset: it must not redirect to `/chain.hop.hop1` -- a chain that
+    // walks away from its own asset and then 404s -- and a suffix that is not a
+    // number must not be read as hop zero and start the chain over.
+    CHECK_STATUS(FetchOnce(port, GetRequest("/chain.hop")), 404);
+    CHECK_STATUS(FetchOnce(port, GetRequest("/chain.hopx")), 404);
+
+    // Nor does an ordinary asset acquire a second path by suffix. `/normal.hop`
+    // served `/normal`'s body under a name nobody registered, and counted the
+    // request against `/normal` while doing it, which is a request log a test
+    // cannot reason about.
+    CHECK_STATUS(FetchOnce(port, GetRequest("/normal.hop")), 404);
+    CHECK_STATUS(FetchOnce(port, GetRequest("/normal.hop1")), 404);
 }
 
 void TestRedirectLoop(Server& server) {
@@ -561,16 +623,33 @@ void TestConnectionResetMidBody(Server& server,
 
     const RawResponse response =
         FetchOnce(port, GetRequest("/reset-mid-body", {{"Range", "bytes=0-63"}}));
-    CHECK_STATUS(response, 206);
-    CHECK_EQ(response.Header("Content-Length"), std::string("64"));
 
-    // The RST may destroy bytes already in flight, so the count is bounded
-    // rather than fixed: what the case guarantees is that the promise was not
-    // kept, not exactly how far it got.
-    CHECK(response.body.size() < 64u);
+    // An RST destroys whatever is still sitting in the client's receive buffer,
+    // and how much that is depends on the platform and on when this thread last
+    // ran. Measured: Linux hands the reader the eight buffered body bytes
+    // before it reports the error, and Winsock discards them -- the same
+    // fixture, and `body.size()` is 8 on one cell and 0 on the other.
+    //
+    // The head survives on both, in every run of fifteen on Windows, because
+    // the reader has already copied it out before the reset lands. That is a
+    // race and not a guarantee: the headers, the eight bytes, and the RST leave
+    // the server microseconds apart, and a reader descheduled across that
+    // window loses all three together. So the framing is asserted only when it
+    // arrived, exactly as the sibling case above does, and what is asserted
+    // unconditionally is the one thing every platform promises -- that the
+    // promise was not kept.
     CHECK(response.end != ResponseEnd::Complete);
-    if (!response.body.empty()) {
-        CHECK(BodyEquals(response, content, 0, response.body.size()));
+
+    if (response.gotHead) {
+        CHECK_STATUS(response, 206);
+        CHECK_EQ(response.Header("Content-Length"), std::string("64"));
+        CHECK(response.body.size() < 64u);
+        if (!response.body.empty()) {
+            CHECK(BodyEquals(response, content, 0, response.body.size()));
+        }
+    } else {
+        CHECK(response.end == ResponseEnd::Reset ||
+              response.end == ResponseEnd::NoResponse);
     }
 }
 
@@ -755,6 +834,94 @@ void TestConcurrentRequests(Server& server,
     server.ClearLog();
 }
 
+void TestConnectionsAreReaped(Server& server) {
+    CaseScope scope("connections are reaped");
+    const unsigned short port = server.Port();
+
+    // A finished connection thread is joined by the accept loop, not held until
+    // Stop(). Held, the count is one unreaped stack per request -- a few
+    // hundred sequential requests are already gigabytes of reserved address
+    // space -- and the boundary suite will run far more than a few hundred
+    // against one server. Nothing about the responses changes, which is exactly
+    // why this needs asserting rather than eyeballing.
+    server.ClearLog();
+
+    constexpr int kRequests = 200;
+    int wrong = 0;
+    for (int i = 0; i < kRequests; ++i) {
+        const RawResponse response =
+            FetchOnce(port, GetRequest("/normal", {{"Range", "bytes=0-3"}}));
+        if (response.status != 206) ++wrong;
+    }
+    CHECK_EQ(wrong, 0);
+
+    // Reaping happens on the accept loop's own schedule, so the assertion is
+    // "settles quickly", not "is already zero". The bound is generous: what
+    // fails here is accumulation, and accumulation does not settle.
+    std::size_t open = server.OpenConnections();
+    for (int waited = 0; waited < 200 && open > 8; ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        open = server.OpenConnections();
+    }
+    CHECK(open <= 8);
+
+    server.ClearLog();
+}
+
+/// Its own server, because it stops one.
+void TestStopWithAStalledReader() {
+    CaseScope scope("stop with a stalled reader");
+
+    std::string error;
+    std::unique_ptr<Server> server = Server::Start(&error);
+    CHECK(server != nullptr);
+    if (!server) return;
+
+    // Far larger than a socket buffer with a bound on it, so that the handler
+    // is still inside the write when Stop() is called. On Linux that is
+    // measured to be what happens -- with the abandon flag removed this case
+    // does not fail, it hangs, and the process has to be killed.
+    //
+    // Windows is a different story and the size is not the reason. Winsock
+    // buffers the whole response however large it is: 64 MiB went out without a
+    // single `WSAEWOULDBLOCK`, so the handler never stalls there and this case
+    // passes for a reason unrelated to what it tests. Sixteen rather than
+    // sixty-four megabytes, then -- the larger figure buys nothing on the cell
+    // that cannot use it, and costs a copy of it on every run of every lane.
+    //
+    // One repeated byte rather than MakeContent's arithmetic, because nothing
+    // here reads the body.
+    AssetSpec spec;
+    spec.path = "/big";
+    spec.content.assign(16u * 1024u * 1024u, 0xa5u);
+    spec.etag = "\"big\"";
+    server->Serve(spec);
+
+    RawClient client(server->Port());
+    CHECK(client.Connected());
+    CHECK(client.Send(GetRequest("/big")));
+
+    // Long enough for the handler to reach the write and stick there. The
+    // assertion is about Stop() returning at all, so landing early costs
+    // nothing but a weaker version of the same check.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto started = std::chrono::steady_clock::now();
+    server->Stop();
+    const long elapsedMs = static_cast<long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+
+    // "Shutdown never hangs" is a contract in Server.h and in the README, and
+    // it was not true: the condition variable Stop() signals reaches the
+    // deliberate stalls and does not reach a thread sitting in `send` on a
+    // client that stopped reading. That client is not misbehaving in any way
+    // the corpus forbids -- it is what every reader that hits its own deadline
+    // and walks away looks like from here.
+    CHECK(elapsedMs < 5000);
+}
+
 // --- registration -------------------------------------------------------------
 
 void RegisterFixtures(Server& server, const std::vector<unsigned char>& content) {
@@ -837,6 +1004,13 @@ void RegisterFixtures(Server& server, const std::vector<unsigned char>& content)
         spec.content.assign(1, content[0]);
         server.Serve(spec);
     }
+    {
+        // The smallest asset ContentRangeShifted can be carried by: a shift
+        // needs a second offset to shift to.
+        AssetSpec spec = base("/shifted-tiny", Behavior::ContentRangeShifted);
+        spec.content.assign(content.begin(), content.begin() + 2);
+        server.Serve(spec);
+    }
 }
 
 /// The corpus claims to cover §11.2 of the design policy. This is what makes
@@ -892,7 +1066,11 @@ int main() {
     TestEmptyAsset(*server);
     TestSingleByteAsset(*server);
     TestConcurrentRequests(*server, content);
+    TestConnectionsAreReaped(*server);
     TestCoverage();
+
+    // Last, and against a server of its own: it is the one case that stops one.
+    TestStopWithAStalledReader();
 
     server->Stop();
     return usdassetfixturetest::Report("fixture_corpus");

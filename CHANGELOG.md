@@ -77,6 +77,43 @@ now done, in the order it fixed. Neither ships in the release.
   corpus that could name `StatusCode` would begin asserting the backend's
   interpretation, and a disagreement between the two would stop being evidence.
 
+### Fixed
+
+Eight defects in the fixture server, found by reviewing it before the backend
+started depending on it rather than after. None of them ships; all of them would
+have been debugged as backend bugs.
+
+- **`Stop()` hung on a client that stopped reading.** "Shutdown never hangs" was
+  contract in `Server.h` and in the README and was not true: the condition
+  variable `Stop()` signals reaches the deliberate stalls and does not reach a
+  handler sitting in `send`. Accepted sockets are now non-blocking and every
+  write is abandoned when the stop flag is set. The regression case hangs
+  without the fix on Linux; Winsock buffers a whole 64 MiB response without
+  blocking, so it proves nothing there and says so.
+- **Connection threads were joined only at `Stop()`**, one unreaped stack per
+  request. The accept loop now reaps as they finish, and `OpenConnections()`
+  exists so the self-test can say it does.
+- **`ContentRangeShifted` served a correct response** for any range covering the
+  whole asset — `bytes=0-255`, `bytes=0-`, and `bytes=-256` alike. The window
+  now moves up one and clamps at EOF.
+- **`ContentRangeTooShort` was a no-op for a single-byte range.** It still is,
+  because `Content-Range` cannot describe an empty range; the difference is that
+  the floor is now stated beside the enumerator and pinned by a case, instead of
+  being discovered by a backend test that leaned on it.
+- **The `.hopN` redirect alias routed on half a match.** `/chain.hop` redirected
+  to `/chain.hop.hop1` and then `404`ed, and `/normal.hop` served `/normal`'s
+  body under a name nobody registered while counting the request against it. The
+  suffix must now parse as digits and name a `RedirectChain` asset.
+- **The accept loop spun at 100% of a core** on a persistent accept failure —
+  reachable through the thread leak above. It backs off at the poll cadence.
+- **A request was logged with a status that never reached the wire.** `Server.h`
+  gives `0` the meaning "deliberately never answered"; the log is now written
+  after the send, and records `0` when the send failed.
+- **A reset-mid-body assertion was really an assertion about the runner.** What
+  an `RST` destroys is measured, not assumed: Linux delivers the eight buffered
+  body bytes and Winsock discards them, and the headers survive on both only
+  because the reader gets to them first.
+
 ### Known gaps
 
 - **Nothing consumes the corpus.** It is a passing oracle with no subject until
@@ -91,9 +128,11 @@ now done, in the order it fixed. Neither ships in the release.
   rather than server behavior, and belongs in `usdAssetHttp`'s own tests.
 - **`RST` against `FIN` is asserted only where it is portable.** The reset
   behaviors close with `SO_LINGER{1, 0}`, which is a real reset; whether a peer
-  observes `ECONNRESET` or an orderly EOF is the platform's decision. The corpus
-  asserts the fact a backend must handle — the promise in the headers was not
-  kept — and not the errno the runner happened to produce.
+  observes `ECONNRESET` or an orderly EOF is the platform's decision, and so is
+  how much of what was already sent survives it. The corpus asserts the fact a
+  backend must handle — the promise in the headers was not kept — and not the
+  errno, the byte count, or even the arrival of the headers, none of which the
+  runner promises.
 
 ## `v0.1.0` — 2026-08-16
 
