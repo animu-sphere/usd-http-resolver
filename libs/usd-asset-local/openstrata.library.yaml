@@ -1,0 +1,17 @@
+# OpenStrata plain-library descriptor.
+#
+# usdAssetLocal is a plain static CMake library over usdAssetIo, with no
+# OpenUSD dependency (docs/architecture/WORKSPACE.md §1).
+schema: openstrata.library/v1alpha1
+library:
+  id: usdAssetLocal
+  version: 0.1.0
+requires:
+  libraries:
+    # The only edge a backend is allowed. Not another backend, not the cache,
+    # not OpenUSD.
+    - id: usdAssetIo
+      version: ">=0.1,<0.2"
+cmake:
+  package: usdAssetLocal
+  target: usdasset::local
