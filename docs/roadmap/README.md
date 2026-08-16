@@ -102,10 +102,12 @@ written so that swapping the backend under test is a one-line change; the whole
 release builds and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a
 machine with no OpenUSD installed; counters are populated.
 
-Met: the suite exists and the local backend passes it, entering a backend is a
-row rather than a suite, the OpenUSD-free path builds and tests on all three
-platforms, the counters are populated, and the sanitizer lanes run — ASan,
-UBSan, and TSan, green over the core path.
+Met, and released on 2026-08-16: the suite exists and the local backend passes
+it, entering a backend is a row rather than a suite, the OpenUSD-free path
+builds and tests on all three platforms, the counters are populated, and the
+sanitizer lanes run — ASan, UBSan, and TSan, green over the core path. The
+release gate, including the three rows that could not apply before a transport
+exists, is walked in [the record](../releases/v0.1.0.md).
 
 The sanitizer cells are hand-authored in `.github/workflows/core-ci.yml` rather
 than generated from `openstrata.ci.yaml`, which does not exist yet and could
