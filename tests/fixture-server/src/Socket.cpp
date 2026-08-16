@@ -51,6 +51,20 @@ std::string Describe(const char* what, int error) {
     return std::string(what) + " failed (" + std::to_string(error) + ")";
 }
 
+// The byte-order conversions, wrapped once each.
+//
+// Not decoration: on Darwin these are *macros* over a statement expression
+// rather than functions, so a qualified `::htonl(x)` expands to something with
+// no unqualified-id after the `::` and does not parse. A `using ::htonl;`
+// declaration does not help either -- the preprocessor rewrites that too. Linux
+// declares them as functions and accepts the qualifier happily, which is why
+// writing `::htonl` is the natural mistake and why only the macos-arm64 lane
+// finds it. Wrapping them here leaves exactly one place that can be wrong,
+// instead of four call sites that each look fine on two platforms out of three.
+std::uint32_t HostToNetwork32(std::uint32_t value) noexcept { return htonl(value); }
+std::uint16_t HostToNetwork16(std::uint16_t value) noexcept { return htons(value); }
+std::uint16_t NetworkToHost16(std::uint16_t value) noexcept { return ntohs(value); }
+
 #if defined(_WIN32)
 using SysSocket = SOCKET;
 using SysLength = int;
@@ -177,7 +191,7 @@ NativeSocket Listen(unsigned short* portOut, std::string* errorOut) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = 0;
-    address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    address.sin_addr.s_addr = HostToNetwork32(INADDR_LOOPBACK);
 
     if (::bind(Sys(listener), reinterpret_cast<const sockaddr*>(&address),
                sizeof(address)) != 0) {
@@ -201,7 +215,7 @@ NativeSocket Listen(unsigned short* portOut, std::string* errorOut) {
         return InvalidSocket();
     }
 
-    if (portOut) *portOut = ::ntohs(bound.sin_port);
+    if (portOut) *portOut = NetworkToHost16(bound.sin_port);
     return listener;
 }
 
@@ -236,8 +250,8 @@ NativeSocket Connect(unsigned short port, std::string* errorOut) {
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = ::htons(port);
-    address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    address.sin_port = HostToNetwork16(port);
+    address.sin_addr.s_addr = HostToNetwork32(INADDR_LOOPBACK);
 
     if (::connect(Sys(peer), reinterpret_cast<const sockaddr*>(&address),
                   sizeof(address)) != 0) {

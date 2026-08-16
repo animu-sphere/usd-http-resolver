@@ -128,6 +128,30 @@ required to treat that as a fixture that failed to change rather than as a
 backend that failed to notice. Those are different defects, in different
 repositories, and a suite that conflates them reports the wrong one.
 
+## Portability
+
+`src/Socket.cpp` is the only socket code in this repository and it carries three
+platform branches, two of which no local lane on a Windows workstation compiles.
+Both traps found so far are *header* facts rather than logic, so both are
+invisible until the macos-arm64 cell runs:
+
+| Trap | Linux | macOS |
+| --- | --- | --- |
+| Suppressing `SIGPIPE` on a write to a hung-up peer | `MSG_NOSIGNAL` per send | no such flag; `SO_NOSIGPIPE` per socket |
+| `htonl`, `htons`, `ntohs` | functions, so `::htonl(x)` compiles | macros over a *statement expression*, so `::htonl(x)` does not parse |
+
+The second cost a red CI run. The byte-order conversions are therefore wrapped
+once each in the anonymous namespace and called unqualified from there, so there
+is one place to be wrong instead of four call sites that each look correct on
+two platforms out of three.
+
+Either can be reproduced locally without a Mac by compiling the file against a
+Linux toolchain wearing Darwin's macros — undefine `MSG_NOSIGNAL`, define
+`SO_NOSIGPIPE`, and redefine the byte-order conversions as statement
+expressions. The shape matters and not merely the macro-ness: an ordinary
+function-like macro still parses after `::`, so a proxy that uses one passes on
+code the real lane rejects.
+
 ## Threading
 
 One thread accepts, one thread per connection. Two properties are contract:
