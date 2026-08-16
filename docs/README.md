@@ -23,7 +23,7 @@ else here is contract and plan.
 | [compatibility/](compatibility/) | Which OpenUSD and OpenStrata versions are supported. | [OPENUSD.md](compatibility/OPENUSD.md) |
 | [roadmap/](roadmap/) | What remains incomplete and in what order it lands. | [README.md](roadmap/README.md) |
 | [adr/](adr/) | Numbered, immutable architecture decision records. | [0001-consumer-interface.md](adr/0001-consumer-interface.md) |
-| [contributing/](contributing/) | Contributor procedures that a code change must satisfy. | [MODULE_README_CONTRACT.md](contributing/MODULE_README_CONTRACT.md) |
+| [contributing/](contributing/) | Contributor procedures that a code change must satisfy. | [BOUNDARY_SUITE.md](contributing/BOUNDARY_SUITE.md), [MODULE_README_CONTRACT.md](contributing/MODULE_README_CONTRACT.md) |
 | [releases/](releases/) | Immutable records for tagged releases. | [README.md](releases/README.md) |
 | [reports/ost/](reports/ost/) | Append-only OpenStrata adoption and CI evidence. | [README.md](reports/ost/README.md) |
 
@@ -47,6 +47,9 @@ else here is contract and plan.
   error vocabulary and its projection onto stable `HTTPxxx` plugin codes.
 - [architecture/METRICS.md](architecture/METRICS.md) defines the I/O counters
   that make byte amplification and cache effectiveness observable.
+- [contributing/BOUNDARY_SUITE.md](contributing/BOUNDARY_SUITE.md) fixes the
+  shared correctness suite that every backend is admitted by, and that `v0.1.0`
+  exists to produce.
 - [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md) describes
   what the current tree implements, not what it intends to implement later.
 

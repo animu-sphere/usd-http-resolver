@@ -34,7 +34,6 @@ that the defaults are wrong.
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | to be set in `v0.2.0` | Total per-request deadline |
 | `USD_HTTP_RESOLVER_MAX_RETRIES` | to be set in `v0.2.0` | Retry ceiling for retryable failures |
 | `USD_HTTP_RESOLVER_MAX_REDIRECTS` | to be set in `v0.2.0` | Redirect chain ceiling |
-| `USD_HTTP_RESOLVER_RANGE_POLICY` | pending ADR-0002 | `error`, `fallback`, or `bounded` |
 | `USD_HTTP_RESOLVER_METRICS_DUMP` | unset | When set, dumps the metrics aggregate at process exit |
 
 An unparseable value is a diagnostic at first use, not a silent fallback to the
@@ -46,8 +45,13 @@ fails.
 Some things are deliberately absent, because making them configurable would
 turn a correctness property into a deployment mistake:
 
+- **Range-unsupported behavior.** Not a variable in `v0.2.0`. The policy is a
+  hard error, decided in [ADR-0002](../adr/0002-range-unsupported-policy.md);
+  `USD_HTTP_RESOLVER_RANGE_POLICY` is deliberately absent rather than present
+  with one legal value, and arrives with the bounded fallback it would select.
 - **Validator checking.** Never disabled. A "skip `If-Range`" switch is a
-  switch for serving corrupt data.
+  switch for serving corrupt data, and it is not made safer by being off by
+  default.
 - **TLS verification.** Never disabled. A test server uses plain `http`, which
   is why `http` is a registered scheme at all.
 - **`https` to `http` redirect following.** Always refused.

@@ -20,14 +20,37 @@ that cannot be expressed without it.
 ```cpp
 namespace usdasset {
 
-// Opaque, transport-derived identity of the exact bytes an asset had when it
-// was opened. The cache treats it as a byte string and nothing more.
-using Validator = std::string;
+// Transport-derived identity of the exact bytes an asset had when it was
+// opened. `value` is opaque above the backend that produced it; `kind` and
+// `strength` are transport-level metadata that only the producing backend
+// interprets. See §7.
+enum class ValidatorKind {
+    None,
+    EntityTag,   // HTTP ETag
+    HttpDate,    // HTTP Last-Modified
+    Derived,     // synthesized by the backend, e.g. size + mtime + inode
+};
 
+enum class ValidatorStrength {
+    None,
+    Weak,        // equal values imply equivalent, not identical, bytes
+    Strong,      // equal values imply byte-identical content
+};
+
+struct Validator {
+    std::string       value;
+    ValidatorKind     kind     = ValidatorKind::None;
+    ValidatorStrength strength = ValidatorStrength::None;
+
+    bool IsUsable() const { return kind != ValidatorKind::None; }
+};
+
+// The consumer-facing summary of the above. This, and never the struct, is
+// what crosses the resolver boundary.
 enum class IdentityStability {
-    Stable,       // a strong validator was supplied
-    Unstable,     // a weak or derived validator was supplied
-    Unavailable,  // no usable validator exists
+    Stable,       // strength == Strong
+    Unstable,     // strength == Weak
+    Unavailable,  // strength == None, or no usable validator exists
 };
 
 struct AssetMetadata {
@@ -87,6 +110,42 @@ Rules:
   reader that observes a changed validator fails subsequent reads with
   `AssetChanged`; it does not silently rebind to the new content.
 
+### 2.1 Revision binding
+
+The rule above is the contract's central consistency guarantee, and it is worth
+stating on its own line:
+
+> One `AssetReader` is bound, for its whole lifetime, to one asset revision.
+
+A reader that is not bound composes a byte sequence that never existed:
+
+```text
+GET bytes=0-65535        -> revision A      header
+GET bytes=1M-2M          -> revision B      index
+GET bytes=50M-51M        -> revision B      records
+```
+
+The header describes a layout the records no longer have. Nothing in that
+exchange fails: three requests succeeded, three `206` responses were correctly
+framed, and the bytes handed upward are a blend of two files. The format plugin
+above reports a corrupt asset, and the asset is intact.
+
+This failure needs no cache to occur. It is a property of issuing more than one
+request for one logical read, which is what a range backend does by definition.
+Binding is therefore an obligation of **the first HTTP backend** — `v0.2.0` —
+and not a consistency feature layered on later:
+
+| Layer | Obligation |
+| --- | --- |
+| Backend, at open | Capture a validator and classify its strength |
+| Backend, per request | Carry the validator on every subsequent range request |
+| Backend, on mismatch | Fail the read with `AssetChanged`; never rebind, never retry into the new revision |
+| Cache (`v0.3.0`) | Key on the validator, so an entry from revision A cannot serve revision B |
+
+A backend that cannot obtain a usable validator is still bound for its
+lifetime — see §7.3 — but the binding is best-effort, and it says so through
+`IdentityStability::Unavailable`.
+
 ## 3. Read semantics
 
 These are the semantics the boundary suite enforces, identically, for every
@@ -131,21 +190,28 @@ A backend does own:
 ## 5. The local backend is the oracle
 
 `usdAssetLocal` exists to be correct and boring. Every property of the remote
-path is expressed as an equivalence against it:
+path is expressed as an equivalence against it — over all three fields of the
+result, not over the bytes alone:
 
 ```text
 for every (offset, size) in the boundary set:
-    local.Read(offset, size).bytes == http.Read(offset, size).bytes
-    local.Read(offset, size).bytesRead == http.Read(offset, size).bytesRead
+    expected = LocalReader(asset).Read(offset, size)
+    actual   = BackendUnderTest(asset).Read(offset, size)
+
+    expected.bytes     == actual.bytes
+    expected.bytesRead == actual.bytesRead
+    expected.status    == actual.status
 ```
 
-The boundary set covers: zero length; offset zero; offset at `size - 1`; a read
-straddling EOF; a read entirely past EOF; a read spanning a block boundary; a
-read exactly one block; a read of the whole asset; and, once the cache exists,
-each of those repeated to exercise hit, miss, and partial-hit paths.
+Comparing `status` matters as much as comparing bytes: a backend that returns
+the right bytes and the wrong code has still broken the EOF distinction in §3,
+and that is a defect the byte comparison cannot see.
 
 The suite is written so the backend under test is a parameter. Adding a
-transport means adding a row, not writing a test suite.
+transport means adding a row, not writing a test suite. It is the primary
+deliverable of `v0.1.0`, and its full case list, property-test generators, and
+sanitizer requirements are fixed in the
+[boundary suite contract](../contributing/BOUNDARY_SUITE.md).
 
 ## 6. Composition
 
@@ -166,7 +232,76 @@ is what allows the cached path to be tested against a local backend, with no
 server involved, and it is why `usdAssetCache -> any backend` is forbidden in
 the [workspace contract](WORKSPACE.md).
 
-## 7. Asynchrony — Planned
+## 7. Validator semantics
+
+A validator carries two audiences' worth of information, and separating them is
+what keeps transport semantics out of the layers above.
+
+### 7.1 Who may interpret what
+
+```text
+consumer          never interprets a validator; sees only IdentityStability
+resolver          never interprets a validator; projects stability outward
+cache             treats validator.value as an opaque identity byte string,
+                  and reads validator.strength only to decide persistence
+backend           understands its transport's validator semantics completely
+```
+
+`value` is a byte string everywhere above the backend that produced it. No
+layer above compares it to an `ETag`, parses a date out of it, or infers
+recency from it — and the cache never concatenates two different backends'
+values, because the `resolvedIdentifier` in the key already separates them.
+
+`kind` and `strength` exist so that the backend does not have to re-derive, on
+every request, what it already learned at open. They are not a widening of the
+consumer surface: nothing above the cache reads them.
+
+The rule this replaces is the tempting one — "let the cache decide whether an
+`ETag` is weak." That decision needs `W/` prefix parsing, and the moment the
+cache can parse an HTTP construct it has become an HTTP cache, and the local
+backend stops being a usable oracle for the cached path.
+
+### 7.2 What each validator is good for
+
+The three questions are genuinely different, and one validator can answer some
+and not others:
+
+| Validator | Conditional range (`If-Range`) | Content identity | Persistent cache key |
+| --- | --- | --- | --- |
+| Strong `EntityTag` | yes | yes | yes |
+| Weak `EntityTag` | no — RFC 9110 forbids it in `If-Range` | no | no |
+| `HttpDate` (`Last-Modified`) | yes, with one-second granularity | no | no |
+| `Derived` | backend-defined | backend-defined | only if the backend declares it strong |
+| `None` | no | no | no |
+
+Two consequences follow, and both are contract:
+
+- A weak validator is still worth capturing. It cannot gate a conditional
+  request, but a re-fetched metadata response whose weak validator has changed
+  is still positive evidence of `AssetChanged`. Weak means "cannot prove
+  sameness", not "carries no information".
+- `Last-Modified` at one-second granularity cannot distinguish two revisions
+  published inside the same second. That is exactly why it maps to `Unstable`
+  rather than `Stable`, and why nothing keyed on it may outlive the reader.
+
+### 7.3 Classification and the no-validator case
+
+`stability` is derived at open, once, from the validator the backend captured:
+
+```text
+ValidatorStrength::Strong   -> IdentityStability::Stable
+ValidatorStrength::Weak     -> IdentityStability::Unstable
+ValidatorStrength::None     -> IdentityStability::Unavailable
+```
+
+When no usable validator exists, reads still work. The reader remains bound to
+one revision for its lifetime as far as it can observe, in-memory caching still
+functions for that lifetime, and nothing survives the reader: no persistent
+entry, and no identity a consumer may reuse. The consumer is told
+`Unavailable` so that it can disable its own generated-cache reuse rather than
+guess.
+
+## 8. Asynchrony — Planned
 
 An asynchronous surface is deliberately absent from v0.x:
 

@@ -52,9 +52,17 @@ requires:
 | macOS arm64 | `macos-15` | Bundle build and integration tests |
 
 Everything under `libs/` builds and tests with plain CMake and **no OpenUSD
-runtime**. Only `plugins/http-resolver` requires one. This is a structural
-invariant, not a convenience: a range-read test that needs a USD runtime is a
-test that gets skipped.
+runtime**:
+
+```sh
+cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF
+```
+
+Only `plugins/http-resolver` requires one. This is a structural invariant, not
+a convenience: a range-read test that needs a USD runtime is a test that gets
+skipped, and a sanitizer build that needs one is a sanitizer build that never
+runs. CI runs the core path as its own cell on every platform, without a USD
+runtime, so the invariant is checked rather than assumed.
 
 ## OpenUSD surface used
 
@@ -80,6 +88,35 @@ boundary has moved.
   rebuild, no consumer rebuild.
 - The bundle is thread-safe under concurrent Hydra access, without a global
   lock.
+
+## FileFormat Plugin compatibility
+
+The `ArAsset` this bundle returns implements the random-access surface and only
+that surface:
+
+| `ArAsset` member | Behavior |
+| --- | --- |
+| `Read(buffer, count, offset)` | Primary path; served as a byte range |
+| `GetSize()` | Byte size captured at open |
+| `GetBuffer()` | `nullptr`, permanently and by contract |
+| `GetFileUnsafe()` | `{nullptr, 0}` — there is no file |
+
+`GetBuffer` returning null is not a stub awaiting implementation. Materializing
+a whole 10 GB asset in memory is the transfer this project exists to avoid, so
+implementing it would contradict the project's purpose rather than complete its
+API surface. The interoperability claimed is therefore with
+**random-access-compatible** FileFormat Plugins.
+
+A plugin that requires whole-buffer access is incompatible with the remote
+random-access path by construction. It is unaffected against local assets,
+which resolve through the host's primary resolver exactly as before. Consumers
+are recorded in the compatibility matrix in §4.3 of
+[RESOLVER.md](../architecture/RESOLVER.md) once their I/O path has actually
+been read, and not before.
+
+An OpenUSD release that adds a mandatory whole-buffer requirement to `ArAsset`
+would be a compatibility event for this project, which is one reason the
+accepted version range is bounded rather than open-ended.
 
 ## OpenStrata compatibility
 

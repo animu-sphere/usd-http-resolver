@@ -2,10 +2,13 @@
 
 ## Status
 
-Open. Must be resolved before the `v0.2.0` HTTP backend ships.
+Accepted, 2026-08-16, for `v0.2.0`: **option A, hard error**. A server that
+will not serve partial content produces `RangeNotSupported` (`HTTP003`) and no
+bytes. There is no whole-asset fallback in `v0.2.0`.
 
-Until it is resolved, the implemented behavior is the conservative one: report
-`RangeNotSupported` (`HTTP003`) and read nothing.
+Bounded fallback is not rejected — it is deferred to a later release as a
+separate feature with its own residency model. Reopening it means a new ADR,
+not an edit to this one.
 
 ## Context
 
@@ -90,22 +93,71 @@ default.
 
 ## Decision
 
-Not yet made.
+**A, for `v0.2.0`.**
 
-The leading candidate is **C**, with the threshold defaulting conservatively
-(order of tens of megabytes), an explicit `HTTP102` warning whenever the
-fallback engages, the fallback bytes counted in full, and a refusal when
-`Content-Length` is unknown. **D** is the likely end state once configuration
-lands in `v0.6.0`; adding it before then would mean designing the configuration
-surface around this one question.
+```text
+Range unsupported
+    -> RangeNotSupported (HTTP003)
+    -> no whole-asset fallback
+```
 
-Resolve this before `v0.2.0` ships, not after a user finds it.
+The choice is about what `v0.2.0` is allowed to be, more than about which
+policy is ultimately right. C remains the better long-term answer for small
+assets, and D remains the likely end state once configuration lands in
+`v0.6.0`. Neither belongs in the release that first has to prove HTTP range
+reads are byte-equivalent to a local file.
 
-## Consequences to record on resolution
+Implementing bounded fallback now would pull all of this into that release:
 
-- Which policy is the default, and what the threshold is.
-- Whether the fallback body is held in memory, spilled to disk, or bounded by
-  the cache budget.
-- The diagnostic and metric emitted when the fallback engages.
-- What happens when `Content-Length` is absent.
-- Whether the policy is per process, per stage, or per asset.
+```text
+whole-asset residency          a second storage model beside the block cache
+memory and disk spill          allocation bounds, spill paths, cleanup
+threshold selection            a number that is wrong for somebody
+warning policy                 when HTTP102 fires, and how loudly
+configuration                  per process or per stage, decided early
+separate metrics               fallback bytes counted apart from range bytes
+```
+
+Every line of that is a correctness surface of its own, verified by tests that
+have nothing to do with range reads. `v0.2.0`'s scope is one sentence — *HTTP
+random access is byte-equivalent to the local backend* — and the fallback
+neither supports that sentence nor is testable against the oracle that proves
+it.
+
+The cost is real and accepted: a 2 MB `.usda` on a server without range support
+is readable and will be refused. The diagnostic names the server as the cause,
+which is actionable, and the failure is loud rather than a multi-gigabyte
+transfer nobody asked for. That is the correct direction to err in the release
+that establishes trust.
+
+### Recorded consequences
+
+- **Default policy:** error. There is no other policy in `v0.2.0`.
+- **`USD_HTTP_RESOLVER_RANGE_POLICY`** is not introduced. A configuration
+  variable with one legal value is a promise about a feature that does not
+  exist; it arrives with the fallback.
+- **Detection:** from `Accept-Ranges` and from the actual response status. A
+  `200` in answer to a `Range` request is `RangeNotSupported`, not
+  `InvalidResponse` — the server is coherent, it just does not do what this
+  project requires.
+- **Per asset, not per server.** Range support varies by path behind a CDN, so
+  no host-level capability cache decides it.
+- **Unknown `Content-Length`** (chunked, no length) is refused, for the same
+  reason: an unbounded body is what the policy exists to prevent.
+- **`HTTP102`** stays allocated in
+  [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md) and unemitted, reserved for
+  the fallback when it lands.
+
+## When bounded fallback returns
+
+The trigger is a demonstrated need — a real deployment where small assets sit
+behind a server that will not serve ranges — not a hypothetical one. When it
+does return, it is admitted as its own feature and records:
+
+- whether the body is held in memory, spilled to disk, or bounded by the cache
+  budget — but never as a block cache entry, because it is a different
+  residency model with a different budget;
+- the threshold, and what happens when `Content-Length` is unknown (refuse);
+- the diagnostic and the metric emitted when the fallback engages, with the
+  fallback bytes counted in full so `selectivity` stays honest;
+- whether the policy is per process, per stage, or per asset.

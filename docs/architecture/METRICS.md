@@ -3,8 +3,10 @@
 This document defines the I/O counters that make the project's central claim
 checkable.
 
-Status: counter definitions land in `v0.1.0`; the HTTP counters populate in
-`v0.2.0`; the cache counters in `v0.3.0`. Nothing here is implemented.
+Status: counter definitions land in `v0.1.0` and are populated by the local
+backend there; the HTTP counters populate in `v0.2.0`, including the requests
+issued by validator capture and by conditional range requests; the cache
+counters in `v0.3.0`. Nothing here is implemented.
 
 ## 1. Why this is a contract and not a debug feature
 
@@ -92,6 +94,12 @@ during composition.
 Counters are monotonic within a scope and are never reset by an internal
 retry — a retried request counts as two requests and two transfers, because
 that is what the network saw.
+
+The same rule covers revision binding. A conditional range request that the
+server refuses because the asset changed still cost a round trip, and it is
+counted; the read that then fails with `AssetChanged` does not retract it. A
+reader whose counters shrink after a failure is reporting what it wishes had
+happened.
 
 ## 4. Cost
 
