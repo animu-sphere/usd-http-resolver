@@ -319,6 +319,24 @@ linux     apt-get install libcurl4-openssl-dev
 macos     brew install curl
 ```
 
+On Windows, configure through vcpkg's toolchain file rather than by pointing
+`CMAKE_PREFIX_PATH` at the installed tree:
+
+```sh
+cmake --preset core-msvc \
+  -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+```
+
+The difference is not cosmetic. vcpkg's `CURLConfig.cmake` calls
+`find_dependency(ZLIB)`, and a bare prefix leaves CMake's own `FindZLIB` to
+locate a *static* vcpkg zlib by guessing library names — it finds the header,
+does not find the library, and the configure fails with "Could NOT find ZLIB
+(missing: `ZLIB_LIBRARY`)" while reporting a version it read out of `zlib.h`.
+The toolchain activates vcpkg's own wrapper, which supplies the release and
+debug paths explicitly. Naming the triplet matters too: the default is the
+dynamic one.
+
 Three suites, and they are not interchangeable:
 
 | Suite | Where | Asserts |

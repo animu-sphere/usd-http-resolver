@@ -119,13 +119,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # VCPKG_INSTALLATION_ROOT is set on the hosted Windows image; the
-          # prefix is a no-op elsewhere, so one command serves all three.
-          prefix=""
+          # On Windows, vcpkg is reached through its toolchain file rather than
+          # by pointing CMAKE_PREFIX_PATH at the installed tree. The difference
+          # is not cosmetic: vcpkg's CURLConfig.cmake does find_dependency(ZLIB),
+          # and a bare prefix leaves CMake's own FindZLIB to locate a *static*
+          # vcpkg zlib by guessing library names. It finds the header, does not
+          # find the library, and the configure fails with "Could NOT find ZLIB
+          # (missing: ZLIB_LIBRARY)" while reporting a version it read from
+          # zlib.h. The toolchain activates vcpkg's own wrapper, which supplies
+          # the release and debug paths explicitly.
+          #
+          # The triplet is named because the default is the dynamic one, which
+          # is not what the step above installed -- and ADR-0003 asks for static,
+          # private linkage. VCPKG_INSTALLATION_ROOT is set on the hosted image.
+          #
+          # Nothing here is a no-op on the other two platforms; they take the
+          # bare preset, because libcurl is a system package there.
+          extra=""
           if [ "$RUNNER_OS" = "Windows" ]; then
-            prefix="-DCMAKE_PREFIX_PATH=$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
+            extra="-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+            extra="$extra -DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
           fi
-          cmake --preset ${{ matrix.preset }} $prefix 2>&1 | tee "$RUNNER_TEMP/configure.log"
+          cmake --preset ${{ matrix.preset }} $extra 2>&1 | tee "$RUNNER_TEMP/configure.log"
 
       - name: Assert the configure never reached OpenUSD
         shell: bash
