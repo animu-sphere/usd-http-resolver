@@ -7,13 +7,26 @@ belongs to no single module.
 | --- | --- |
 | `boundary/` | The shared boundary suite: the executable form of the read contract, and the thing every backend is admitted by |
 | `fixture-server/` | The hostile-server corpus: a loopback HTTP origin that misbehaves on request, and the conditions only a server can produce |
+| `corpus/` | The projection of each corpus behavior onto the typed vocabulary — which `Behavior` produces which `StatusCode` |
 
-The two are not the same suite and neither substitutes for the other. The
-boundary suite carries the correctness argument, over an oracle, for every
-backend. The corpus covers what has no local analogue — a `200` answering a
-`Range`, a wrong `Content-Range`, a mid-read validator change, a reset — and it
-applies to the HTTP backend alone. See §7 of
+The three are not the same suite and none substitutes for another. The boundary
+suite carries the correctness argument, over an oracle, for every backend. The
+corpus covers what has no local analogue — a `200` answering a `Range`, a wrong
+`Content-Range`, a mid-read validator change, a reset — and it applies to the
+HTTP backend alone. See §7 of
 [BOUNDARY_SUITE.md](../docs/contributing/BOUNDARY_SUITE.md).
+
+`corpus/` is where the other two meet, and it is the only place either one's
+opinion about the other is written down. Nothing in `fixture-server/` knows what
+a `StatusCode` is, and nothing in `libs/usd-asset-http` knows what a `Behavior`
+is; the table lives here precisely so that a disagreement between the server and
+the backend is evidence rather than a tautology. Its coverage is checked against
+`AllBehaviors()` at runtime, so adding a behavior without adding a projection
+fails the run.
+
+```sh
+ctest --test-dir build/core -R usdAssetHttp_corpus_projection
+```
 
 ## The boundary suite
 
@@ -69,12 +82,22 @@ Adding a transport adds a row, not a suite. A row declares four things:
 | Cancellation | Not admitted -- declared, not skipped |
 | Revision simulation | Admitted: rewrite the file underneath the open reader |
 
-`backends/boundary_local_main.cpp` is the whole of it. The HTTP backend's row in
-`v0.2.0` is a file of about that length beside it, running a byte-identical
-suite, and `tests/boundary/CMakeLists.txt` gains one line. Its four declarations
-are already served: the factory and provisioning by `usdAssetHttp` when it
-lands, and the fixture behaviors and the republish by
-[`fixture-server/`](fixture-server/README.md) today.
+`backends/boundary_local_main.cpp` is the whole of it. The HTTP row is
+`backends/boundary_http_main.cpp` beside it, and it is what the claim above
+cost: one file, one line in `tests/boundary/CMakeLists.txt`, and no change to
+the suite. Its four declarations:
+
+| Declaration | For the HTTP backend |
+| --- | --- |
+| Factory | `usdasset::http::OpenAsset` |
+| Fixture provisioning | The suite's content, read back through the oracle and served by the fixture server; `ShortReadBelowEof` is `Behavior::TruncatedBody` |
+| Cancellation | Not admitted — declared, not skipped |
+| Revision simulation | Admitted: `Server::Republish`, with content and validator moving together |
+
+The short-read row is worth pointing at. It is not a mock: it is a server that
+really accepts the range, really delivers fewer bytes than it covers, and really
+closes below the end of the asset — and the corpus already proved over a raw
+socket that it does.
 
 A backend that needs a case relaxed has either found a defect in the read
 contract -- in which case

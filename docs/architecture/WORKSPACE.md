@@ -16,7 +16,7 @@ exists; see the [roadmap](../roadmap/README.md).
 | --- | --- | --- | --- | --- |
 | `usdAssetIo` | `libs/usd-asset-io` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The transport-independent core: the `AssetReader` random-access contract, `AssetMetadata`, byte-range and validator value types, the typed diagnostic vocabulary, and the metrics counter definitions. Contains no transport, no cache, and no OpenUSD. |
 | `usdAssetLocal` | `libs/usd-asset-local` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The local-file backend: positional reads against a file handle, size discovery, and filesystem-derived validators. It is the correctness oracle every other backend is compared against. |
-| `usdAssetHttp` | `libs/usd-asset-http` | plain CMake/OpenStrata static library | planned (`v0.2.0`) | The HTTP backend: range requests, metadata requests, redirects, timeouts, bounded retry, response framing validation, and validator extraction. Owns the third-party HTTP client dependency; it is the only module that may name one. |
+| `usdAssetHttp` | `libs/usd-asset-http` | plain CMake/OpenStrata static library | implemented (`v0.2.0`) | The HTTP backend: range requests, metadata requests, redirects, timeouts, bounded retry, response framing validation, and validator extraction. Owns the third-party HTTP client dependency; it is the only module that may name one, and it names it privately, in one translation unit, behind an internal transport seam. |
 | `usdAssetCache` | `libs/usd-asset-cache` | plain CMake/OpenStrata static library | planned (`v0.3.0`) | Aligned block caching, read expansion, request coalescing, single-flight de-duplication, eviction under a memory budget, and cache statistics. It is a decorator over `AssetReader`, keyed by an opaque validator. |
 | `http-resolver` | `plugins/http-resolver` | OpenStrata plugin bundle (`usd-asset-resolver`) | planned (`v0.2.0`) | The OpenUSD `ArResolver` implementation: URI scheme registration for `http` and `https`, URI normalization, relative and anchored resolution, asset-info exposure, and the `ArAsset` adapter over `AssetReader`. It is the only module that includes an OpenUSD header. Owns its `HTTPxxx` diagnostic codes. |
 | `usdAssetS3`, `usdAssetPackage`, `usdAssetWasm` | `libs/` | plain libraries | reserved, not implemented | Additional backends targeting the unchanged `AssetReader` contract. A backend that cannot be expressed through it is a design question, not a feature request. |
@@ -65,8 +65,27 @@ admitted without an argument. Not knowing `usdAssetIo` is the more important
 half: a corpus that could name `StatusCode` would start asserting the backend's
 interpretation, and a disagreement between the two would stop being evidence.
 
-Its reverse edge — `tests/boundary/backends/boundary_http_main.cpp` reaching the
-fixture server to provision remote fixtures — is legal and is the only one.
+Its reverse edges — a test outside `libs/` linking both a backend and the
+fixture server — are legal, and there are exactly two:
+
+```text
+tests/boundary/backends/boundary_http_main.cpp  -> usdAssetHttp, fixture server
+tests/corpus (usdAssetHttp_test_projection)     -> usdAssetHttp, fixture server
+```
+
+The first provisions remote fixtures, because a remote backend has to arrange
+for its bytes to exist somewhere a transport can reach; that is what fixture
+provisioning *means* for it. The second is the projection of each corpus
+behavior onto the typed vocabulary, which is the one assertion neither side can
+make alone.
+
+Both live outside `libs/` rather than in the backend's own tests, and that
+placement is load-bearing rather than tidy: a module's tests must not depend on
+anything outside `libs/`, or `ost library build libs/usd-asset-http` — which
+builds the module alone — stops working.
+
+The direction stays one-way in both cases. The fixture server links neither of
+them and still does not know what a `StatusCode` is.
 
 Reserved future directions:
 

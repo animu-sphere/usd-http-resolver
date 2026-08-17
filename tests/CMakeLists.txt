@@ -11,3 +11,11 @@
 
 add_subdirectory(fixture-server)
 add_subdirectory(boundary)
+
+# The corpus projection, added last because it is the only thing here that needs
+# both of the above to exist: it is where the hostile server and the backend
+# written against it finally meet. Guarded on the backend, so the tree still
+# configures before a transport lands and after one is removed.
+if(TARGET usdasset::http AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/corpus/CMakeLists.txt")
+    add_subdirectory(corpus)
+endif()

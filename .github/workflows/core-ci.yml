@@ -83,11 +83,49 @@ jobs:
             brew install ninja
           fi
 
+      - name: Install libcurl
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The one third-party dependency this repository takes, acquired the
+          # way ADR-0003 names: a per-platform install plus find_package, rather
+          # than vendored source or a pinned FetchContent that would slow every
+          # cold build to buy hermeticity this project does not yet need.
+          #
+          # This does not weaken the claim the lane makes. Its contract is that
+          # it needs no *OpenUSD runtime*; it was never that it needs no
+          # dependencies, and the assertion below is still made from the
+          # configure log.
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y libcurl4-openssl-dev
+              ;;
+            macOS)
+              # Already present on the image, as the system libcurl with
+              # Secure Transport. Named here so a future image that drops it
+              # fails on this line rather than three steps later.
+              brew list curl >/dev/null 2>&1 || brew install curl
+              ;;
+            Windows)
+              # Static with a dynamic CRT: ADR-0003 calls for static, private
+              # linkage, and it also spares every test executable a DLL that
+              # has to be found at runtime.
+              vcpkg install curl:x64-windows-static-md
+              ;;
+          esac
+
       - name: Configure
         shell: bash
         run: |
           set -euo pipefail
-          cmake --preset ${{ matrix.preset }} 2>&1 | tee "$RUNNER_TEMP/configure.log"
+          # VCPKG_INSTALLATION_ROOT is set on the hosted Windows image; the
+          # prefix is a no-op elsewhere, so one command serves all three.
+          prefix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            prefix="-DCMAKE_PREFIX_PATH=$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
+          fi
+          cmake --preset ${{ matrix.preset }} $prefix 2>&1 | tee "$RUNNER_TEMP/configure.log"
 
       - name: Assert the configure never reached OpenUSD
         shell: bash
@@ -126,6 +164,13 @@ jobs:
     # die at startup with STATUS_DLL_INIT_FAILED before main. The core lane
     # above still covers all three platforms; only the sanitizer evidence is
     # single-platform, because a sanitizer is a property of the compiler.
+    #
+    # libcurl is the runner's own package and is not instrumented, so these
+    # lanes are evidence about this repository's code and not about the client
+    # behind the transport seam. That is the intended scope: what needs proving
+    # is that many threads on one reader do not race, that the offset arithmetic
+    # does not overflow, and that nothing writes past a caller's buffer -- all
+    # of which live above the seam.
     name: sanitizers (${{ matrix.preset }})
     runs-on: ubuntu-24.04
     strategy:
@@ -142,6 +187,13 @@ jobs:
           set -euo pipefail
           command -v ninja >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ninja-build; }
           ninja --version
+
+      - name: Install libcurl
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
 
       - name: Cap ASLR entropy to what the sanitizer runtimes assume
         shell: bash
