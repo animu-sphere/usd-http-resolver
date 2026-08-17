@@ -1,0 +1,25 @@
+#usda 1.0
+# A local stage, opened in a session where this bundle is registered.
+#
+# It asserts the property a URI-scheme resolver is most likely to break and that
+# nobody would notice until it broke: installing this plugin must not change how
+# a local asset resolves. The host's primary resolver is untouched, and a path
+# with no scheme never reaches this bundle at all (RESOLVER.md §1).
+#
+# The remote path cannot be a fixture in a directory -- it needs an origin -- so
+# it is exercised by httpResolver_test_stage, which stands one up.
+#
+# The prose is a comment rather than a `doc` field on purpose: `doc` survives
+# `usdcat --flatten` into the golden beside this file, and a golden that carries
+# a paragraph is a golden that changes when the paragraph is edited.
+(
+    defaultPrim = "Local"
+)
+
+def Xform "Local"
+{
+    def Sphere "Sphere"
+    {
+        double radius = 1
+    }
+}

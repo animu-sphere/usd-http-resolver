@@ -1,0 +1,20 @@
+{
+    "Plugins": [
+        {
+            "Type": "library",
+            "Name": "HttpResolver",
+            "Root": ".",
+            "LibraryPath": "../../../lib/@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@HttpResolver@CMAKE_SHARED_LIBRARY_SUFFIX@",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                    "HttpResolver": {
+                        "bases": ["ArResolver"],
+                        "displayName": "HTTP range-read asset resolver",
+                        "uriSchemes": ["http", "https"]
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -9,6 +9,10 @@ it is described in [ASSET_READER.md](ASSET_READER.md).
 
 Sections marked **Planned** are direction, not shipped behavior.
 
+Status: implemented in `v0.2.0`, except §3, which is `v0.4.0`, and §6, which is
+`v0.6.0` apart from the environment variables named in
+[CONFIGURATION.md](../reference/CONFIGURATION.md).
+
 ## 1. Registration
 
 The bundle registers a URI-scheme resolver, not the primary resolver:
@@ -50,14 +54,50 @@ asset produce one cache entry and one open:
 - the path is dot-segment-resolved (`.` and `..`);
 - percent-encoding is normalized to uppercase hex, and unreserved characters
   are decoded;
+- a character that cannot appear literally in a path — a space, a control byte,
+  a non-ASCII byte, a stray `%` — is percent-encoded;
 - the query string is preserved **verbatim**, in its original order;
-- the fragment is removed from the identifier and never sent to a server.
+- the fragment is removed from the identifier and never sent to a server;
+- the userinfo component is removed from the identifier.
 
 The query string is preserved verbatim and never reordered because signed URLs
 carry their signature in it, and reordering invalidates the signature. A
 "canonicalization" that sorts query parameters would break every pre-signed
 object-storage URL. This is stated here so that a later cleanup does not
 introduce it.
+
+Encoding is the one rule that adds characters rather than removing them, and it
+is what makes a human-authored reference resolvable: `../textures/tree bark.png`
+is a valid asset path and not a valid URI, and handing it to a transport
+verbatim produces a request line a strict origin answers with `400`. It is
+idempotent — an escape that is already there is recognized as one and never
+doubly encoded.
+
+Decoding runs **before** dot segments are removed. `%2E%2E` is an encoded `..`,
+and removing dot segments first leaves it in the identifier for the *origin* to
+resolve, which means the resolver's idea of which asset was named and the
+server's differ. The mirror image does not arise: `%2F` is not unreserved, is
+never decoded, and therefore never becomes a segment separator.
+
+The userinfo is removed because §4.3 of the
+[design policy](../design/DESIGN_POLICY.md) keeps credentials out of the
+resolver API, and an identifier *is* the resolver API — `https://user:t@host/a`
+hides one in the part a query-string rule keeps. The consequence is deliberate
+and worth stating plainly: a URL that needs credentials in its authority fails
+at the origin with `AccessDenied` rather than succeeding with a secret in every
+log line, cache key, and diagnostic. Two URLs that differ only in their
+credentials share one identity, which is the right answer — they name the same
+bytes.
+
+### 2.1.1 The extension
+
+`GetExtension` is part of normalization's job, not the default's. OpenUSD picks
+a file format from it, and the default implementation returns the text after the
+last `.` of the whole path — for `main.usda?X-Amz-Signature=abc.def` that is
+`def`, and for a signature without a dot it is `usda?X-Amz-Signature=…`. Neither
+matches a file format, so a signed remote layer cannot be identified at all: a
+failure that presents as an unsupported format and is in fact a resolver bug.
+The query and the fragment are not part of the name of the thing.
 
 ### 2.2 Anchoring
 
@@ -90,6 +130,26 @@ For a remote asset that requires a round trip, so:
 - a `404` resolves to an empty path (the asset does not exist), while a
   network failure is a diagnostic, not an absence. Reporting a timeout as "file
   not found" sends every consumer down the wrong path.
+
+What is retained is the *open reader*, not a copy of its metadata: resolution
+has to open the asset in order to answer the existence question at all, and
+discarding that open would make every resolved asset cost two round trips. Three
+properties follow, and each is a decision rather than a detail.
+
+A reader is handed out **once**. A second `OpenAsset` for one identifier opens
+again rather than sharing a reader that is already bound to a revision somebody
+else is mid-composition on; two `ArAsset`s over one URL may therefore be reading
+two revisions, and each is individually consistent, which is exactly the
+guarantee §2.1 of [ASSET_READER.md](ASSET_READER.md) makes.
+
+A failure is **not** retained. Caching one would turn a server that was
+restarting into an asset that does not exist for the rest of the process.
+
+The table of retained opens is **bounded**. A resolve that is never followed by
+an open is legal and normal — a host probing for existence does it constantly —
+and an unbounded table would hold one reader per asset the process ever asked
+about. Dropping the oldest costs a later metadata request and never costs
+correctness.
 
 ## 3. Asset info and identity — Planned (`v0.4.0`)
 
@@ -158,6 +218,15 @@ would contradict the project's purpose rather than complete its API surface.
 This is a compatibility contract, not an omission, and it is stated as one so
 that neither a future contributor nor a consumer treats it as a gap to close.
 
+`GetDetachedAsset` is the one nearby entry point that is *not* refused, and the
+asymmetry is deliberate. It is inherited from `ArAsset`, whose implementation
+reads the whole asset into memory through `Read`. A host that turns detached
+layers on has asked for a layer's bytes to be independent of the asset it came
+from, and there is no way to provide that remotely except by transferring them;
+refusing would break the feature rather than bound the transfer. It is off by
+default, and a host that enables it globally has chosen a full download per
+layer.
+
 ### 4.2 What interoperability is claimed
 
 The claim this resolver makes is bounded and specific:
@@ -214,10 +283,21 @@ credentials cannot be served by a process-global.
 `ArResolver` methods are called concurrently. Every method here is thread-safe,
 without a global lock:
 
-- the identifier-to-metadata map is a concurrent map, not a mutex-wrapped one;
+- no lock is ever held across a request. The table of retained opens is guarded
+  for lookup and insertion only; the round trip happens under a per-identifier
+  lock that no other identifier can contend for;
 - one asset's open does not block another asset's read;
 - two concurrent resolutions of the same identifier perform one metadata
-  request, not two.
+  request, not two: the second thread waits on that identifier's lock and then
+  finds the first thread's answer.
+
+An earlier version of this section required the table itself to be a concurrent
+map rather than a mutex-guarded one. That was a statement about a data structure
+where the property that matters is the one above it — a global lock held across
+a network round trip is what would make one slow origin stall every other
+asset's resolution, and a short critical section around a hash lookup is not
+that. The requirement is stated as the property now, so that it can be satisfied
+without acquiring a concurrency library for one map.
 
 ## 8. Diagnostics
 

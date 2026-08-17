@@ -1,0 +1,8 @@
+# The bundle's staged shared library.
+#
+# `openstrata_configure_plugin` puts the built library here, in the *source*
+# tree, because plugInfo.json's LibraryPath is resolved relative to
+# plugInfo.json and a plugin bundle is a directory layout rather than a build
+# artifact. The root .gitignore already covers the Windows spelling; this covers
+# the other two, so that a Linux or macOS build does not offer to commit one.
+/lib/

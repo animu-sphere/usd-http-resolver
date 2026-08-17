@@ -3,10 +3,23 @@
 include(CMakeFindDependencyMacro)
 find_dependency(usdAssetIo)
 
-# libcurl is deliberately absent from this file. It is linked PRIVATE, appears
-# in no installed header, and is therefore not part of this package's usage
-# requirements -- which is what "the dependency is private" means in practice
-# (ADR-0003). A consumer of usdAssetHttp does not acquire libcurl.
+# libcurl is private in the two senses that matter to a consumer: no installed
+# header includes `curl.h`, and nothing here puts curl's include directories or
+# compile definitions on a consumer's target. That is ADR-0003's claim and it
+# holds.
+#
+# What does not hold, and was asserted here until the first consumer of this
+# installed package tried to use it, is that the dependency is invisible. This
+# module is a *static* library, so CMake records its PRIVATE link libraries as
+# `$<LINK_ONLY:CURL::libcurl>` in the exported target's interface -- a static
+# library carries no code for its dependencies, and whoever links it last has to
+# supply them. The target therefore has to exist, and a consumer that has not
+# found CURL fails at generate time with "the target was not found".
+#
+# So: found here, not left to the consumer. `plugins/http-resolver` is the first
+# thing to consume this package rather than the in-tree target, and it found
+# this immediately.
+find_dependency(CURL)
 
 include("${CMAKE_CURRENT_LIST_DIR}/usdAssetHttpTargets.cmake")
 

@@ -1,0 +1,20 @@
+{
+    "Plugins": [
+        {
+            "Type": "library",
+            "Name": "HttpResolver",
+            "Root": ".",
+            "LibraryPath": "../../../lib/libHttpResolver.dll",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                    "HttpResolver": {
+                        "bases": ["ArResolver"],
+                        "displayName": "HTTP range-read asset resolver",
+                        "uriSchemes": ["http", "https"]
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: Apache-2.0
+
+#include "HttpResolver.h"
+
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "pxr/usd/ar/defineResolver.h"
+#include "pxr/usd/ar/writableAsset.h"
+
+#include "Configuration.h"
+#include "Diagnostics.h"
+#include "Identifier.h"
+#include "Report.h"
+#include "ResolvedAsset.h"
+#include "usdAssetIo/Diagnostics.h"
+
+PXR_NAMESPACE_OPEN_SCOPE
+
+// Registers the type named in plugInfo.json. Both schemes are served by one
+// type (RESOLVER.md §1): `https` is the expected one and `http` exists for
+// local fixture servers and intranet hosts.
+AR_DEFINE_RESOLVER(HttpResolver, ArResolver);
+
+namespace {
+
+/// The status a legal-but-unimplemented operation fails with. Writing is the
+/// only one in this release.
+usdasset::Status UnsupportedWrite() {
+    return usdasset::Status::Error(
+        usdasset::StatusCode::Unsupported,
+        "assets are read-only; publish a new revision at a new path");
+}
+
+}  // namespace
+
+HttpResolver::HttpResolver() {
+    std::vector<usdhttpresolver::ConfigurationProblem> problems;
+    _options = usdhttpresolver::OptionsFromEnvironment(&problems);
+    for (const usdhttpresolver::ConfigurationProblem& problem : problems) {
+        // At first use, per CONFIGURATION.md §2, which for a process-global
+        // surface is when the resolver is constructed. A typo that silently
+        // does nothing is worse than one that is reported.
+        usdhttpresolver::ReportConfigurationProblem(problem);
+    }
+}
+
+HttpResolver::~HttpResolver() = default;
+
+std::string HttpResolver::_CreateIdentifier(
+    const std::string& assetPath,
+    const ArResolvedPath& anchorAssetPath) const {
+    return usdhttpresolver::CreateIdentifier(assetPath,
+                                             anchorAssetPath.GetPathString());
+}
+
+std::string HttpResolver::_CreateIdentifierForNewAsset(
+    const std::string& assetPath,
+    const ArResolvedPath& anchorAssetPath) const {
+    (void)assetPath;
+    (void)anchorAssetPath;
+    return std::string();
+}
+
+ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
+    // Normalized again rather than assumed: `_Resolve` is reachable with a path
+    // that never went through `_CreateIdentifier`, and resolving two spellings
+    // of one asset to two paths would give it two readers and two revisions.
+    const std::string identifier =
+        usdhttpresolver::CreateIdentifier(assetPath, std::string());
+    if (identifier.empty()) return ArResolvedPath();
+
+    const std::shared_ptr<_Opened> entry = _GetOrCreate(identifier);
+
+    std::lock_guard<std::mutex> lock(entry->mutex);
+    if (!entry->opened) {
+        entry->result = usdasset::http::Open(identifier, _options);
+        entry->opened = true;
+    }
+
+    if (entry->result.reader) {
+        return ArResolvedPath(identifier);
+    }
+
+    // A failure is not retained. Caching it would turn a server that was
+    // restarting into an asset that does not exist for the rest of the process.
+    const usdasset::Status status = entry->result.status;
+    _Forget(identifier);
+
+    if (status.code != usdasset::StatusCode::NotFound) {
+        usdhttpresolver::Report(status, identifier);
+    }
+    return ArResolvedPath();
+}
+
+ArResolvedPath HttpResolver::_ResolveForNewAsset(
+    const std::string& assetPath) const {
+    (void)assetPath;
+    return ArResolvedPath();
+}
+
+std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
+    const ArResolvedPath& resolvedPath) const {
+    const std::string identifier = usdhttpresolver::CreateIdentifier(
+        resolvedPath.GetPathString(), std::string());
+    if (identifier.empty()) return nullptr;
+
+    std::unique_ptr<usdasset::http::HttpAssetReader> reader;
+
+    if (const std::shared_ptr<_Opened> entry = _Take(identifier)) {
+        std::lock_guard<std::mutex> lock(entry->mutex);
+        reader = std::move(entry->result.reader);
+    }
+
+    if (!reader) {
+        // Either nothing resolved this identifier in this process, or the
+        // reader `_Resolve` captured has already been handed to somebody.
+        usdasset::http::HttpOpenResult result =
+            usdasset::http::Open(identifier, _options);
+        if (!result.reader) {
+            usdhttpresolver::Report(result.status, identifier);
+            return nullptr;
+        }
+        reader = std::move(result.reader);
+    }
+
+    // Captured before the reader is moved from, and valid for as long as the
+    // reader is: it is a member of the reader's own implementation.
+    const usdasset::ReaderMetrics* const metrics = &reader->Metrics();
+    return std::make_shared<HttpResolvedAsset>(std::move(reader), metrics);
+}
+
+std::shared_ptr<ArWritableAsset> HttpResolver::_OpenAssetForWrite(
+    const ArResolvedPath& resolvedPath, WriteMode writeMode) const {
+    (void)writeMode;
+    usdhttpresolver::Report(UnsupportedWrite(), resolvedPath.GetPathString());
+    return nullptr;
+}
+
+bool HttpResolver::_CanWriteAssetToPath(const ArResolvedPath& resolvedPath,
+                                        std::string* whyNot) const {
+    (void)resolvedPath;
+    if (whyNot != nullptr) {
+        *whyNot = usdhttpresolver::Render(UnsupportedWrite(), std::string());
+    }
+    return false;
+}
+
+std::string HttpResolver::_GetExtension(const std::string& assetPath) const {
+    return usdhttpresolver::ExtensionOf(assetPath);
+}
+
+std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(
+    const std::string& identifier) const {
+    std::lock_guard<std::mutex> lock(_tableMutex);
+
+    const auto found = _table.find(identifier);
+    if (found != _table.end()) return found->second;
+
+    std::shared_ptr<_Opened> entry = std::make_shared<_Opened>();
+    _table.emplace(identifier, entry);
+    _order.push_back(identifier);
+
+    while (_order.size() > kMaxRetainedOpens) {
+        // The evicted entry may still be held by a thread that is opening it;
+        // `shared_ptr` is what makes that safe. What it loses is the chance to
+        // reuse that open, which costs one later metadata request.
+        _table.erase(_order.front());
+        _order.pop_front();
+    }
+    return entry;
+}
+
+std::shared_ptr<HttpResolver::_Opened> HttpResolver::_Take(
+    const std::string& identifier) const {
+    std::lock_guard<std::mutex> lock(_tableMutex);
+
+    const auto found = _table.find(identifier);
+    if (found == _table.end()) return nullptr;
+
+    std::shared_ptr<_Opened> entry = found->second;
+    _table.erase(found);
+    for (auto it = _order.begin(); it != _order.end(); ++it) {
+        if (*it == identifier) {
+            _order.erase(it);
+            break;
+        }
+    }
+    return entry;
+}
+
+void HttpResolver::_Forget(const std::string& identifier) const {
+    std::lock_guard<std::mutex> lock(_tableMutex);
+    _table.erase(identifier);
+    for (auto it = _order.begin(); it != _order.end(); ++it) {
+        if (*it == identifier) {
+            _order.erase(it);
+            break;
+        }
+    }
+}
+
+PXR_NAMESPACE_CLOSE_SCOPE

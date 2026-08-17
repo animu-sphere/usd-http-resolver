@@ -18,9 +18,62 @@ It started with the HTTP client dependency decision rather than with code, and
 then with the server the code will be tested against rather than the code. Both
 prerequisites in §17 of the [design policy](docs/design/DESIGN_POLICY.md) were
 done first, in the order it fixed, and neither ships in the release. The backend
-they existed for has now landed.
+they existed for has landed, and so has the bundle that makes it reachable: a
+`UsdStage` now opens over HTTP.
 
 ### Added
+
+- `plugins/http-resolver`, the `ArResolver` bundle, and the first module in this
+  repository that includes an OpenUSD header. It registers `http` and `https` as
+  URI schemes — not as the primary resolver, so installing it never changes how
+  a local asset opens — and returns an `ArAsset` over the backend's reader. It
+  is thin by construction: no byte handling, no request assembly, and 45 lines
+  of it are the part that talks to OpenUSD's diagnostic system.
+- **A remote stage, asserted rather than described.** `httpResolver_test_stage`
+  stands up the hostile fixture corpus on loopback, opens a `UsdStage` over it,
+  follows a relative reference to a second remote layer, reads a 4 KiB window
+  out of a 1 MiB asset and checks the `Range` header the server actually
+  received, and confirms that a `404` is silent, that a transport failure is
+  not, that range-unsupported is terminal, and that a local stage still opens
+  exactly as it did. It is the only test here that links OpenUSD and the fixture
+  server at once, and it reaches the backend only through `ArResolver`.
+- Identifier normalization that makes one asset one identifier, tested as a
+  table and as a property: normalizing an identifier again must not change it.
+  Two rules in it are decisions rather than mechanics. **Percent-decoding runs
+  before dot segments are removed**, because `%2E%2E` is an encoded `..` and
+  leaving it for the origin to resolve means the resolver's idea of which asset
+  was named and the server's differ. **The userinfo is dropped**, because §4.3
+  of the design policy keeps credentials out of the resolver API and an
+  identifier *is* that API — so `https://user:token@host/a` fails at the origin
+  with `HTTP002` rather than succeeding with a secret in every log line.
+- Anchoring per RFC 3986 §5.2, which is what makes a remote scene work at all: a
+  layer published to a CDN references its neighbours relatively and none of
+  those references mentions a host. A relative path anchored to a *local* layer
+  returns empty and is left to the primary resolver.
+- One metadata request per resolution, reused by the open that follows. The
+  reader `Resolve` opened is retained and handed to the next `OpenAsset` **once**
+  — a second open for the same identifier opens again rather than sharing a
+  reader already bound to a revision somebody else is mid-composition on. Two
+  concurrent resolutions of one identifier make one request, no lock is held
+  across a round trip, and the table of retained opens is bounded, because a
+  resolve that is never followed by an open is normal and an unbounded table
+  would hold one reader per asset the process ever asked about.
+- The `HTTPxxx` projection, which the diagnostics contract allocated in `v0.1.0`
+  and nothing emitted until now. Every code in the table except `HTTP102`, which
+  ADR-0002 defers and which is deliberately absent from the code as well as
+  unreachable. Errors arrive as `TF_RUNTIME_ERROR`, cancellation as `TF_WARN`,
+  and an impossible request as `TF_CODING_ERROR`; `HTTP101` reports a retry that
+  succeeded, which costs latency and is otherwise invisible in a return value.
+- The five transport bounds in CONFIGURATION.md, read from the environment. A
+  value that does not parse warns and takes the default rather than failing the
+  process, and one bad value does not discard the other four. `0` is legal for
+  the two counters and refused for the three deadlines, because to most
+  transports a zero deadline means *no* deadline.
+- Three of the bundle's four tests link one translation unit and nothing else —
+  no OpenUSD, no sockets. Normalization, configuration, and the diagnostic
+  projection are arithmetic, and a mistake in the first is invisible from the
+  outside: two spellings of one asset become two opens and two revisions. A test
+  that would catch that must not need a USD runtime to run.
 
 - `libs/usd-asset-http`, the HTTP backend, and the first thing in this
   repository that touches a network. It serves byte ranges over `http` and
@@ -126,8 +179,41 @@ they existed for has now landed.
   dependencies.
 - The HTTP client is no longer a blocking item in
   [implementation status](docs/roadmap/implementation-status.md), and neither is
-  the fixture server or the backend. What remains in phase 2 is
-  `plugins/http-resolver`, `openstrata.ci.yaml`, and the recorded baseline.
+  the fixture server, the backend, or the bundle. What remains in phase 2 is
+  `openstrata.ci.yaml` — which now, for the first time, has a bundle to name —
+  and the recorded baseline.
+- [RESOLVER.md](docs/architecture/RESOLVER.md) §7 no longer requires the
+  identifier table to be "a concurrent map, not a mutex-wrapped one". That was a
+  statement about a data structure where the property that matters is the one
+  beside it: what must not happen is a lock held across a network round trip,
+  because that is what makes one slow origin stall every other asset's
+  resolution. A short critical section around a hash lookup is not that, and the
+  requirement is now written as the property so it can be met without acquiring
+  a concurrency library for one map.
+- [RESOLVER.md](docs/architecture/RESOLVER.md) §2.1 gains three rules the
+  implementation forced into the open: characters that cannot appear literally
+  in a URI are percent-encoded (a human-authored `tree bark.png` is a valid asset
+  path and not a valid URI), decoding runs before dot-segment removal, and the
+  userinfo is removed. §2.1.1 states why `GetExtension` is overridden at all —
+  the default returns `usda?X-Amz-Signature=…` for a signed URL, matches no file
+  format, and presents as an unsupported format rather than as the resolver bug
+  it is.
+- [docs/reports/ost/](docs/reports/ost/README.md) gains
+  [report 02](docs/reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md):
+  the first `usd-asset-resolver` bundle through `ost plugin build`, `doctor`, and
+  the verification pyramid. L0, L1, L3, L4, and L5 pass; **L2 fails
+  structurally**, because it asserts that `Resolve` returned a path and a network
+  resolver cannot satisfy that without an origin listening. The failure is
+  recorded rather than worked around: the two ways to make it green are a
+  local-file branch in the resolver, which would change how local assets open,
+  and a fixture that is a URL, which the on-disk fixture check would then fail.
+  The reports README predicted this subject before the bundle existed, and its
+  prediction is answered in place rather than rewritten.
+- [CONFIGURATION.md](docs/reference/CONFIGURATION.md) stops saying nothing here
+  is implemented. The five transport bounds are, with the defaults now written
+  in the table rather than promised, and `READ_TIMEOUT_MS` is described as what
+  the backend actually enforces — a deadline to the status line, not an
+  inter-byte one.
 - [WORKSPACE.md](docs/architecture/WORKSPACE.md) records a second legal reverse
   edge. There was one — the boundary row reaching the fixture server to
   provision remote fixtures — and `tests/corpus` is the other. Both live outside
@@ -143,8 +229,21 @@ they existed for has now landed.
 
 ### Fixed
 
-Two defects in the HTTP backend, both caught by suites that already passed
-before it existed — which is the return on having built them first.
+- **`usdAssetHttpConfig.cmake` did not find its own private dependency.** The
+  bundle is the first thing to consume the *installed* `usdAssetHttp` package
+  rather than the in-tree target, and it failed at generate time with "the link
+  interface of target `usdasset::http` contains `CURL::libcurl` but the target
+  was not found". The config file asserted, in a comment, that a `PRIVATE` link
+  is invisible to a consumer. That is true of a shared library and false of a
+  static one: CMake records a static library's private link libraries as
+  `$<LINK_ONLY:…>` in the exported interface, because the archive carries no
+  code for them and whoever links last has to supply them. ADR-0003's actual
+  claim — no installed header includes `curl.h`, no consumer inherits curl's
+  include directories or compile definitions — is unaffected, and the comment
+  was corrected rather than deleted.
+
+Two further defects in the HTTP backend, both caught by suites that already
+passed before it existed — which is the return on having built them first.
 
 - **A deadline that elapsed mid-body was resumed as though it were a short
   read.** The read loop treats a transfer that stopped early as resumable and

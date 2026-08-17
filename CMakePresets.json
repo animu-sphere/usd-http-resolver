@@ -13,6 +13,18 @@
             }
         },
         {
+            "name": "plugin-msvc",
+            "inherits": "default",
+            "displayName": "The whole repository, through the Visual Studio generator",
+            "description": "What `default` is on Windows outside a developer command prompt, and the way the ArResolver bundle is built there: the Ninja presets need cl.exe already on PATH, which is true inside a VS developer prompt and false in a plain shell. Point CMAKE_PREFIX_PATH at the OpenUSD runtime and at libcurl, separated by a semicolon.",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build/plugin",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": null
+            }
+        },
+        {
             "name": "core",
             "displayName": "Core libraries only (no OpenUSD)",
             "description": "Build and test everything under libs/ with no OpenUSD installation present. This is the normal way to work on the read contract, the backends, the cache, and the shared boundary suite; if it stops working, a libs/ module has acquired an OpenUSD dependency.",
@@ -58,6 +70,7 @@
     ],
     "buildPresets": [
         { "name": "default", "configurePreset": "default" },
+        { "name": "plugin-msvc", "configurePreset": "plugin-msvc", "configuration": "Release" },
         { "name": "core", "configurePreset": "core" },
         { "name": "core-msvc", "configurePreset": "core-msvc", "configuration": "Debug" },
         { "name": "core-asan", "configurePreset": "core-asan" },
@@ -65,6 +78,7 @@
     ],
     "testPresets": [
         { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
+        { "name": "plugin-msvc", "configurePreset": "plugin-msvc", "configuration": "Release", "output": { "outputOnFailure": true } },
         { "name": "core", "configurePreset": "core", "output": { "outputOnFailure": true } },
         { "name": "core-msvc", "configurePreset": "core-msvc", "configuration": "Debug", "output": { "outputOnFailure": true } },
         {
