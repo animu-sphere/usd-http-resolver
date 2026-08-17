@@ -143,21 +143,35 @@ int OnProgressWithClock(void* userdata,
     ProgressContext& context = *static_cast<ProgressContext*>(userdata);
     Exchange& exchange = *context.exchange;
 
-    curl_off_t elapsedUs = 0;
-    if (curl_easy_getinfo(context.handle, CURLINFO_TOTAL_TIME_T, &elapsedUs) != CURLE_OK) {
+    curl_off_t totalUs = 0;
+    if (curl_easy_getinfo(context.handle, CURLINFO_TOTAL_TIME_T, &totalUs) != CURLE_OK) {
         return 0;
     }
-    const curl_off_t elapsedMs = elapsedUs / 1000;
+    const curl_off_t totalMs = totalUs / 1000;
 
-    if (!exchange.headersComplete && exchange.responseMs > 0 &&
-        elapsedMs > exchange.responseMs) {
-        exchange.deadline = TransportError::ResponseTimeout;
-        return 1;
-    }
-    if (exchange.transferMs > 0 && elapsedMs > exchange.transferMs) {
+    // The transfer deadline is the whole exchange, so it is measured from the
+    // start of it.
+    if (exchange.transferMs > 0 && totalMs > exchange.transferMs) {
         exchange.deadline = exchange.headersComplete ? TransportError::TransferTimeout
                                                      : TransportError::ResponseTimeout;
         return 1;
+    }
+
+    // The response deadline is not. It is "connection established to status
+    // line received" -- the interval a *connect* deadline does not cover -- so
+    // measuring it from the start of the exchange charges DNS, TCP, and the TLS
+    // handshake against it, and fires up to `connectTimeoutMs` early with a
+    // message naming the wrong deadline. Pre-transfer time is when the request
+    // went out; before that there is nothing for this deadline to be about, and
+    // `CURLOPT_CONNECTTIMEOUT_MS` is what bounds it.
+    if (!exchange.headersComplete && exchange.responseMs > 0) {
+        curl_off_t pretransferUs = 0;
+        if (curl_easy_getinfo(context.handle, CURLINFO_PRETRANSFER_TIME_T,
+                              &pretransferUs) == CURLE_OK &&
+            pretransferUs > 0 && (totalUs - pretransferUs) / 1000 > exchange.responseMs) {
+            exchange.deadline = TransportError::ResponseTimeout;
+            return 1;
+        }
     }
     return 0;
 }
@@ -284,17 +298,40 @@ public:
         progress.exchange = &exchange;
         progress.handle = handle;
 
+        // Every append is checked, and the whole request is abandoned if one
+        // fails. `curl_slist_append` returns null on allocation failure and
+        // does *not* free what it was given, so the obvious
+        // `list = curl_slist_append(list, ...)` both leaks the list and drops
+        // every header silently -- and a dropped `Range` does not fail. It
+        // succeeds, as a `200` carrying the whole representation, which this
+        // backend would then correctly report as `RangeNotSupported`: a
+        // transient allocation failure wearing the name of a terminal server
+        // capability.
         curl_slist* headers = nullptr;
-        if (!request.range.empty()) {
-            headers = curl_slist_append(headers, ("Range: " + request.range).c_str());
-        }
-        if (!request.ifRange.empty()) {
-            headers = curl_slist_append(headers, ("If-Range: " + request.ifRange).c_str());
-        }
+        bool headersBuilt = true;
+        const auto appendHeader = [&headers, &headersBuilt](const std::string& line) {
+            if (!headersBuilt) return;
+            curl_slist* appended = curl_slist_append(headers, line.c_str());
+            if (appended == nullptr) {
+                headersBuilt = false;
+                return;
+            }
+            headers = appended;
+        };
+
+        if (!request.range.empty()) appendHeader("Range: " + request.range);
+        if (!request.ifRange.empty()) appendHeader("If-Range: " + request.ifRange);
         // Identity encoding, always. A compressed range response would make the
         // byte accounting below describe the wire rather than the asset, and
         // every framing check in this backend is arithmetic about asset offsets.
-        headers = curl_slist_append(headers, "Accept-Encoding: identity");
+        appendHeader("Accept-Encoding: identity");
+
+        if (!headersBuilt) {
+            curl_slist_free_all(headers);
+            _pool.Release(handle);
+            response.error = TransportError::Internal;
+            return response;
+        }
 
         curl_easy_setopt(handle, CURLOPT_URL, request.url.c_str());
         curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);

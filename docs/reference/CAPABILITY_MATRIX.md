@@ -69,7 +69,8 @@ not planned                   explicitly out of scope
 | Metadata request where `HEAD` is unavailable | not implemented | A `405` or `501` is reported as `Unsupported`. The fallback §4.1 admits would ship unexercised: the corpus has no row that refuses `HEAD` |
 | Redirects | implemented | Bounded by `maxRedirects` (default 5); `301`, `302`, `307`, `308`. `303` is not followed. An `https` → `http` `Location` is refused |
 | Timeouts | implemented | Connect, response, and transfer, separately, and the failure names which elapsed |
-| Bounded retry | implemented | `maxAttempts` (default 3), on `429`/`502`/`503`/`504` and on connection failures where nothing came back. Never on a deadline. Counted in metrics |
+| Bounded retry | implemented | `maxAttempts` (default 3), on `429`/`502`/`503`/`504` and on connection failures where nothing came back. Never on a deadline. One budget per logical operation, shared with the resume loop rather than nested inside it. Counted in metrics |
+| Malformed-framing refusals | implemented | Conflicting duplicate `Content-Length` or `Content-Range` lines, per RFC 9110 §8.6; a `Content-Range` describing bytes past the representation it claims to be part of; a length that would wrap |
 | Resume of a short transfer | implemented | The remainder is re-requested from where it stopped, bounded by the same budget; past it, `InvalidResponse` |
 | Range unsupported → hard error | implemented | `RangeNotSupported`, at open when `Accept-Ranges` is absent and at the first read when it was advertised and then ignored. No whole-asset fallback, per [ADR-0002](../adr/0002-range-unsupported-policy.md) |
 | Response body bounded by the request | implemented | The caller's buffer is the bound. A `200` answering a 64 KiB range request moves 64 KiB and is cut off |
@@ -105,7 +106,7 @@ not planned                   explicitly out of scope
 | Conditional range requests (`If-Range`) | implemented | On every range request after open, where the captured validator admits one. Not sent for a weak `ETag`, per RFC 9110 §13.1.5 |
 | `If-Range` with a `Last-Modified` validator | implemented, not covered by the corpus | The fixture server compares `If-Range` only against its `ETag`, so the server-side half cannot be exercised there. Unit-tested against a scripted transport |
 | Revision binding, one reader to one revision | implemented | Both backends. A correctness property of range reads, not of the cache |
-| `AssetChanged` detection | implemented | Local: the file identity re-derived after every transferring read. HTTP: two independent detectors — a `200` answering a conditional range, and a response whose validator or complete length contradicts the capture. Never repaired silently, never rebound |
+| `AssetChanged` detection | implemented | Local: the file identity re-derived after every transferring read. HTTP: two independent detectors — a `200` answering a conditional range, and a response whose validator or complete length contradicts the capture, including a `416` whose `bytes */<length>` does. Never repaired silently, never rebound |
 | In-memory block cache | planned (`v0.3.0`) | See [CACHE.md](../architecture/CACHE.md); validator-keyed from the start |
 | Request coalescing | planned (`v0.3.0`) | Measured gap and length thresholds |
 | Single-flight de-duplication | planned (`v0.3.0`) | Tested under ThreadSanitizer |

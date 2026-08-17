@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <string>
+#include <vector>
 
 namespace usdasset {
 namespace http {
@@ -197,44 +198,53 @@ std::string RemoveDotSegments(std::string_view path) {
     // The RFC's algorithm, written as a segment stack rather than as its
     // literal string rewriting: the two agree, and this form cannot leave a
     // half-consumed segment behind.
-    std::string output;
+    //
+    // An **empty segment is a segment**. `/a//b` has three of them and stays
+    // `/a//b`; RFC 3986 §5.2.4 removes `.` and `..` and nothing else. Collapsing
+    // `//` looks like tidying and is a rename: an object-storage key may
+    // legitimately contain an empty path segment, so the collapsed form names a
+    // different object, and a pre-signed URL whose signature covers the
+    // canonical path stops verifying. That is the same reason the query string
+    // is preserved verbatim two functions up.
     const bool absolute = !path.empty() && path.front() == '/';
 
-    std::size_t i = 0;
-    bool trailingSlash = false;
-    while (i < path.size()) {
-        if (path[i] == '/') {
-            ++i;
-            trailingSlash = true;
-            continue;
-        }
+    std::vector<std::string_view> segments;
+    // Whether the final segment was `.` or `..`, which the RFC's algorithm
+    // replaces with an empty segment -- `/a/b/..` is `/a/`, not `/a`.
+    bool endedWithDotSegment = false;
+
+    std::size_t i = absolute ? 1 : 0;
+    for (;;) {
         const std::size_t end = path.find('/', i);
         const std::string_view segment =
             end == std::string_view::npos ? path.substr(i) : path.substr(i, end - i);
-        i = end == std::string_view::npos ? path.size() : end;
 
         if (segment == ".") {
-            trailingSlash = true;
-            continue;
-        }
-        if (segment == "..") {
+            endedWithDotSegment = true;
+        } else if (segment == "..") {
             // Pop one segment. A `..` that would escape the root is discarded
             // rather than honored: it cannot name anything on the server, and
             // an origin that emits one in a `Location` must not be able to walk
             // a client's path arithmetic backwards past `/`.
-            const std::size_t slash = output.rfind('/');
-            output.erase(slash == std::string::npos ? 0 : slash);
-            trailingSlash = true;
-            continue;
+            if (!segments.empty()) segments.pop_back();
+            endedWithDotSegment = true;
+        } else {
+            segments.push_back(segment);
+            endedWithDotSegment = false;
         }
-        output += '/';
-        output.append(segment);
-        trailingSlash = false;
+
+        if (end == std::string_view::npos) break;
+        i = end + 1;
     }
 
-    if (trailingSlash) output += '/';
+    if (endedWithDotSegment) segments.emplace_back();
+
+    std::string output;
+    for (std::size_t k = 0; k < segments.size(); ++k) {
+        if (k > 0 || absolute) output += '/';
+        output.append(segments[k]);
+    }
     if (output.empty()) return absolute ? "/" : std::string();
-    if (!absolute && output.front() == '/') output.erase(0, 1);
     return output;
 }
 

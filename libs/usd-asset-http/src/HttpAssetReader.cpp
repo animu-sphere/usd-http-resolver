@@ -262,9 +262,22 @@ struct ExchangeResult {
 
 /// Issues one request, following bounded redirects and applying bounded retry.
 ///
-/// Total work is bounded by `maxRedirects * maxAttempts` requests, each with its
-/// own deadline, which is how §10's "cap retries and total time" is satisfied
-/// without a second clock.
+/// `retriesRemaining` is the budget for the whole logical operation, and is
+/// consumed rather than reset. An open, or one `Read`, allocates
+/// `maxAttempts - 1` retries once and every request under it draws from that
+/// pool -- including the resume attempts the read loop makes, which are retries
+/// however they are spelled.
+///
+/// Passing the budget rather than re-deriving it from `options` is the whole
+/// point. Two nested loops each bounded by `maxAttempts` are jointly bounded by
+/// its *square*, which is not what "requests per logical operation" means and
+/// is 27 requests where the caller asked for 3. Redirect hops draw from
+/// `maxRedirects` instead, because a hop is not a retry: a chain longer than the
+/// retry budget must still be followed to its end.
+///
+/// Total work is therefore bounded by `maxRedirects + maxAttempts` requests,
+/// each with its own deadline, which is how §10's "cap retries and total time"
+/// is satisfied without a second clock.
 ExchangeResult PerformExchange(Transport& transport,
                                const HttpOptions& options,
                                const Uri& start,
@@ -273,6 +286,7 @@ ExchangeResult PerformExchange(Transport& transport,
                                const std::string& ifRange,
                                void* body,
                                std::size_t capacity,
+                               int* retriesRemaining,
                                RequestSink& sink) {
     ExchangeResult result;
     result.finalUri = start;
@@ -283,7 +297,7 @@ ExchangeResult PerformExchange(Transport& transport,
     for (;;) {
         TransportResponse response;
 
-        for (int attempt = 1;; ++attempt) {
+        for (;;) {
             TransportRequest request;
             request.url = current.ToString();
             request.method = method;
@@ -303,7 +317,7 @@ ExchangeResult PerformExchange(Transport& transport,
             sink.Request(method == Method::Head, response.bodyBytes,
                          ElapsedMicroseconds(started));
 
-            if (attempt >= options.maxAttempts) break;
+            if (*retriesRemaining <= 0) break;
             // Retried only when nothing usable came back. A response whose
             // headers arrived is the caller's to judge, and a body that stopped
             // early is resumed by the read loop rather than re-fetched whole.
@@ -311,6 +325,7 @@ ExchangeResult PerformExchange(Transport& transport,
                 response.status == 0 ? IsRetryableTransportError(response.error)
                                      : IsRetryableStatus(response.status);
             if (!retryable) break;
+            --*retriesRemaining;
             sink.Retry();
         }
 
@@ -449,22 +464,37 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
     ReaderSink sink(_impl->metrics);
     TransportError lastError = TransportError::None;
 
-    for (int attempt = 0; done < range.length; ++attempt) {
-        if (attempt >= _impl->options.maxAttempts) {
-            // The budget is spent and the range is still short. Which failure
-            // this is depends on how the last attempt ended: a connection that
-            // was destroyed is a transport fault, and one that closed cleanly
-            // below the length it promised is a malformed response. The corpus
-            // has a row for each, and they are reported differently because a
-            // caller does different things about them.
-            if (lastError == TransportError::ConnectionLost) {
-                return ReadResult{done, ProjectTransportError(lastError, _impl->uri)
-                                            .WithRange(offset, size)};
+    // One budget for the whole read, shared with the retries `PerformExchange`
+    // makes underneath. A resume is a retry however it is spelled, and two
+    // loops each bounded by `maxAttempts` are jointly bounded by its square --
+    // which is not what the option means and is not what a caller asked for.
+    int retriesRemaining = _impl->options.maxAttempts > 0
+                               ? _impl->options.maxAttempts - 1
+                               : 0;
+    bool firstAttempt = true;
+
+    while (done < range.length) {
+        if (!firstAttempt) {
+            if (retriesRemaining <= 0) {
+                // The budget is spent and the range is still short. Which
+                // failure this is depends on how the last attempt ended: a
+                // connection that was destroyed is a transport fault, and one
+                // that closed cleanly below the length it promised is a
+                // malformed response. The corpus has a row for each, and they
+                // are reported differently because a caller does different
+                // things about them.
+                if (lastError == TransportError::ConnectionLost) {
+                    return ReadResult{done, ProjectTransportError(lastError, _impl->uri)
+                                                .WithRange(offset, size)};
+                }
+                return ReadResult{done,
+                                  ShortReadStatus(offset, range.length, done,
+                                                  _impl->metadata.resolvedIdentifier)};
             }
-            return ReadResult{done, ShortReadStatus(offset, range.length, done,
-                                                    _impl->metadata.resolvedIdentifier)};
+            --retriesRemaining;
+            sink.Retry();
         }
-        if (attempt > 0) sink.Retry();
+        firstAttempt = false;
 
         const std::uint64_t at = offset + done;
         const std::size_t remaining = range.length - done;
@@ -472,7 +502,7 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
         const ExchangeResult exchange = PerformExchange(
             *_impl->transport, _impl->options, _impl->uri, Method::Get,
             FormatByteRange(at, remaining), _impl->ifRangeValue, out + done, remaining,
-            sink);
+            &retriesRemaining, sink);
         if (!exchange.status.IsOk()) {
             return ReadResult{done, Status(exchange.status).WithRange(offset, size)};
         }
@@ -528,6 +558,41 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
         }
         if (response.status != 206) {
             if (response.status == 416) {
+                // A `416` is the one refusal that is usually *true*. The range
+                // this reader asked for lies inside the size it captured at
+                // open, so if the server says it is unsatisfiable, the most
+                // likely explanation is that the representation is no longer
+                // the one that size came from -- and a `416` is required to
+                // carry `Content-Range: bytes */<complete-length>`, which says
+                // so outright.
+                //
+                // Checked before the refusal is reported, because reporting
+                // `InvalidResponse` here would attach a message that is
+                // factually false: the range does *not* lie inside the asset
+                // any more. This is the same evidence the `200` branch uses,
+                // and it is the reason a shrinking asset is `AssetChanged`
+                // rather than a malformed server.
+                if (ContradictsCapturedValidator(response.headers,
+                                                 _impl->metadata.validator)) {
+                    return ReadResult{0, AssetChangedStatus(
+                                             exchange.finalUri,
+                                             "a range this reader had already sized "
+                                             "was refused, with a different validator")
+                                             .WithRange(offset, size)};
+                }
+                ContentRange unsatisfiable;
+                const std::string* refused = response.headers.Find("Content-Range");
+                if (refused != nullptr &&
+                    ParseContentRange(*refused, &unsatisfiable) &&
+                    unsatisfiable.unsatisfied &&
+                    unsatisfiable.completeLength != _impl->metadata.size) {
+                    return ReadResult{0, AssetChangedStatus(
+                                             exchange.finalUri,
+                                             "the representation is now a different "
+                                             "length, and no longer contains the range "
+                                             "this reader asked for")
+                                             .WithRange(offset, size)};
+                }
                 return ReadResult{
                     done, Status::Error(StatusCode::InvalidResponse,
                                         "the server refused a range that lies inside "
@@ -553,7 +618,12 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
 
         const std::string* rangeHeader = response.headers.Find("Content-Range");
         ContentRange contentRange;
-        if (rangeHeader == nullptr || !ParseContentRange(*rangeHeader, &contentRange) ||
+        // Same refusal as at open, for the two headers this branch's arithmetic
+        // rests on: a response that says two different things about where its
+        // bytes belong has not framed them.
+        if (response.headers.HasConflictingDuplicate("Content-Range") ||
+            response.headers.HasConflictingDuplicate("Content-Length") ||
+            rangeHeader == nullptr || !ParseContentRange(*rangeHeader, &contentRange) ||
             contentRange.unsatisfied) {
             return ReadResult{done,
                               Status::Error(StatusCode::InvalidResponse,
@@ -578,6 +648,23 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
         // that is internally consistent and describes a different window than
         // the one asked for is the case DIAGNOSTICS.md §6 names, and copying it
         // into the caller's buffer is silent data loss.
+        //
+        // The length half of this is stricter than RFC 9110 requires, and
+        // deliberately so. An origin may answer a single-range request with a
+        // prefix of it, and the resume loop below could accept that and ask for
+        // the rest -- but §10 of the design policy says to "validate that a
+        // Content-Range response actually covers the requested range before
+        // copying it into a caller's buffer", DIAGNOSTICS.md §6 uses precisely
+        // this response as its `InvalidResponse` example, and the corpus keeps
+        // `ContentRangeTooShort` as a hostile row on that basis. Relaxing it is
+        // a change to those documents first, for every backend, and not a
+        // quiet accommodation here.
+        //
+        // The cost is named rather than hidden: an origin that caps the size of
+        // a range response is refused instead of being read in pieces. Nothing
+        // in the corpus behaves that way, so nothing here would notice if the
+        // rule were wrong, which is the other half of why it stays a documented
+        // decision.
         if (contentRange.first != at || contentRange.Length() != remaining) {
             return ReadResult{
                 done,
@@ -657,9 +744,10 @@ struct HttpReaderFactory {
         }
 
         PendingSink sink;
+        int retriesRemaining = options.maxAttempts > 0 ? options.maxAttempts - 1 : 0;
         const ExchangeResult exchange =
             PerformExchange(*transport, options, uri, Method::Head, std::string(),
-                            std::string(), nullptr, 0, sink);
+                            std::string(), nullptr, 0, &retriesRemaining, sink);
         if (!exchange.status.IsOk()) {
             result.status = exchange.status;
             return result;
@@ -679,7 +767,14 @@ struct HttpReaderFactory {
         // avoid.
         std::uint64_t size = 0;
         const std::string* length = response.headers.Find("Content-Length");
-        if (length == nullptr || !ParseContentLength(*length, &size)) {
+        // Two `Content-Length` lines that disagree is the request-smuggling
+        // shape RFC 9110 §8.6 requires a message to be rejected for: an
+        // intermediary that believes one and an origin that believes the other
+        // disagree about where this message ends and the next begins. Asked as
+        // its own question, because `Find` has to return a single value and so
+        // cannot express the conflict.
+        if (response.headers.HasConflictingDuplicate("Content-Length") ||
+            length == nullptr || !ParseContentLength(*length, &size)) {
             result.status =
                 Status::Error(StatusCode::InvalidResponse,
                               "the server did not state a usable Content-Length, so "

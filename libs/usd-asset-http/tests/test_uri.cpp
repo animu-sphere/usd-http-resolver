@@ -104,6 +104,27 @@ void TestDotSegments() {
     // client's path arithmetic backwards past `/`.
     CHECK_EQ(RemoveDotSegments("/../../etc/passwd"), std::string("/etc/passwd"));
     CHECK_EQ(RemoveDotSegments("/a/../.."), std::string("/"));
+
+    // The RFC's own examples for what a dot segment leaves behind: removing the
+    // last segment leaves the trailing slash, because `..` is replaced by an
+    // empty segment rather than deleted.
+    CHECK_EQ(RemoveDotSegments("/a/b/.."), std::string("/a/"));
+    CHECK_EQ(RemoveDotSegments("/a/b/."), std::string("/a/b/"));
+
+    // An empty segment is a segment. §5.2.4 removes `.` and `..` and nothing
+    // else, and collapsing `//` is a rename rather than tidying: an
+    // object-storage key may legitimately contain one, so the collapsed form
+    // names a different object and a pre-signed URL stops verifying.
+    CHECK_EQ(RemoveDotSegments("/a//b"), std::string("/a//b"));
+    CHECK_EQ(RemoveDotSegments("//"), std::string("//"));
+    CHECK_EQ(RemoveDotSegments("/a///b"), std::string("/a///b"));
+    // ... and `..` pops an empty segment like any other.
+    CHECK_EQ(RemoveDotSegments("/a//../b"), std::string("/a/b"));
+
+    // The same, through the parser, which is where it actually bites: every
+    // path goes through this on the way in.
+    CHECK_EQ(Parse("https://example.org/bucket//key.copc").path,
+             std::string("/bucket//key.copc"));
 }
 
 void TestReferenceResolution() {

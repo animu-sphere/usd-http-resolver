@@ -49,6 +49,20 @@ void TestHeaderTable() {
     // `Content-Length` is a corpus behavior and has to be distinguishable from
     // one that is present and zero.
     CHECK_EQ(table.Get("Accept-Ranges"), std::string());
+
+    // Two lines that disagree is the request-smuggling shape RFC 9110 §8.6
+    // requires a message to be rejected for. `Find` cannot express it -- it has
+    // to return one value -- so it is a separate question.
+    CHECK(Headers({{"Content-Length", "10"}, {"Content-Length", "20"}})
+              .HasConflictingDuplicate("Content-Length"));
+    CHECK(Headers({{"content-length", "10"}, {"Content-Length", "20"}})
+              .HasConflictingDuplicate("Content-Length"));
+    // Repeated identically is redundant and harmless. Refusing it would fail
+    // against servers that merely repeat themselves.
+    CHECK(!Headers({{"Content-Length", "10"}, {"Content-Length", "10"}})
+               .HasConflictingDuplicate("Content-Length"));
+    CHECK(!table.HasConflictingDuplicate("Content-Length"));
+    CHECK(!table.HasConflictingDuplicate("Accept-Ranges"));
 }
 
 void TestContentRange() {

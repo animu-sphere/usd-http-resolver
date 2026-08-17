@@ -666,6 +666,143 @@ void TestDestroyedConnectionIsNotAShortRead() {
 
 // --- overflow and argument checking -------------------------------------------
 
+void TestRetryBudgetIsSharedAcrossOneRead() {
+    // The budget is per logical operation, and the resume loop draws from the
+    // same pool the transport-level retry does. Two loops each bounded by
+    // `maxAttempts` would be jointly bounded by its square: 3 becomes 9, and a
+    // caller who asked for three requests gets nine.
+    HttpOptions options;
+    options.maxAttempts = 3;
+
+    auto script = MakeScript([](const TransportRequest& request, int index) {
+        if (index == 0) return MetadataResponse(kSize, "\"v1\"");
+        const std::uint64_t first =
+            std::strtoull(request.range.c_str() + 6, nullptr, 10);
+        // Correctly framed, and then the connection dies every single time --
+        // which is retryable at the transport level *and* resumable at the read
+        // level, so it draws from both loops at once.
+        TransportResponse response;
+        response.status = 206;
+        response.connected = true;
+        response.headers.Add("Content-Range",
+                             "bytes " + std::to_string(first) + "-" +
+                                 std::to_string(first + request.bodyCapacity - 1) +
+                                 "/" + std::to_string(kSize));
+        response.headers.Add("ETag", "\"v1\"");
+        response.bodyBytes = 1;
+        std::memset(request.body, 0x55, 1);
+        response.error = TransportError::ConnectionLost;
+        return response;
+    });
+
+    HttpOpenResult opened = OpenWith(script, options);
+    CHECK(opened.reader != nullptr);
+    if (!opened.reader) return;
+
+    std::vector<unsigned char> buffer(256, 0);
+    const ReadResult read = opened.reader->Read(0, buffer.data(), 256);
+    CHECK_EQ(read.status.code, StatusCode::NetworkError);
+    // One metadata request, then the attempt budget for the read and not one
+    // request more: 1 + 3, never 1 + 9.
+    CHECK_EQ(script->Count(), 4);
+    CHECK_EQ(opened.reader->Metrics().Snapshot().retryCount, 2u);
+}
+
+void TestRefusedRangeThatMeansTheAssetMoved() {
+    // A `416` for a range that lies inside the size captured at open is the one
+    // refusal that is usually true: the representation is no longer the one
+    // that size came from. Reporting `InvalidResponse` there attaches a message
+    // that is factually false.
+    {
+        auto script = MakeScript([](const TransportRequest&, int index) {
+            if (index == 0) return MetadataResponse(kSize, "\"v1\"");
+            TransportResponse response;
+            response.status = 416;
+            response.connected = true;
+            response.headers.Add("Content-Range", "bytes */64");
+            return response;
+        });
+        HttpOpenResult opened = OpenWith(script);
+        CHECK(opened.reader != nullptr);
+        if (!opened.reader) return;
+
+        std::vector<unsigned char> buffer(256, 0);
+        const ReadResult read = opened.reader->Read(0, buffer.data(), 256);
+        CHECK_EQ(read.status.code, StatusCode::AssetChanged);
+        CHECK_EQ(read.bytesRead, std::size_t(0));
+    }
+    {
+        // A different validator says the same thing without a length.
+        auto script = MakeScript([](const TransportRequest&, int index) {
+            if (index == 0) return MetadataResponse(kSize, "\"v1\"");
+            TransportResponse response;
+            response.status = 416;
+            response.connected = true;
+            response.headers.Add("ETag", "\"v2\"");
+            response.headers.Add("Content-Range",
+                                 "bytes */" + std::to_string(kSize));
+            return response;
+        });
+        HttpOpenResult opened = OpenWith(script);
+        CHECK(opened.reader != nullptr);
+        if (!opened.reader) return;
+        std::vector<unsigned char> buffer(256, 0);
+        CHECK_EQ(opened.reader->Read(0, buffer.data(), 256).status.code,
+                 StatusCode::AssetChanged);
+    }
+    {
+        // A `416` that contradicts nothing is still a server refusing a range
+        // it had already sized, and that is a malformed exchange.
+        auto script = MakeScript([](const TransportRequest&, int index) {
+            if (index == 0) return MetadataResponse(kSize, "\"v1\"");
+            TransportResponse response;
+            response.status = 416;
+            response.connected = true;
+            response.headers.Add("ETag", "\"v1\"");
+            response.headers.Add("Content-Range",
+                                 "bytes */" + std::to_string(kSize));
+            return response;
+        });
+        HttpOpenResult opened = OpenWith(script);
+        CHECK(opened.reader != nullptr);
+        if (!opened.reader) return;
+        std::vector<unsigned char> buffer(256, 0);
+        CHECK_EQ(opened.reader->Read(0, buffer.data(), 256).status.code,
+                 StatusCode::InvalidResponse);
+    }
+}
+
+void TestConflictingContentLengthIsRefused() {
+    // RFC 9110 §8.6. An intermediary that believes the first and an origin that
+    // believes the last disagree about where this message ends and the next
+    // begins, which is the whole mechanism of request smuggling.
+    {
+        auto script = MakeScript([](const TransportRequest&, int) {
+            TransportResponse response;
+            response.status = 200;
+            response.connected = true;
+            response.headers.Add("Accept-Ranges", "bytes");
+            response.headers.Add("Content-Length", "4096");
+            response.headers.Add("Content-Length", "8192");
+            return response;
+        });
+        CHECK_EQ(OpenWith(script).status.code, StatusCode::InvalidResponse);
+    }
+    {
+        // Repeated identically is redundant, not hostile, and opens fine.
+        auto script = MakeScript([](const TransportRequest&, int) {
+            TransportResponse response;
+            response.status = 200;
+            response.connected = true;
+            response.headers.Add("Accept-Ranges", "bytes");
+            response.headers.Add("Content-Length", "4096");
+            response.headers.Add("Content-Length", "4096");
+            return response;
+        });
+        CHECK(OpenWith(script).reader != nullptr);
+    }
+}
+
 void TestCallerErrors() {
     auto script = MakeScript(Wellbehaved("\"v1\""));
     HttpOpenResult opened = OpenWith(script);
@@ -700,6 +837,9 @@ int main() {
     TestPartialBodyIsResumed();
     TestResumeIsBounded();
     TestDestroyedConnectionIsNotAShortRead();
+    TestRetryBudgetIsSharedAcrossOneRead();
+    TestRefusedRangeThatMeansTheAssetMoved();
+    TestConflictingContentLengthIsRefused();
     TestCallerErrors();
     return usdassettest::Report("usdAssetHttp/protocol");
 }

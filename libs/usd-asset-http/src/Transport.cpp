@@ -38,6 +38,19 @@ const std::string* HeaderTable::Find(std::string_view name) const {
     return found;
 }
 
+bool HeaderTable::HasConflictingDuplicate(std::string_view name) const {
+    const std::string* first = nullptr;
+    for (const auto& entry : _entries) {
+        if (!EqualsIgnoringCase(entry.first, name)) continue;
+        if (first == nullptr) {
+            first = &entry.second;
+            continue;
+        }
+        if (*first != entry.second) return true;
+    }
+    return false;
+}
+
 std::string HeaderTable::Get(std::string_view name) const {
     const std::string* value = Find(name);
     return value == nullptr ? std::string() : *value;

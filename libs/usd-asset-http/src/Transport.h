@@ -59,6 +59,21 @@ public:
 
     bool Has(std::string_view name) const { return Find(name) != nullptr; }
 
+    /// Whether the response carried this header more than once with values that
+    /// disagree.
+    ///
+    /// RFC 9110 §8.6 requires a message with conflicting `Content-Length`
+    /// fields to be rejected, and the reason is request smuggling: an
+    /// intermediary that believes the first and an origin that believes the
+    /// last disagree about where one message ends and the next begins.
+    /// `Find` cannot express that -- it has to return one value -- so the
+    /// refusal is a separate question asked before the value is used.
+    ///
+    /// Repeated with identical values is not a conflict. It is redundant and
+    /// harmless, and refusing it would fail against servers that merely repeat
+    /// themselves.
+    bool HasConflictingDuplicate(std::string_view name) const;
+
     void Clear() { _entries.clear(); }
 
     const std::vector<std::pair<std::string, std::string>>& Entries() const {

@@ -164,6 +164,43 @@ before it existed — which is the return on having built them first.
   pre-transfer time, which is non-zero however the connection was obtained.
   Found by the same row, and only after the first fix stopped masking it.
 
+Six more found by review of the branch before it merged, four of them in
+handling that only a hostile or unlucky server reaches:
+
+- **`RemoveDotSegments` collapsed empty path segments.** `/a//b` became `/a/b`,
+  and RFC 3986 §5.2.4 removes `.` and `..` and nothing else. It looks like
+  tidying and is a rename: an object-storage key may legitimately contain an
+  empty segment, so the collapsed form names a different object, and a
+  pre-signed URL whose signature covers the canonical path stops verifying.
+  Every path went through it on the way in.
+- **A `416` never asked whether the asset had simply changed.** A range this
+  reader already sized cannot lie outside the asset, so a server refusing it is
+  evidence the representation moved — and a `416` is required to carry
+  `bytes */<complete-length>`, which says so outright. It reported
+  `InvalidResponse` with a message that was factually false. It was the one
+  status with no coverage for the release's central guarantee.
+- **The retry budget was nested rather than shared.** `maxAttempts` bounded the
+  read's resume loop and the transport's retry loop independently, so one
+  `Read` could cost `maxAttempts²` requests against a documented per-operation
+  cap of `maxAttempts` — nine where the caller asked for three. One budget is
+  now allocated per logical operation and both loops draw from it; redirect hops
+  still draw from `maxRedirects`, because a hop is not a retry.
+- **The response deadline was charged for the connect.** It was measured from
+  the start of the exchange rather than from when the request went out, so it
+  could fire up to `connectTimeoutMs` early — and name the wrong deadline, which
+  is the one thing `HTTP006` is required to get right.
+- **`curl_slist_append`'s return was unchecked.** It returns null on allocation
+  failure and does not free what it was given, so the obvious idiom both leaks
+  the list and drops every header. A dropped `Range` does not fail: it succeeds,
+  as a `200` carrying the whole representation, which this backend would then
+  correctly report as `RangeNotSupported` — a transient allocation failure
+  wearing the name of a terminal server capability.
+- **Conflicting duplicate `Content-Length` lines were accepted.** Last-wins,
+  where RFC 9110 §8.6 requires the message to be rejected; an intermediary that
+  believes the first and an origin that believes the last disagree about where
+  one message ends and the next begins. Repeated *identical* values are still
+  accepted, because that is redundant rather than hostile.
+
 One defect in the metrics accounting, found by an assertion on counters rather
 than on behavior:
 
@@ -232,6 +269,15 @@ have been debugged as backend bugs.
   conditional path there — a fixture shaped that way would fail for the
   fixture's reason rather than the backend's. The behavior is unit-tested
   against a scripted transport; the server-side half is what is missing.
+- **A `206` covering less than was asked for is refused, which is stricter than
+  RFC 9110 requires.** An origin may answer a single-range request with a prefix
+  of it, and the resume loop could accept that and ask for the rest; §10 of the
+  design policy, DIAGNOSTICS.md §6, and the corpus's `ContentRangeTooShort` row
+  all say not to. Relaxing it is a change to those documents first, for every
+  backend, and not a quiet accommodation in one. The cost: an origin that caps
+  the size of a range response is refused rather than read in pieces, and
+  nothing in the corpus behaves that way, so nothing would notice if the rule
+  were wrong.
 - **The sanitizer lanes do not instrument libcurl.** It is the runner's own
   package, so the evidence is about this repository's code and not about the
   client behind the seam. That is the intended scope — what needed proving is

@@ -169,7 +169,15 @@ its validator and its length still match. Branching on "did this reader send
 | Open | Capture a validator, classify its strength, derive the conditional guard |
 | Every range request | Send `If-Range`, where the captured validator admits one |
 | Every range response | Compare its validator, and its complete length, against what was captured |
+| A refused range (`416`) | The same comparison, against `bytes */<complete-length>` |
 | On any mismatch | `AssetChanged`, `bytesRead == 0`, and never a rebind |
+
+The `416` row is easy to miss and is the one status where the obvious reading is
+backwards. A range this reader already sized cannot lie outside the asset, so a
+server refusing it is evidence that the representation is no longer the one that
+size came from — and a `416` is required to carry `bytes */<complete-length>`,
+which says so outright. Reporting it as a malformed response attaches a message
+that is factually false.
 
 Two independent detectors, because neither covers the other. `If-Range` makes
 the *server* refuse, which is the cheaper and more atomic answer; the response
@@ -202,7 +210,9 @@ response whose weak validator has changed is still positive evidence of
 | `Content-Range` that does not cover the request | `InvalidResponse` |
 | Missing or unparseable `Content-Length` at open | `InvalidResponse` |
 | Body shorter than the framing declared, after the retry budget | `InvalidResponse` |
-| `416` for a range inside the size reported at open | `InvalidResponse` |
+| Conflicting duplicate `Content-Length` or `Content-Range` lines | `InvalidResponse` |
+| `416` for a range inside the size reported at open, with nothing contradicted | `InvalidResponse` |
+| `416` whose `bytes */<length>` or validator contradicts the capture | `AssetChanged` |
 | Redirect chain past `maxRedirects`; no `Location`; unusable `Location` | `InvalidResponse` |
 | `https` → `http` redirect | `InvalidResponse` |
 | Response that is not HTTP | `InvalidResponse` |
@@ -231,7 +241,16 @@ refusal rather than a framing fault, and a future code for it would be a
 | Retry | `maxAttempts`, default 3 | `429`, `502`, `503`, `504`, and connection-level failures where nothing came back |
 | Not retried | — | Any deadline; `500`; any response whose headers arrived and whose status is final |
 | Resumed | — | A body that stopped early, from where it stopped — not re-fetched whole |
-| Total work | bounded | `maxRedirects × maxAttempts` requests, each with its own deadline |
+| Total work | bounded | `maxRedirects + maxAttempts` requests, each with its own deadline |
+
+The retry budget is **per logical operation and shared**, not per loop. One
+`Read` allocates `maxAttempts - 1` retries once, and both the transport-level
+retry and the resume of a short body draw from that one pool; a resume is a
+retry however it is spelled. Two nested loops each bounded by `maxAttempts`
+would be jointly bounded by its square, which is not what the option means and
+is nine requests where the caller asked for three. Redirect hops draw from
+`maxRedirects` instead, because a hop is not a retry: a chain longer than the
+retry budget must still be followed to its end.
 
 Deadlines are separable because `HTTP006` is required to name which one elapsed:
 a caller staring at "timeout" cannot tell a firewall from a slow origin. A
@@ -344,6 +363,17 @@ No redistribution constraint applies to a plugin binary. Recorded in
   the row rather than discovering it from a test that skips itself.
 - **Multipart range responses are not accepted.** Out of `v0.x` scope; a request
   that would need one is split.
+- **A `206` covering less than was asked for is refused, which is stricter than
+  RFC 9110.** An origin may answer a single-range request with a prefix of it,
+  and the resume loop could accept that and ask for the rest. It does not,
+  because §10 of the design policy says to validate that a `Content-Range`
+  covers the requested range before copying it, DIAGNOSTICS.md §6 uses precisely
+  this response as its `InvalidResponse` example, and the corpus keeps
+  `ContentRangeTooShort` as a hostile row on that basis. Relaxing it is a change
+  to those documents first, for every backend. The cost, named rather than
+  hidden: an origin that caps the size of a range response is refused instead of
+  being read in pieces, and nothing in the corpus behaves that way, so nothing
+  here would notice if the rule were wrong.
 - **`RST` against `FIN` is distinguished only where the platform distinguishes
   it.** A destroyed connection is `NetworkError` and a clean close below the
   declared length is `InvalidResponse`, but which of the two a peer observes is
