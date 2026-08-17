@@ -5,11 +5,17 @@ checkable.
 
 Status: the counters in §2.1 and §2.3, the derived ratios in §2.4, the per-reader
 lifetime and process aggregate in §3, and the environment-keyed dump in §5 are
-implemented in `libs/usd-asset-io` (`usdAssetIo/Metrics.h`) and populated by the
-local backend. The cache counters in §2.2 are defined and stay at zero until
-`v0.3.0`. The HTTP counters populate in `v0.2.0`, including the requests issued
-by validator capture and by conditional range requests. No baseline in §6 is
-recorded yet: `v0.1.0` moves no bytes over a network.
+implemented in `libs/usd-asset-io` (`usdAssetIo/Metrics.h`) and populated by both
+backends. The HTTP counters populate, including the requests issued by validator
+capture and by conditional range requests, and `retryCount` and `redirectCount`
+are asserted from tests rather than assumed. The cache counters in §2.2 are
+defined and stay at zero until `v0.3.0`.
+
+No baseline in §6 is recorded yet. `v0.2.0` is the first release that *can*
+record one — bytes now cross a network — and until it does, this project makes
+no performance claim. What is missing is not instrumentation but a fixture: the
+loopback corpus assets are kilobytes, and `selectivity` measured against them
+would be a number without a meaning.
 
 ## 1. Why this is a contract and not a debug feature
 

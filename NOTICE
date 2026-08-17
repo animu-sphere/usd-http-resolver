@@ -20,19 +20,54 @@ specific language governing permissions and limitations under the License.
 Third-party components
 ----------------------
 
-This release bundles no third-party source and links no third-party library.
+This release bundles no third-party source. It links one third-party library,
+libcurl, from libs/usd-asset-http alone.
 
-The core libraries under libs/ depend on the C++17 standard library and on
-platform system calls only.
+Every other library under libs/ — usd-asset-io and usd-asset-local — depends on
+the C++17 standard library and on platform system calls only, and so does the
+hostile-server fixture corpus under tests/.
 
-The HTTP client dependency that libs/usd-asset-http will own has been chosen:
-libcurl (https://curl.se), under the curl license, an MIT/X11 derivative that
-places no constraint on redistribution of a plugin binary. The decision and its
+libcurl
+-------
+
+https://curl.se
+
+Acquired through find_package and linked privately and statically by
+libs/usd-asset-http. No libcurl source is bundled in this repository, and no
+libcurl type appears in any header this project installs. The decision and its
 grounds are docs/adr/0003-http-client-dependency.md; the criteria it was made
-against are docs/design/DESIGN_POLICY.md §13. No libcurl code is bundled here
-and none is linked yet — it is acquired through find_package, and it arrives
-with the first libs/usd-asset-http commit in v0.2.0. Its copyright notice and
-license text are recorded in this file at that point.
+against are docs/design/DESIGN_POLICY.md §13.
+
+The curl license is an MIT/X11 derivative and places no constraint on
+redistribution of a plugin binary:
+
+    COPYRIGHT AND PERMISSION NOTICE
+
+    Copyright (c) 1996 - 2026, Daniel Stenberg, <daniel@haxx.se>, and many
+    contributors, see the THANKS file.
+
+    All rights reserved.
+
+    Permission to use, copy, modify, and distribute this software for any purpose
+    with or without fee is hereby granted, provided that the above copyright
+    notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN
+    NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+    DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+    OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+    OR OTHER DEALINGS IN THE SOFTWARE.
+
+    Except as contained in this notice, the name of a copyright holder shall not
+    be used in advertising or otherwise to promote the sale, use or other dealings
+    in this Software without prior written authorization of the copyright holder.
+
+A binary distribution of libcurl may carry further notices for the TLS backend
+and other components it was built against — on Windows and macOS this project
+expects the platform's own TLS, which adds no third-party notice. A packaged
+release records what its own build actually linked.
 
 OpenUSD (https://openusd.org), which the plugin bundle under plugins/ links
 against from v0.2.0, is licensed under the Apache License, Version 2.0 with the

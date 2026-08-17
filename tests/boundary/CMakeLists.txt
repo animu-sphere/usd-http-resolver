@@ -42,6 +42,9 @@ function(usd_http_resolver_add_boundary_backend _name _source)
     if(MSVC)
         target_compile_options(${_target} PRIVATE /utf-8)
     endif()
+    if(COMMAND usd_http_resolver_stage_runtime_dependencies)
+        usd_http_resolver_stage_runtime_dependencies(${_target})
+    endif()
     foreach(_group fixed property concurrent)
         add_test(NAME boundary_${_name}_${_group}
                  COMMAND ${_target} ${_group})
@@ -53,7 +56,11 @@ if(TARGET usdasset::local)
         backends/boundary_local_main.cpp usdasset::local)
 endif()
 
-# v0.2.0 adds one line here:
-#
-#   usd_http_resolver_add_boundary_backend(http
-#       backends/boundary_http_main.cpp usdasset::http)
+# The line v0.2.0 said it would be. The HTTP row additionally links the fixture
+# server, which is the one reverse edge WORKSPACE.md §2 admits for it: a remote
+# backend has to arrange for its bytes to exist somewhere a transport can reach,
+# and that is exactly what fixture provisioning means for it.
+if(TARGET usdasset::http)
+    usd_http_resolver_add_boundary_backend(http
+        backends/boundary_http_main.cpp usdasset::http usdasset::fixtureserver)
+endif()

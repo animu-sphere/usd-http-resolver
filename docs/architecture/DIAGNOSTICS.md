@@ -4,15 +4,24 @@ This document defines the typed error vocabulary shared by every module, and
 its projection onto the stable `HTTPxxx` codes the plugin bundle emits.
 
 Status: the vocabulary is implemented in `libs/usd-asset-io`
-(`usdAssetIo/Diagnostics.h`), and the local backend maps its failures onto it.
-The `HTTPxxx` projection in §5 and the transport codes populate in `v0.2.0` with
-the plugin bundle; nothing emits an `HTTPxxx` code today.
+(`usdAssetIo/Diagnostics.h`), and both backends map their failures onto it. The
+transport codes — `RangeNotSupported`, `InvalidResponse`, `NetworkError`,
+`Timeout`, `AssetChanged`, `Unsupported` — are all produced by
+`libs/usd-asset-http`, and the mapping from each condition to each code is in
+that module's README and asserted in `tests/corpus`. The `HTTPxxx` projection in
+§5 is the *plugin's* rendering and still arrives with the bundle; nothing emits
+an `HTTPxxx` code today.
 
-`AssetChanged` is emitted from `v0.2.0`, with the first HTTP backend, and not
-later. It is not a cache diagnostic: a range reader can compose two revisions
-into one byte sequence with no cache present at all, which is why validator
-capture ships with the backend that can violate the guarantee. See §2.1 of
+`AssetChanged` is emitted, by both backends. It is not a cache diagnostic: a
+range reader can compose two revisions into one byte sequence with no cache
+present at all, which is why validator capture shipped with the backend that
+can violate the guarantee rather than after it. See §2.1 of
 [ASSET_READER.md](ASSET_READER.md).
+
+`Cancelled` is the one code in §2 that nothing produces. The read contract
+carries no cancellation token and neither transport can be told out of band; the
+boundary suite is told so by each backend's row rather than discovering it from
+a test that skips itself.
 
 ## 1. Principle
 

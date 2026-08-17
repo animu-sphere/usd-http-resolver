@@ -252,7 +252,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
-| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The client dependency is decided — libcurl, ADR-0003 |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend has landed and passes the boundary suite unchanged; the resolver bundle is what remains |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
@@ -267,10 +267,10 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | W1 | Read contract, metadata, validator value types, typed diagnostics, metrics | 1 | Done |
 | W2 | Local backend and the shared boundary suite | 1 | Done |
-| W3 | HTTP transport, redirects, timeouts, retry | 2 | Planned |
-| W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Planned |
-| W5 | Hostile-server fixture corpus | 2 | Planned |
-| W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Planned |
+| W3 | HTTP transport, redirects, timeouts, retry | 2 | Done |
+| W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Planned — all that remains of phase 2 |
+| W5 | Hostile-server fixture corpus | 2 | Done — and consumed, by `tests/corpus` |
+| W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Done — shipped with W3, not after it |
 | W7 | Block cache, coalescing, single-flight, eviction | 3 | Planned |
 | W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Planned |
 | W9 | Consumer integration and amplification baselines | 5 | Planned |
@@ -280,6 +280,13 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 W1 and W2 exist to make W3 cheap and verifiable. The order is not negotiable:
 an HTTP backend written before the boundary suite is an HTTP backend whose bugs
 are indistinguishable from server behavior.
+
+That claim has now been tested rather than asserted. W3 entered the suite as one
+row and a single line of CMake, the suite itself was not touched, and the two
+defects the work surfaced — a deadline mid-body being resumed as though it were
+a short read, and a connection-reuse detail that misnamed which deadline had
+elapsed — were both found by a suite that already passed rather than argued
+about against a live server.
 
 W6 is deliberately in phase 2 rather than alongside W8. It is the part of
 validator work that a range backend cannot ship without; W8 is the part that

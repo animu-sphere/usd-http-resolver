@@ -105,6 +105,32 @@ if(USD_HTTP_RESOLVER_SANITIZER)
             "usd-http-resolver: sanitizers '${USD_HTTP_RESOLVER_SANITIZER}'")
 endif()
 
+# --- runtime dependencies beside a test executable ---------------------------
+#
+# The one third-party dependency this repository takes -- libcurl, ADR-0003 --
+# is a shared library on Windows in every acquisition the ADR names. A test
+# executable that links it builds and then dies before main with
+# STATUS_DLL_NOT_FOUND unless the DLL is beside it or on PATH, which is true
+# inside a vcpkg-aware shell and false on a stock CI runner and in `ctest`.
+#
+# Resolved by copying rather than by putting a package manager's bin directory
+# on PATH: the copy is expressed in terms of the target's own link closure, so
+# it stays correct if the dependency is acquired some other way, and it makes
+# `ctest` work the same as running the executable by hand. A no-op everywhere
+# the link closure has no runtime DLLs, which is every platform but Windows.
+function(usd_http_resolver_stage_runtime_dependencies _target)
+    if(NOT WIN32)
+        return()
+    endif()
+    add_custom_command(TARGET ${_target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E
+                "$<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${_target}>>,copy_if_different,true>"
+                "$<TARGET_RUNTIME_DLLS:${_target}>"
+                "$<TARGET_FILE_DIR:${_target}>"
+        COMMAND_EXPAND_LISTS
+        VERBATIM)
+endfunction()
+
 # --- libs/ -------------------------------------------------------------------
 #
 # Always built, never dependent on OpenUSD. The list is the landing order from

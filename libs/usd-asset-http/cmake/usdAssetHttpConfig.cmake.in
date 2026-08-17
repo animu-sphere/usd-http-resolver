@@ -1,0 +1,13 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(usdAssetIo)
+
+# libcurl is deliberately absent from this file. It is linked PRIVATE, appears
+# in no installed header, and is therefore not part of this package's usage
+# requirements -- which is what "the dependency is private" means in practice
+# (ADR-0003). A consumer of usdAssetHttp does not acquire libcurl.
+
+include("${CMAKE_CURRENT_LIST_DIR}/usdAssetHttpTargets.cmake")
+
+check_required_components(usdAssetHttp)

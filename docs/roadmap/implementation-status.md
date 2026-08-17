@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-16.
+Last updated: 2026-08-17.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -12,11 +12,18 @@ core lane builds and tests on Windows, Linux, and macOS arm64 with no OpenUSD
 present; and the sanitizer lanes run green. The release gate and what it found
 are in [the release record](../releases/v0.1.0.md).
 
-Phase 2 is under way. Its two prerequisites are done, in the order §17 of the
-[design policy](../design/DESIGN_POLICY.md) fixed: the HTTP client is chosen and
-recorded, and the hostile-server corpus stands up and passes. Neither is code
-the release ships, and both exist so that the code it does ship is written
-against something that already works.
+Phase 2 is under way and its centre of gravity has landed. Both prerequisites
+were done first, in the order §17 of the
+[design policy](../design/DESIGN_POLICY.md) fixed — the client chosen and
+recorded, then the hostile corpus standing up — and `libs/usd-asset-http` was
+then written against two things that already passed. It passes the boundary
+suite unchanged, every corpus behavior is projected onto a typed code, and both
+sanitizer lanes are green over the HTTP path.
+
+What remains in phase 2 is everything above the backend: the `ArResolver`
+bundle, the `HTTPxxx` projection, `openstrata.ci.yaml`, and the release's
+recorded I/O baseline. No consumer can open a remote asset until the bundle
+exists.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -74,20 +81,23 @@ against something that already works.
 | HTTP client dependency decision, recorded as an ADR | Accepted — libcurl, private `find_package`, [ADR-0003](../adr/0003-http-client-dependency.md) |
 | Hostile-server fixture corpus, standing up before the backend | Done — `tests/fixture-server`, 18 behaviors, self-checked over a raw socket |
 | Corpus covers all nine conditions in §11.2 of the design policy | Done — plus three from ADR-0003, §4.1, and DIAGNOSTICS.md §4.4; coverage asserted at runtime, not claimed |
-| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding |
-| `libs/usd-asset-http`: range, metadata, redirect, timeout, retry | Outstanding |
-| Response framing validation (`Content-Range` covers the request) | Outstanding |
-| Range-unsupported hard error per ADR-0002, with no fallback path | Outstanding |
-| Validator capture at open, with kind and strength classified | Outstanding |
-| `If-Range` on every range request after open | Outstanding |
-| `AssetChanged` detection and reporting | Outstanding |
-| Boundary test forbidding revision mixing within one reader | Outstanding |
+| `libs/usd-asset-http`: range, metadata, redirect, timeout, retry | Done — behind the internal transport seam ADR-0003 requires; libcurl in one translation unit |
+| Response framing validation (`Content-Range` covers the request) | Done — against the request, not against the response itself |
+| Range-unsupported hard error per ADR-0002, with no fallback path | Done — at open from `Accept-Ranges`, and at the first read for a server that advertised and then ignored |
+| Validator capture at open, with kind and strength classified | Done — strong `ETag`, weak `ETag`, `Last-Modified`, or none |
+| `If-Range` on every range request after open | Done — where the captured validator admits one; asserted from the fixture server's request log |
+| `AssetChanged` detection and reporting | Done — two independent detectors: a `200` answering a conditional range, and a response contradicting the captured validator or length |
+| Boundary test forbidding revision mixing within one reader | Done — the suite's own republish case, now with an HTTP row |
+| Backend run against the hostile corpus, every behavior projected onto the typed vocabulary | Done — `tests/corpus`; coverage asserted against `AllBehaviors()` at runtime |
+| Boundary suite passing against the HTTP backend, unchanged | Done — 243 fixed cases, 10,000 property cases, and the concurrency cases; not one line of the suite changed |
+| Sanitizer lanes over the HTTP path | Done — ASan, UBSan, and TSan green, including the boundary row and the corpus projection |
+| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding — still no bundle to name |
 | `plugins/http-resolver`: registration, normalization, anchoring | Outstanding |
 | `ArAsset` adapter, with `GetBuffer()` null by contract | Outstanding |
-| `HTTPxxx` projection and OpenUSD diagnostics | Outstanding |
-| Backend run against the hostile corpus, every behavior projected onto the typed vocabulary | Outstanding — the corpus is ready; nothing consumes it yet |
-| Boundary suite passing against the HTTP backend, unchanged | Outstanding |
-| Cross-platform CI cells (Windows, Linux, macOS arm64) | Outstanding |
+| `HTTPxxx` projection and OpenUSD diagnostics | Outstanding — allocated in the contract; nothing emits one |
+| Metadata request where `HEAD` is unavailable | Outstanding, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
+| Recorded I/O baseline for the release | Outstanding — `v0.2.0` is the first release that can record one |
+| Cross-platform CI cells (Windows, Linux, macOS arm64) | Done for the core lane — `core-ci.yml` installs libcurl per platform and still asserts from the configure log that OpenUSD was never reached |
 
 ## Phase 3 — cache (`v0.3.0`)
 
@@ -157,21 +167,26 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. `libs/usd-asset-http` against the boundary suite unchanged, behind the narrow
-   transport seam [ADR-0003](../adr/0003-http-client-dependency.md) requires,
-   with validator capture and `If-Range` from its first commit rather than after
-   it — a range reader without them can compose two revisions into one byte
-   sequence with no request failing. Both things it is written against are now
-   passing: the boundary suite, and the hostile corpus in
-   [tests/fixture-server](../../tests/fixture-server/README.md). That is the
-   whole point of having built them first, and it is what makes the first
-   argument about a failing range read a short one.
-2. The projection of each corpus behavior onto the typed vocabulary — which
-   `Behavior` produces which `StatusCode` — is the backend's first test file,
-   and the corpus deliberately states no opinion about it. Nothing in
-   `tests/fixture-server` knows what `InvalidResponse` is, so a disagreement
-   between the two is evidence rather than a tautology.
-3. `openstrata.ci.yaml` lands within phase 2, once `plugins/http-resolver`
-   exists to name, and never absorbs the two runtime-free lanes.
-4. `v0.2.0` is the first release that can record an I/O baseline, and the first
-   for which gates 4, 6, and 9 bind.
+1. `plugins/http-resolver`: the `ArResolver` bundle registering `http` and
+   `https`, URI normalization and anchoring per
+   [RESOLVER.md](../architecture/RESOLVER.md), the `ArAsset` adapter with
+   `GetBuffer()` null by contract, and the `HTTPxxx` projection. It is the only
+   thing between a working range backend and a consumer that can open a remote
+   asset, and it is the first module in this repository that includes an OpenUSD
+   header.
+2. `openstrata.ci.yaml` lands with that bundle, which is the first thing here a
+   cell can name, and never absorbs the two runtime-free lanes.
+3. The recorded I/O baseline. `v0.2.0` is the first release that can produce
+   one, and §6 of [METRICS.md](../architecture/METRICS.md) names the five
+   scenarios it has to cover. The counters exist and are populated; what does
+   not exist yet is a fixture large enough for `selectivity` to mean anything.
+4. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
+   first time in this release, having been not-applicable in `v0.1.0`.
+
+Done, and no longer next: `libs/usd-asset-http` itself, and the corpus
+projection that was to be its first test file. Both things it was written
+against were already passing when it started — the boundary suite and the
+hostile corpus — which is the whole point of having built them first, and it is
+why the arguments about failing range reads during this work were short ones.
+Two defects found that way are recorded in the
+[changelog](../../CHANGELOG.md).
