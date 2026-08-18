@@ -9,8 +9,10 @@ transport codes — `RangeNotSupported`, `InvalidResponse`, `NetworkError`,
 `Timeout`, `AssetChanged`, `Unsupported` — are all produced by
 `libs/usd-asset-http`, and the mapping from each condition to each code is in
 that module's README and asserted in `tests/corpus`. The `HTTPxxx` projection in
-§5 is the *plugin's* rendering and still arrives with the bundle; nothing emits
-an `HTTPxxx` code today.
+§5 is the *plugin's* rendering and arrived with the bundle in `v0.2.0`:
+`plugins/http-resolver` emits every code in the table except `HTTP102`, and the
+table itself is asserted in `httpResolver_test_diagnostics` rather than trusted
+to a switch statement.
 
 `AssetChanged` is emitted, by both backends. It is not a cache diagnostic: a
 range reader can compose two revisions into one byte sequence with no cache

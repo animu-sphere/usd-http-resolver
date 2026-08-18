@@ -252,7 +252,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
-| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend has landed and passes the boundary suite unchanged; the resolver bundle is what remains |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend and the bundle have both landed; a stage opens over HTTP. What remains is `openstrata.ci.yaml` and the recorded I/O baseline |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
@@ -268,7 +268,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | W1 | Read contract, metadata, validator value types, typed diagnostics, metrics | 1 | Done |
 | W2 | Local backend and the shared boundary suite | 1 | Done |
 | W3 | HTTP transport, redirects, timeouts, retry | 2 | Done |
-| W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Planned — all that remains of phase 2 |
+| W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Done — `plugins/http-resolver`, and with it the `HTTPxxx` projection and the environment surface |
 | W5 | Hostile-server fixture corpus | 2 | Done — and consumed, by `tests/corpus` |
 | W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Done — shipped with W3, not after it |
 | W7 | Block cache, coalescing, single-flight, eviction | 3 | Planned |

@@ -1,0 +1,49 @@
+# OpenStrata plugin bundle manifest.
+#
+# The first bundle in this repository, and the first module in it that includes
+# an OpenUSD header (WORKSPACE.md §1). Everything it needs in order to read
+# bytes is a plain library underneath it; what is here is registration,
+# resolution, and the `ArAsset` surface.
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: http-resolver
+  version: 0.2.0
+  kind: usd-asset-resolver
+license: Apache-2.0
+runtime:
+  # The range declared in docs/compatibility/OPENUSD.md, which the first
+  # bundle's manifest is required to match. It matches the first consumer's
+  # deliberately: two bundles composed into one runtime must agree on it, and a
+  # mismatch is then discovered at composition time rather than at load time.
+  openusd: ">=26.08,<27.0"
+  # A source bundle inherits the resolved runtime's ABI.
+  cxx_abi: inherit
+provides:
+  - usd-resolver:http
+  - usd-resolver:https
+requires:
+  capabilities: [usd-stage-read]
+  # The only workspace edge this bundle needs. usdAssetHttp carries usdAssetIo
+  # transitively, and libcurl privately -- ADR-0003 keeps it out of every
+  # installed header, so it is not an edge anything above this line can see.
+  #
+  # usdAssetLocal is deliberately absent: this resolver serves `http` and
+  # `https`, and a local path is the primary resolver's business (RESOLVER.md
+  # §1).
+  libraries:
+    - id: usdAssetHttp
+      version: ">=0.2,<0.3"
+usd:
+  plug_info: plugin/resources/httpResolver/plugInfo.json
+tests:
+  # A local stage, opened with this resolver registered.
+  #
+  # It looks like it tests nothing and it tests the property this bundle is
+  # most likely to break: registering a URI-scheme resolver must not disturb
+  # how a local asset resolves. A remote fixture cannot be a file in a
+  # directory -- it needs a server -- so the remote path is exercised by
+  # `httpResolver_test_stage` against the fixture corpus instead, where the
+  # origin is stood up by the test itself.
+  smoke:
+    - tests/fixtures/local_unchanged.usda

@@ -5,10 +5,9 @@ module identities, dependency directions, root responsibilities, artifact
 naming, and change invariants. A structural change that contradicts this
 document must change this document first.
 
-Status: `usdAssetIo` and `usdAssetLocal` exist and are tested; everything else
-in §1 is still a boundary the implementation is required to respect rather than
-a directory that exists. A directory is created when its first tested capability
-exists; see the [roadmap](../roadmap/README.md).
+Status: everything in §1 exists and is tested except `usdAssetCache`, which is
+`v0.3.0`, and the reserved backends. A directory is created when its first
+tested capability exists; see the [roadmap](../roadmap/README.md).
 
 ## 1. Components
 
@@ -18,7 +17,7 @@ exists; see the [roadmap](../roadmap/README.md).
 | `usdAssetLocal` | `libs/usd-asset-local` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The local-file backend: positional reads against a file handle, size discovery, and filesystem-derived validators. It is the correctness oracle every other backend is compared against. |
 | `usdAssetHttp` | `libs/usd-asset-http` | plain CMake/OpenStrata static library | implemented (`v0.2.0`) | The HTTP backend: range requests, metadata requests, redirects, timeouts, bounded retry, response framing validation, and validator extraction. Owns the third-party HTTP client dependency; it is the only module that may name one, and it names it privately, in one translation unit, behind an internal transport seam. |
 | `usdAssetCache` | `libs/usd-asset-cache` | plain CMake/OpenStrata static library | planned (`v0.3.0`) | Aligned block caching, read expansion, request coalescing, single-flight de-duplication, eviction under a memory budget, and cache statistics. It is a decorator over `AssetReader`, keyed by an opaque validator. |
-| `http-resolver` | `plugins/http-resolver` | OpenStrata plugin bundle (`usd-asset-resolver`) | planned (`v0.2.0`) | The OpenUSD `ArResolver` implementation: URI scheme registration for `http` and `https`, URI normalization, relative and anchored resolution, asset-info exposure, and the `ArAsset` adapter over `AssetReader`. It is the only module that includes an OpenUSD header. Owns its `HTTPxxx` diagnostic codes. |
+| `http-resolver` | `plugins/http-resolver` | OpenStrata plugin bundle (`usd-asset-resolver`) | implemented (`v0.2.0`); asset-info exposure is `v0.4.0` | The OpenUSD `ArResolver` implementation: URI scheme registration for `http` and `https`, URI normalization, relative and anchored resolution, asset-info exposure, and the `ArAsset` adapter over `AssetReader`. It is the only module that includes an OpenUSD header. Owns its `HTTPxxx` diagnostic codes. |
 | `usdAssetS3`, `usdAssetPackage`, `usdAssetWasm` | `libs/` | plain libraries | reserved, not implemented | Additional backends targeting the unchanged `AssetReader` contract. A backend that cannot be expressed through it is a design question, not a feature request. |
 
 None of the `libs/` modules is a plugin: none has a `plugInfo.json`, none
@@ -35,8 +34,16 @@ usdAssetHttp    -> usdAssetIo
 usdAssetHttp    -> the HTTP client dependency (private)
 usdAssetCache   -> usdAssetIo
 http-resolver   -> usdAssetIo, usdAssetCache, usdAssetLocal, usdAssetHttp
-http-resolver   -> OpenUSD (ar, tf, arch)
+http-resolver   -> OpenUSD (ar, tf, arch, js, plug, vt)
 ```
+
+What the bundle links today is `usdAssetHttp` and the Ar surface, and nothing
+else on either list. `usdAssetLocal` is permitted and unused: a local path is
+the primary resolver's business, and a URI-scheme resolver that reached for the
+local backend would be answering for paths it does not claim. The `js`, `plug`,
+and `vt` components are what `ar` itself needs in a non-monolithic build; a
+resolver reads bytes and hands them over, so no `usd` or `usdGeom` component
+appears.
 
 The shared boundary suite is the one thing outside `libs/` that links a backend,
 and the direction is one-way:
@@ -65,12 +72,13 @@ admitted without an argument. Not knowing `usdAssetIo` is the more important
 half: a corpus that could name `StatusCode` would start asserting the backend's
 interpretation, and a disagreement between the two would stop being evidence.
 
-Its reverse edges — a test outside `libs/` linking both a backend and the
-fixture server — are legal, and there are exactly two:
+Its reverse edges — a test linking both the fixture server and something that
+reads from it — are legal, and there are exactly three:
 
 ```text
 tests/boundary/backends/boundary_http_main.cpp  -> usdAssetHttp, fixture server
 tests/corpus (usdAssetHttp_test_projection)     -> usdAssetHttp, fixture server
+plugins/http-resolver/tests/test_stage.cpp      -> OpenUSD, fixture server
 ```
 
 The first provisions remote fixtures, because a remote backend has to arrange
@@ -78,6 +86,12 @@ for its bytes to exist somewhere a transport can reach; that is what fixture
 provisioning *means* for it. The second is the projection of each corpus
 behavior onto the typed vocabulary, which is the one assertion neither side can
 make alone.
+
+The third is the only place in this repository that links OpenUSD and the
+fixture server at once, and it is the one test that can assert the release's
+actual claim: that a `UsdStage` opens over HTTP. It reaches the backend only
+through `ArResolver`, which is the point — a test that linked `usdAssetHttp`
+directly would be asserting the backend again rather than the bundle.
 
 Both live outside `libs/` rather than in the backend's own tests, and that
 placement is load-bearing rather than tidy: a module's tests must not depend on
@@ -180,6 +194,24 @@ plugins/http-resolver/src/HttpResolver.cpp
 plugins/http-resolver/src/ResolvedAsset.cpp
     ArAsset over AssetReader: Read(), GetSize(), buffer lifetime.
     No policy of its own.
+
+plugins/http-resolver/src/Identifier.cpp
+plugins/http-resolver/src/Configuration.cpp
+plugins/http-resolver/src/Diagnostics.cpp
+    The parts of the bundle that are arithmetic rather than integration: URI
+    normalization and anchoring, the environment surface, and the HTTPxxx
+    projection with its message form. No OpenUSD header, and one test
+    executable each, linking that translation unit and nothing else.
+
+    They are separate files for that reason and not for tidiness. A wrong
+    normalization is invisible from the outside -- two spellings of one asset
+    become two opens and two revisions -- and a test that would catch it must
+    not need a USD runtime to run.
+
+plugins/http-resolver/src/Report.cpp
+    The one place that talks to OpenUSD's diagnostic system. Splitting it from
+    Diagnostics.cpp is what keeps that file testable offline, and it is why
+    there is no path from a failure to a human that skips ElideSecrets.
 
 libs/usd-asset-local/src/*.cpp
     The platform layer -- open, stat, positional read, close -- and the reader

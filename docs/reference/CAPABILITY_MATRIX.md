@@ -4,13 +4,13 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-08-17, against `main`.
+Last updated: 2026-08-18, against `main`.
 
 ## Summary
 
 **The read contract, the local backend, the shared boundary suite, the
-hostile-server corpus, and the HTTP backend are implemented. There is still no
-resolver, no cache, and no plugin bundle.**
+hostile-server corpus, the HTTP backend, and the `ArResolver` bundle are
+implemented. A `UsdStage` opens over HTTP. There is still no cache.**
 
 `libs/usd-asset-io` fixes the `AssetReader` contract, the typed diagnostic
 vocabulary, the validator value types, and the metrics counters.
@@ -37,12 +37,24 @@ claimed. Neither side knows the other — nothing in the fixture server has hear
 of `StatusCode`, and nothing in the backend has heard of `Behavior` — so a
 disagreement between them is evidence rather than a tautology.
 
-What is still missing is everything above the backend: no `ArResolver`
-registration, no `ArAsset`, no `HTTPxxx` code is emitted, and no cache. A
-consumer cannot yet open a remote asset through OpenUSD. The whole tree builds
-and tests with `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine with no
-OpenUSD installation present, which is the path `v0.1.0` was defined by and
-which `v0.2.0` preserves — libcurl is a `find_package`, not a USD runtime.
+`plugins/http-resolver` is what closed the gap between that backend and a
+consumer. It registers `http` and `https` as URI schemes, normalizes an
+identifier once, anchors a relative reference to the remote layer it was
+authored in, hands out an `ArAsset` whose `GetBuffer` is null by contract, and
+emits the `HTTPxxx` codes the diagnostics contract allocated. A consumer opens a
+remote stage with no HTTP code of its own; `httpResolver_test_stage` does
+exactly that against the hostile fixture corpus, over a real socket.
+
+What is still missing is the cache: every read is a request, deliberately, so
+that the request pattern is visible before it is optimized. Identity is captured
+and used but not yet exposed to consumers, which is `v0.4.0`, and the release's
+I/O baseline has not been recorded yet.
+
+The whole tree still builds and tests with
+`-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine with no OpenUSD
+installation present, which is the path `v0.1.0` was defined by and which
+`v0.2.0` preserves — libcurl is a `find_package`, not a USD runtime, and the one
+directory that needs a runtime is the bundle.
 
 A reader arriving from the design documents should read the parts still marked
 *planned* as specifications written before their implementation, which is
@@ -63,7 +75,7 @@ not planned                   explicitly out of scope
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Local file random access | implemented | `libs/usd-asset-local`; the correctness oracle. Positional reads, no lock, no network |
-| HTTP / HTTPS `GET` | implemented, not connected | `libs/usd-asset-http`. Nothing above it reaches it: there is no resolver yet |
+| HTTP / HTTPS `GET` | implemented | `libs/usd-asset-http`, reached from `plugins/http-resolver` through `ArResolver` and from nowhere else |
 | HTTP range requests | implemented | Single ranges only. Framing validated against the request, not against itself |
 | Metadata request (`HEAD`) | implemented | One round trip; size, range support, validator, content type |
 | Metadata request where `HEAD` is unavailable | not implemented | A `405` or `501` is reported as `Unsupported`. The fallback §4.1 admits would ship unexercised: the corpus has no row that refuses `HEAD` |
@@ -86,14 +98,18 @@ not planned                   explicitly out of scope
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| `http` / `https` URI scheme registration | planned (`v0.2.0`) | Scheme resolver; the primary resolver is unchanged |
-| URI normalization | planned (`v0.2.0`) | Query string preserved verbatim; see [RESOLVER.md](../architecture/RESOLVER.md) |
-| Relative asset resolution against a remote anchor | planned (`v0.2.0`) | RFC 3986 reference resolution |
-| `ArAsset` range reads | planned (`v0.2.0`) | `Read` and `GetSize` are the whole path |
+| `http` / `https` URI scheme registration | implemented | One type, two schemes. A scheme resolver: the host's primary resolver is unchanged, and a local asset opens exactly as it did |
+| URI normalization | implemented | Query preserved verbatim, fragment and userinfo removed, encoding normalized, dot segments resolved after decoding. See [RESOLVER.md](../architecture/RESOLVER.md) §2.1 |
+| Relative asset resolution against a remote anchor | implemented | RFC 3986 §5.2 reference resolution. A relative path anchored to a *local* layer is left to the primary resolver |
+| `ArAsset` range reads | implemented | `Read` and `GetSize` are the whole path. A failed read returns 0 bytes and a diagnostic, never the bytes it had |
+| Extension detection through a query string | implemented | `GetExtension` ignores the query and the fragment; the default would return `usda?X-Amz-Signature=…` and match no file format |
+| One metadata request per resolution, reused by the open | implemented | The reader opened by `Resolve` is retained and handed to the next `OpenAsset`, once. Concurrent resolutions of one identifier make one request |
+| Absence distinguished from failure | implemented | A `404` is an empty path and no diagnostic; a transport fault is an empty path *and* an `HTTPxxx` error |
 | `GetBuffer()` whole-asset materialization | not planned, ever | Returns null by contract; see §4.1 of [RESOLVER.md](../architecture/RESOLVER.md) |
 | Interoperability with whole-buffer FileFormat Plugins | not planned, ever | Incompatible with the remote random-access path by construction |
 | Asset info and identity stability | planned (`v0.4.0`) | `Stable` / `Unstable` / `Unavailable` exposed to consumers |
-| `ArResolverContext` configuration | planned (`v0.6.0`) | Environment variables first |
+| Environment-variable configuration | implemented | The five transport bounds in [CONFIGURATION.md](CONFIGURATION.md); a bad value warns and takes the default |
+| `ArResolverContext` configuration | planned (`v0.6.0`) | Per stage; the environment form is a process-wide bootstrap |
 | Write support | not planned | Fails explicitly |
 
 ## Cache and consistency
@@ -121,7 +137,7 @@ not planned                   explicitly out of scope
 | --- | --- | --- |
 | Typed status vocabulary | implemented | `StatusCode`, `Severity`, `Status`; see [DIAGNOSTICS.md](../architecture/DIAGNOSTICS.md) |
 | Credential elision in messages and dumps | implemented | Query string and authority userinfo both removed, visibly |
-| `HTTPxxx` plugin codes | planned (`v0.2.0`) | Allocated in the diagnostics contract. They are the *plugin's* rendering and arrive with `plugins/http-resolver`; nothing emits one yet |
+| `HTTPxxx` plugin codes | implemented | Every code in the table except `HTTP102`, which ADR-0002 defers. Errors as `TF_RUNTIME_ERROR`, cancellation as `TF_WARN`, an impossible request as `TF_CODING_ERROR` |
 | Per-asset I/O counters | implemented | Defined in `usdAssetIo`, populated by both backends, folded into a process aggregate. The HTTP backend populates `requestCount`, `metadataRequestCount`, `retryCount`, `redirectCount`, `bytesRequested`, `bytesTransferred`, and all three latency histograms |
 | Cache counters | defined, not populated | Fields exist and stay at zero until `libs/usd-asset-cache` in `v0.3.0` |
 | Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
@@ -145,6 +161,8 @@ not planned                   explicitly out of scope
 | Fixture-server self-test | implemented | Asserts over a raw socket that each behavior puts on the wire what its name claims, with a client that shares no HTTP code with the server |
 | Corpus projection onto the typed vocabulary | implemented | `tests/corpus`; every behavior maps to a `StatusCode`, and coverage against `AllBehaviors()` is asserted at runtime rather than claimed |
 | Boundary suite against the HTTP backend | implemented | `tests/boundary/backends/boundary_http_main.cpp`, one row, running the suite unchanged over a real server and a real socket |
+| Remote stage opened end to end | implemented | `httpResolver_test_stage`: a `UsdStage` over loopback HTTP, a relative reference followed to a second remote layer, and the `Range` header the server actually received |
+| Resolver logic tested without a USD runtime | implemented | Normalization, configuration, and the `HTTPxxx` projection each link one translation unit and nothing else |
 | Redirect scheme-downgrade rejection | implemented | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. Tested in `usdAssetHttp` against a scripted `Location` |
 | Mid-read revision-change tests, HTTP | implemented | Both halves: `ValidatorChangeMidRead` in the corpus projection, and the boundary suite's own republish-underneath-an-open-reader case |
 | No credential in a message, asserted | implemented | The corpus projection opens a failing URL carrying userinfo and a query token and checks the rendered status for both |

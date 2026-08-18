@@ -3,12 +3,14 @@
 This document states which runtimes this project targets and what it requires
 from a host application.
 
-Status: no bundle exists yet. The values below are the declared target, which
-the first bundle's manifest is required to match.
+Status: `plugins/http-resolver` exists as of `v0.2.0`, and its
+`openstrata.plugin.yaml` declares exactly the values below. They were the
+declared target before the bundle existed, and the bundle was required to match
+them rather than the other way round.
 
 ## Declared contract
 
-The plugin manifest will declare:
+The plugin manifest declares:
 
 ```yaml
 runtime:
@@ -75,10 +77,15 @@ The dependency is deliberately narrow — three libraries and a handful of types
   diagnostic projection
 - `ArchGetFileLength` and related `arch` facilities in the local backend
 
-Linked components: `arch`, `tf`, `ar`. Notably absent: `sdf`, `usd`,
+Linked components: `arch`, `tf`, `ar`, and the `js`, `plug`, and `vt` that `ar`
+itself needs in a non-monolithic build. Notably absent: `sdf`, `usd`,
 `usdGeom`, and `hd`. This resolver authors nothing and reads no scene
 description; if a scene-description header appears in an include list, the
 boundary has moved.
+
+`httpResolver_test_stage` links `sdf` and `usd`, and that asymmetry is the right
+way round: the bundle links what a resolver needs, and the test that proves a
+consumer can use it links what a consumer would.
 
 ## Host expectations
 

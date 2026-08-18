@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-17.
+Last updated: 2026-08-18.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -20,10 +20,14 @@ then written against two things that already passed. It passes the boundary
 suite unchanged, every corpus behavior is projected onto a typed code, and both
 sanitizer lanes are green over the HTTP path.
 
-What remains in phase 2 is everything above the backend: the `ArResolver`
-bundle, the `HTTPxxx` projection, `openstrata.ci.yaml`, and the release's
-recorded I/O baseline. No consumer can open a remote asset until the bundle
-exists.
+The bundle has now landed on top of it. `plugins/http-resolver` registers
+`http` and `https`, normalizes and anchors identifiers, hands out an `ArAsset`
+over the backend's reader, emits the `HTTPxxx` codes, and reads the five
+transport bounds from the environment. A `UsdStage` opens over HTTP against the
+hostile fixture corpus, over a real socket, in `httpResolver_test_stage`.
+
+What remains in phase 2 is `openstrata.ci.yaml` — which now, for the first time,
+has a bundle to name — and the release's recorded I/O baseline.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -91,10 +95,13 @@ exists.
 | Backend run against the hostile corpus, every behavior projected onto the typed vocabulary | Done — `tests/corpus`; coverage asserted against `AllBehaviors()` at runtime |
 | Boundary suite passing against the HTTP backend, unchanged | Done — 243 fixed cases, 10,000 property cases, and the concurrency cases; not one line of the suite changed |
 | Sanitizer lanes over the HTTP path | Done — ASan, UBSan, and TSan green, including the boundary row and the corpus projection |
-| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding — still no bundle to name |
-| `plugins/http-resolver`: registration, normalization, anchoring | Outstanding |
-| `ArAsset` adapter, with `GetBuffer()` null by contract | Outstanding |
-| `HTTPxxx` projection and OpenUSD diagnostics | Outstanding — allocated in the contract; nothing emits one |
+| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding — the bundle now exists to name |
+| `plugins/http-resolver`: registration, normalization, anchoring | Done — one type, two schemes; RFC 3986 reference resolution; normalization asserted including idempotence |
+| `ArAsset` adapter, with `GetBuffer()` null by contract | Done — `Read` and `GetSize` are the whole path, and a failed read returns no bytes |
+| `HTTPxxx` projection and OpenUSD diagnostics | Done — the table asserted rather than restated, and every rendering elides credentials |
+| Environment configuration for the five transport bounds | Done — CONFIGURATION.md §2; a bad value warns and takes the default, and does not discard the other four |
+| Bundle through `ost`: inspect, doctor, build, and the verification pyramid | Done, with one recorded failure — L0/L1/L3/L4/L5 pass; L2 asserts that `Resolve` returned a path, which a network resolver cannot satisfy without an origin. [Report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md) |
+| Remote stage opened end to end, over a socket | Done — `httpResolver_test_stage`, against the fixture corpus: a relative reference followed to a second remote layer, and a 4 KiB window out of 1 MiB with the `Range` header asserted from the server's log |
 | Metadata request where `HEAD` is unavailable | Outstanding, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
 | Recorded I/O baseline for the release | Outstanding — `v0.2.0` is the first release that can record one |
 | Cross-platform CI cells (Windows, Linux, macOS arm64) | Done for the core lane — `core-ci.yml` installs libcurl per platform and still asserts from the configure log that OpenUSD was never reached |
@@ -160,6 +167,18 @@ exists.
    nothing in `v0.1.0` — the path the release is defined by is plain CMake —
    and it is worth resolving before the bundle in `v0.2.0` consumes the closure.
 
+3. **`ost … build` cannot reach a third-party dependency, and `ost plugin test`
+   L2 cannot be satisfied by a network resolver.** Neither blocks the release.
+   The first is worked around by setting `CMAKE_PREFIX_PATH` in the environment
+   before invoking `ost`, which is invisible in the descriptor and is therefore
+   an upstream ask. The second is a disagreement about what the rung asserts:
+   L2 runs `Ar.GetResolver().Resolve("<scheme>:<fixture>")` and requires a
+   non-empty path, which for this resolver requires an origin to be listening,
+   and the alternatives — a local-file branch in the resolver, or a fixture that
+   is a URL — are both worse than a recorded failure. Full account, with the
+   probe and the three asks:
+   [report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md).
+
 No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`. Also no
 longer blocking: the sanitizer runs, which now happen; and the HTTP client
 dependency, resolved as libcurl in
@@ -167,26 +186,34 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. `plugins/http-resolver`: the `ArResolver` bundle registering `http` and
-   `https`, URI normalization and anchoring per
-   [RESOLVER.md](../architecture/RESOLVER.md), the `ArAsset` adapter with
-   `GetBuffer()` null by contract, and the `HTTPxxx` projection. It is the only
-   thing between a working range backend and a consumer that can open a remote
-   asset, and it is the first module in this repository that includes an OpenUSD
-   header.
-2. `openstrata.ci.yaml` lands with that bundle, which is the first thing here a
-   cell can name, and never absorbs the two runtime-free lanes.
-3. The recorded I/O baseline. `v0.2.0` is the first release that can produce
+1. `openstrata.ci.yaml` and its generated cells. The bundle is the first thing
+   in this repository a cell can name, which is what was missing; the two
+   runtime-free lanes stay hand-authored and are never absorbed into it, for the
+   reasons in
+   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+   The cells that matter are the bundle build and `httpResolver_stage` on
+   Windows, Linux, and macOS arm64 — the exit criterion that a remote layer
+   opens on all three.
+2. The recorded I/O baseline. `v0.2.0` is the first release that can produce
    one, and §6 of [METRICS.md](../architecture/METRICS.md) names the five
-   scenarios it has to cover. The counters exist and are populated; what does
-   not exist yet is a fixture large enough for `selectivity` to mean anything.
-4. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
+   scenarios it has to cover. The counters exist and are populated, and the
+   resolver now drives them from a stage rather than from a test harness; what
+   does not exist yet is a fixture large enough for `selectivity` to mean
+   anything.
+3. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
    first time in this release, having been not-applicable in `v0.1.0`.
 
-Done, and no longer next: `libs/usd-asset-http` itself, and the corpus
-projection that was to be its first test file. Both things it was written
-against were already passing when it started — the boundary suite and the
-hostile corpus — which is the whole point of having built them first, and it is
-why the arguments about failing range reads during this work were short ones.
-Two defects found that way are recorded in the
-[changelog](../../CHANGELOG.md).
+Done, and no longer next: `plugins/http-resolver`, and before it
+`libs/usd-asset-http` and the corpus projection that was to be its first test
+file. Both things the backend was written against were already passing when it
+started — the boundary suite and the hostile corpus — which is the whole point
+of having built them first, and it is why the arguments about failing range
+reads during that work were short ones. Two defects found that way are recorded
+in the [changelog](../../CHANGELOG.md).
+
+The bundle inherited the same advantage and it showed: what its work surfaced
+was not a range-read defect but two integration facts that no amount of contract
+reading would have produced — that `ArResolver`'s default `GetExtension` cannot
+name a signed URL's format, and that copying OpenUSD's DLLs beside a test
+executable leaves `PlugRegistry` with nothing registered and kills the process
+before `main` with no output at all.
