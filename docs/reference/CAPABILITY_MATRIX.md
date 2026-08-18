@@ -4,7 +4,7 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-08-18, against `main`.
+Last updated: 2026-08-19, against `main`.
 
 ## Summary
 
@@ -47,8 +47,11 @@ exactly that against the hostile fixture corpus, over a real socket.
 
 What is still missing is the cache: every read is a request, deliberately, so
 that the request pattern is visible before it is optimized. Identity is captured
-and used but not yet exposed to consumers, which is `v0.4.0`, and the release's
-I/O baseline has not been recorded yet.
+and used but not yet exposed to consumers, which is `v0.4.0`. The release's I/O
+baseline is recorded: `tests/baseline` runs the five scenarios METRICS.md §6
+requires against a 128 MiB fixture on loopback, and the numbers are in
+[BASELINE.md](BASELINE.md). A bounded query moves a quarter of one percent of
+that asset and every byte of it is a byte the caller asked for.
 
 The whole tree still builds and tests with
 `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine with no OpenUSD
@@ -142,7 +145,7 @@ not planned                   explicitly out of scope
 | Cache counters | defined, not populated | Fields exist and stay at zero until `libs/usd-asset-cache` in `v0.3.0` |
 | Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
 | Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr |
-| Recorded baselines | planned (`v0.2.0` onward) | A release changing I/O records one; `v0.1.0` moves no bytes over a network |
+| Recorded baselines | implemented | `tests/baseline`, the five scenarios in METRICS.md §6 against a 128 MiB loopback fixture. The record is [BASELINE.md](BASELINE.md); byte and request counts are asserted, ratios and durations are reported |
 
 ## Testing and build
 
@@ -167,7 +170,7 @@ not planned                   explicitly out of scope
 | Redirect scheme-downgrade rejection | implemented | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. Tested in `usdAssetHttp` against a scripted `Location` |
 | Mid-read revision-change tests, HTTP | implemented | Both halves: `ValidatorChangeMidRead` in the corpus projection, and the boundary suite's own republish-underneath-an-open-reader case |
 | No credential in a message, asserted | implemented | The corpus projection opens a failing URL carrying userinfo and a query token and checks the rendered status for both |
-| Amplification baselines | planned | `v0.2.0` can record one for the first time. Not yet recorded; it belongs in the release record |
+| Amplification baselines | implemented | `tests/baseline`, registered as `usdAssetHttp_io_baseline` so that a byte count which moves fails a lane rather than waiting for a release run. `amplification` is exactly 1.0 in every scenario that moves a byte, because there is no cache to over-fetch |
 
 ## Consumers
 

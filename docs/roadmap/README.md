@@ -254,7 +254,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
-| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend, the bundle, and the support matrix have all landed; a stage opens over HTTP on all three platforms. What remains is the recorded I/O baseline |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | Complete for `v0.2.0` | The backend, the bundle, the support matrix, and the recorded I/O baseline have all landed; a stage opens over HTTP on all three platforms, and a bounded query moves 0.0025 of a 128 MiB asset. What remains is the release gate, and one deliberate omission: a metadata fallback for a server that refuses `HEAD`, which no corpus row exercises |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
@@ -273,6 +273,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | W4 | `ArResolver` bundle, URI normalization, `ArAsset` surface | 2 | Done — `plugins/http-resolver`, and with it the `HTTPxxx` projection and the environment surface |
 | W5 | Hostile-server fixture corpus | 2 | Done — and consumed, by `tests/corpus` |
 | W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Done — shipped with W3, not after it |
+| W6a | The recorded I/O baseline and the fixture it needed | 2 | Done — `tests/baseline`, the five scenarios of METRICS.md §6; [the record](../reference/BASELINE.md) |
 | W7 | Block cache, coalescing, single-flight, eviction | 3 | Planned |
 | W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Planned |
 | W9 | Consumer integration and amplification baselines | 5 | Planned |

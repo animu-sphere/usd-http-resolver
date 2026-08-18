@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-18.
+Last updated: 2026-08-19.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -12,7 +12,7 @@ core lane builds and tests on Windows, Linux, and macOS arm64 with no OpenUSD
 present; and the sanitizer lanes run green. The release gate and what it found
 are in [the release record](../releases/v0.1.0.md).
 
-Phase 2 is under way and its centre of gravity has landed. Both prerequisites
+Phase 2 is complete, and the order it was built in is why. Both prerequisites
 were done first, in the order §17 of the
 [design policy](../design/DESIGN_POLICY.md) fixed — the client chosen and
 recorded, then the hostile corpus standing up — and `libs/usd-asset-http` was
@@ -30,8 +30,18 @@ hostile fixture corpus, over a real socket, in `httpResolver_test_stage`.
 every cell shape names a bundle or a workspace containing one, and until
 `plugins/http-resolver` existed there was neither. Six cells run on pull
 requests; the Windows lane is hand-authored, because libcurl there comes from
-vcpkg and no generated cell can hand CMake a prefix. What remains in phase 2 is
-the release's recorded I/O baseline.
+vcpkg and no generated cell can hand CMake a prefix.
+
+The release's I/O baseline is now recorded, which was the last of it.
+`tests/baseline` runs the five scenarios METRICS.md §6 requires against a 128 MiB
+synthetic asset on loopback, asserts the byte and request counts exactly, and
+reports the ratios; the record is [BASELINE.md](../reference/BASELINE.md). The
+headline is `selectivity` on a bounded query: 0.0025 of a 128 MiB asset moved to
+answer it, with `amplification` at exactly 1.0 because there is no cache to
+over-fetch. What remains before the tag is the release gate itself, and one row
+of the table below that phase 2 declines rather than leaves undone: a metadata
+fallback for a server that refuses `HEAD`, which the corpus has no case for and
+which would therefore ship unexercised.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -107,7 +117,9 @@ the release's recorded I/O baseline.
 | Bundle through `ost`: inspect, doctor, build, and the verification pyramid | Done, with one recorded failure — L0/L1/L3/L4/L5 pass; L2 asserts that `Resolve` returned a path, which a network resolver cannot satisfy without an origin. [Report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md) |
 | Remote stage opened end to end, over a socket | Done — `httpResolver_test_stage`, against the fixture corpus: a relative reference followed to a second remote layer, and a 4 KiB window out of 1 MiB with the `Range` header asserted from the server's log |
 | Metadata request where `HEAD` is unavailable | Outstanding, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
-| Recorded I/O baseline for the release | Outstanding — `v0.2.0` is the first release that can record one |
+| Recorded I/O baseline for the release | Done — `tests/baseline`, all five scenarios of METRICS.md §6 against a 128 MiB loopback fixture, registered as `usdAssetHttp_io_baseline` so a byte count that moves fails a lane. Record: [BASELINE.md](../reference/BASELINE.md) |
+| A fixture large enough for `selectivity` to mean something | Done — 128 MiB, synthesized rather than committed, every byte a hash of its own offset so no scenario can count bytes it did not verify |
+| A plain-download comparator that is not the client under test | Done — the fixture server's own raw client, one `GET`, no `Range`, no HTTP code shared with `usdAssetHttp` |
 | Cross-platform CI cells (Windows, Linux, macOS arm64) | Done — `core-ci.yml` for the runtime-free lane, and the plugin lane on all three: generated cells on Linux and macOS arm64, `plugin-windows-ci.yml` on Windows. Each asserts `httpResolver_stage` by name rather than trusting a green suite |
 
 ## Phase 3 — cache (`v0.3.0`)
@@ -201,16 +213,24 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. The recorded I/O baseline. `v0.2.0` is the first release that can produce
-   one, and §6 of [METRICS.md](../architecture/METRICS.md) names the five
-   scenarios it has to cover. The counters exist and are populated, and the
-   resolver now drives them from a stage rather than from a test harness; what
-   does not exist yet is a fixture large enough for `selectivity` to mean
-   anything.
-2. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
-   first time in this release, having been not-applicable in `v0.1.0`.
+1. The `v0.2.0` release gate and its record. Gates 4, 6, and 9 of
+   [the release gate](../releases/README.md) bind for the first time in this
+   release, having been not-applicable in `v0.1.0`; gate 6 is now answerable,
+   and the record copies [BASELINE.md](../reference/BASELINE.md) at the tag.
+2. Phase 3, whose success is defined against the numbers just recorded: fewer
+   requests for the clustered index read and for parallel readers, a
+   `bytesOverFetched` that is honest about what block alignment costs, and a
+   full sequential read that does not regress.
 
-Done, and no longer next: `plugins/http-resolver`, and before it
+Done, and no longer next: the recorded I/O baseline. What it surfaced was not a
+defect but a division worth writing down — byte counts are asserted and ratios
+are reported, because a ratio is a byte count divided by a fixture size and a
+gate on one would move when the fixture did. It also cost a fourth reverse edge
+onto the fixture server, and the argument for it is the same one the fourth row
+of METRICS.md §6 makes: "must not be worse than a plain download" needs a plain
+download performed by a client that is not the one under test.
+
+Also done, and no longer next: `plugins/http-resolver`, and before it
 `libs/usd-asset-http` and the corpus projection that was to be its first test
 file. Both things the backend was written against were already passing when it
 started — the boundary suite and the hostile corpus — which is the whole point

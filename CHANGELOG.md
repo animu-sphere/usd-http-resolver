@@ -19,9 +19,49 @@ then with the server the code will be tested against rather than the code. Both
 prerequisites in §17 of the [design policy](docs/design/DESIGN_POLICY.md) were
 done first, in the order it fixed, and neither ships in the release. The backend
 they existed for has landed, and so has the bundle that makes it reachable: a
-`UsdStage` now opens over HTTP.
+`UsdStage` now opens over HTTP. With the I/O baseline recorded, this release
+also makes its first performance claim — and it is a counter on a named fixture
+rather than a sentence.
 
 ### Added
+
+- **The recorded I/O baseline**, which is the last outstanding item of `v0.2.0`
+  and the thing gate 6 of [the release gate](docs/releases/README.md) binds a
+  release to. `tests/baseline` stands up the fixture server, serves one 128 MiB
+  synthetic asset, and runs the five scenarios METRICS.md §6 names with the
+  shipped transport defaults. The record is
+  [BASELINE.md](docs/reference/BASELINE.md), and its headline is `selectivity`
+  on a bounded query: **a header, an index, and sixteen scattered chunks moved
+  324 KiB of a 128 MiB asset — 0.0025 of it — and every byte moved was a byte
+  the caller asked for.** `amplification` is exactly 1.000000 in every scenario
+  that moves a byte, because there is no cache to over-fetch; that number can
+  now only get worse, which is the point of having written it down before
+  `v0.3.0` trades it for a smaller request count.
+- The division the harness keeps, which is a decision and not a detail: **byte
+  and request counts are asserted exactly, and every ratio and every duration is
+  recorded.** A ratio is a byte count divided by a fixture size, so a gate on one
+  would move when the fixture did; a duration on loopback is a fact about the
+  process that measured it. What that leaves gated is precisely what gate 6
+  exists for — a cache that over-fetches, a retry nobody asked for, or a redirect
+  that starts being followed — and none of it is visible to a functional test,
+  because the boundary suite would still find every one of those bytes correct.
+- The fixture that was missing rather than the instrumentation, which existed
+  since `v0.1.0`: 128 MiB, synthesized rather than committed, every byte a hash
+  of its own offset. That last part is what lets every scenario verify the bytes
+  it counted — a read that landed a block away cannot compare equal — because a
+  measurement over unchecked bytes is a measurement of the wrong thing arriving
+  quickly. It is registered as a test rather than kept as a tool a release run
+  remembers to invoke, so it runs on all three platforms and, at 8 MiB, under
+  both sanitizers.
+- A plain download to compare the worst case against, performed by something
+  that is not the client under test: the fixture server's own raw client, one
+  `GET`, no `Range`, and no HTTP code shared with `usdAssetHttp` — the same
+  separation the boundary suite keeps between its oracle and `usdAssetLocal`. A
+  ranged full read of the whole asset moves the same content bytes as that
+  download in a comparable time, which is what METRICS.md §6's fourth row asks
+  and the one row that could have embarrassed the architecture. Its wall clock
+  is recorded and not gated: the comparator reads 4 KiB at a time, which flatters
+  the backend, and a comparison that flatters is not a gate.
 
 - `plugins/http-resolver`, the `ArResolver` bundle, and the first module in this
   repository that includes an OpenUSD header. It registers `http` and `https` as

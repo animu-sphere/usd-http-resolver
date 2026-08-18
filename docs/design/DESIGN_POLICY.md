@@ -510,14 +510,18 @@ A transport backend counts as supported only when all of the following hold:
 1. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
-2. Record the release's I/O baseline. `v0.2.0` is the first release that can
-   produce one — bytes now cross a network — and until it does, this project
-   makes no performance claim. §6 of
-   [METRICS.md](../architecture/METRICS.md) names the five scenarios it has to
-   cover. The instrumentation is not what is missing; a fixture large enough for
-   `selectivity` to mean anything is.
+2. Walk the `v0.2.0` release gate. Gates 4, 6, and 9 bind for the first time,
+   having been not-applicable in `v0.1.0`.
 
 Done and no longer pending:
+
+- The release's I/O baseline is recorded. `tests/baseline` runs the five
+  scenarios §6 of [METRICS.md](../architecture/METRICS.md) names against a
+  128 MiB synthetic asset on loopback, and
+  [the record](../reference/BASELINE.md) states what a bounded query costs: a
+  quarter of one percent of the asset, with `amplification` at exactly 1.0.
+  The instrumentation was never what was missing; the fixture was, and it is
+  synthesized rather than committed.
 
 - [ADR-0002](../adr/0002-range-unsupported-policy.md) is resolved — hard error
   in `v0.2.0`.

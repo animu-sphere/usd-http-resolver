@@ -8,8 +8,9 @@ belongs to no single module.
 | `boundary/` | The shared boundary suite: the executable form of the read contract, and the thing every backend is admitted by |
 | `fixture-server/` | The hostile-server corpus: a loopback HTTP origin that misbehaves on request, and the conditions only a server can produce |
 | `corpus/` | The projection of each corpus behavior onto the typed vocabulary — which `Behavior` produces which `StatusCode` |
+| `baseline/` | The recorded I/O baseline: the five scenarios METRICS.md §6 requires, measured against a fixture large enough for `selectivity` to mean something |
 
-The three are not the same suite and none substitutes for another. The boundary
+The first three are not the same suite and none substitutes for another. The boundary
 suite carries the correctness argument, over an oracle, for every backend. The
 corpus covers what has no local analogue — a `200` answering a `Range`, a wrong
 `Content-Range`, a mid-read validator change, a reset — and it applies to the
@@ -27,6 +28,40 @@ fails the run.
 ```sh
 ctest --test-dir build/core -R usdAssetHttp_corpus_projection
 ```
+
+## The baseline
+
+`baseline/` is not a fourth correctness suite. It answers gate 6 of
+[the release gate](../docs/releases/README.md), which exists because a resolver
+that ships correct behavior with a silent doubling of transferred bytes has
+regressed the only property it exists to provide — and the boundary suite would
+pass every byte of it.
+
+It stands up the fixture server, serves one 128 MiB synthetic asset, and runs
+METRICS.md §6's five scenarios through the HTTP backend with the shipped
+transport defaults. What it asserts and what it merely records is a deliberate
+split:
+
+| Quantity | Treatment |
+| --- | --- |
+| Bytes requested, bytes transferred, requests, retries, redirects | Asserted exactly. With no cache, a read of *n* bytes is one request moving exactly *n* bytes |
+| `amplification`, `selectivity`, the other ratios | Recorded. They are byte counts over a fixture size, and a gate on one would move when the fixture did |
+| Latency and wall clock | Recorded. Loopback has no round-trip time worth the name |
+
+Every scenario verifies the bytes it counted: each byte of the fixture is a hash
+of its own offset, so a read that landed elsewhere cannot compare equal.
+
+```sh
+ctest --test-dir build/core -R usdAssetHttp_io_baseline
+./build/core/tests/baseline/usdAssetHttp_baseline --output baseline.md
+USD_ASSET_BASELINE_ASSET_BYTES=536870912 ./build/core/tests/baseline/usdAssetHttp_baseline
+```
+
+The current record is [BASELINE.md](../docs/reference/BASELINE.md); a release
+record copies it at its tag. The fourth scenario's comparator — "must not be
+worse than a plain download" — is `fixture-server/tests/RawClient.cpp`, one
+`GET`, no `Range`, and no HTTP code shared with the backend, for the same reason
+the boundary suite's oracle shares none with `usdAssetLocal`.
 
 ## The boundary suite
 
