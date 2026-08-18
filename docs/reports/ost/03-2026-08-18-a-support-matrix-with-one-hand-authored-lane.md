@@ -4,10 +4,10 @@
 | --- | --- |
 | Date | 2026-08-18 |
 | Subject | `openstrata.ci.yaml` lands; which rungs its cells run, and which lanes stay outside it |
-| `ost` version | 0.22.2 |
+| `ost` version | 0.22.2 for every local walk; **0.21.0 pinned in CI**, for the reason in §4 |
 | Runtimes pinned | `openstrata-runtime-cy2026-usd`, OpenUSD 26.08, on Linux, macOS arm64, and Windows |
 | Platform (local walk) | Windows 11 (26200), MSVC 19.34, CMake 4.4, Ninja |
-| Result | Six cells generated; one lane hand-authored; two rung caps recorded; two upstream asks, one of them new |
+| Result | Six cells generated; one lane hand-authored; two rung caps recorded; a CLI/runtime version skew found by the first CI run; five upstream asks, two of them new |
 
 [Report 02](02-2026-08-18-resolver-bundle-under-the-pyramid.md) closed by naming
 the decision this report exists to record:
@@ -122,9 +122,98 @@ resolution.
 
 ### 3.2 The Windows cell stops at `graph`
 
-Not because of a rung, but because the build cannot start; §4.
+Not because of a rung, but because the build cannot start; §5.
 
-## 4. The lane `ost` could not express
+## 4. The first CI run found a version skew, and the pin moved down
+
+Everything in §1 through §3 was walked locally with `ost` 0.22.2 and passed. The
+first run on hosted runners failed all four cells that materialize a runtime,
+in the same step, in under 40 seconds:
+
+```text
+ost runtime validate cy2026 --profile usd --json
+  [FAIL] manifest-schema   — manifest schema 3 != expected 7
+  [FAIL] digest-integrity  — recomputed sha256:f75ed71a… != stored sha256:552de36f…
+Result: FAILED                                            (exit 5)
+```
+
+The two graph cells passed, because a `verify: graph` job stops after the
+checkout and never materializes anything — which is the first time that
+property has been worth anything.
+
+This is not a CI fact. It reproduces on a developer machine, against a runtime
+that had already built and tested this workspace an hour earlier:
+
+```sh
+ost --version                          # ost 0.22.2
+ost runtime validate cy2026 --profile usd
+#   [FAIL] manifest-schema — manifest schema 3 != expected 7
+#   Result: FAILED
+```
+
+`ost artifact show` names the cause:
+
+```text
+  producer:    ost 0.20.0
+  imported by: ost 0.20.0
+```
+
+The published `openstrata-runtime-cy2026-usd` artifacts on all three platforms
+were built by `ost` 0.20.0 and carry runtime manifest schema 3. `ost` 0.22.2's
+`runtime validate` requires schema 7, and it is a step every generated cell runs
+before it builds anything. `usd-vrm-plugins` pins the same three digests and its
+`ost source ci` is green, which was the clue: it bootstraps 0.21.0.
+
+The fix is `bootstrap.ost.version: "0.21.0"` — the newest CLI that accepts these
+runtimes — checked rather than assumed, against the same materialized runtime:
+
+```sh
+ost-0.21.0 runtime validate cy2026 --profile usd
+#   [ok  ] manifest-schema
+#   [ok  ] digest-integrity
+#   Result: passed
+```
+
+Nothing else in the matrix changed. 0.21.0 accepts the file unchanged
+(`6 cell(s), structure OK`), its `ci matrix --lane pull_request --json` emits the
+same fields the Windows lane reads, and every `ost` invocation the generated
+workflow makes exists in 0.21.0 with the same flags — `artifact pull
+--expect-artifact --require-kind`, `artifact verify --minimum-trust
+--require-sbom --require-provenance`, `runtime pull --from-artifact`,
+`plugin test --workspace --graph-only`, `ci matrix`.
+
+The workflow is regenerated **by 0.21.0**, so the YAML and the CLI that runs it
+are the same version. The only difference in the output is the registry cache:
+0.21.0 emits a single `actions/cache` step where 0.22.2 emits a
+`restore`/`save` pair. The hand-authored Windows lane keeps the split, which is
+its own code and version-independent.
+
+What this costs: local development stays on 0.22.2 and CI runs 0.21.0, so the
+two can disagree again. What makes that survivable is that the disagreement is
+observable in one command — `ost runtime validate` — and the pin is one line
+with the reason attached to it.
+
+### 4.1 Ask 5 — a runtime that a current `ost` will not validate
+
+The artifacts are fine: `ost artifact verify --require-sbom
+--require-provenance` passes on all three, in CI, under 0.22.2. What fails is
+the materialized runtime's manifest schema, and there is no path forward from
+inside a consumer repository — a workspace cannot re-produce a runtime it
+consumes.
+
+Either resolves it:
+
+- republish the `cy2026`/`usd` runtimes with a current `ost`, so the newest CLI
+  and the newest artifacts agree;
+- or have `ost runtime validate` accept an older manifest schema it can still
+  read, and say which CLI produced it, so the failure names the fix instead of
+  reporting `3 != 7`.
+
+The second is the more valuable of the two, because the first is a treadmill:
+every CLI release that bumps the schema strands every published runtime until
+someone rebuilds it.
+
+## 5. The lane `ost` could not express
 
 `libs/usd-asset-http` resolves libcurl with `find_package(CURL)` — deliberately,
 per [ADR-0003](../../adr/0003-http-client-dependency.md), and it is not an `ost`
@@ -158,7 +247,7 @@ ZLIB_LIBRARY)` while reporting a version it read out of `zlib.h`. `core-ci.yml`
 avoids this by configuring through the vcpkg toolchain file, which is exactly
 what is unreachable from `ost build`.
 
-### 4.1 The lane declares no pins of its own
+### 5.1 The lane declares no pins of its own
 
 A hand-authored lane beside a generated one is a place for two copies of a
 digest to drift apart. `ost ci matrix` exists to prevent that — its own help
@@ -181,7 +270,7 @@ rather than twice.
 One field is still parsed by hand, and only one: `bootstrap.ost.version`, which
 has to be read before `ost` exists to read it.
 
-### 4.2 What the lane asserts, beyond a green suite
+### 5.2 What the lane asserts, beyond a green suite
 
 ```sh
 ost build --target cy2026 --profile usd
@@ -197,7 +286,7 @@ test the lane exists for is asserted by name, from the log `ctest` wrote. This
 is the same discipline `core-ci.yml` applies when it asserts from the configure
 log that OpenUSD was never reached.
 
-### 4.3 Walked locally first
+### 5.3 Walked locally first
 
 The whole cell shape was run on Windows before it was written down, with the
 prefix supplied the way the lane supplies it:
@@ -216,7 +305,7 @@ CMAKE_PREFIX_PATH="…" ost test --target cy2026 --profile usd
 So the hand-authored lane is a transcription of a walk that passed, not a guess
 at a workflow.
 
-## 5. Why the workspace cells carry the release's claim
+## 6. Why the workspace cells carry the release's claim
 
 A bundle cell's rungs open a path declared in `tests.smoke`, and a remote
 fixture is not a file in a directory (report 02, §3). The claim `v0.2.0` exists
@@ -230,13 +319,15 @@ port and stops it at the end.
 CMake tree, then `ost test` over its CTest suite. Nothing is hosted, no port is
 reserved, and no cell needs network access beyond pulling its own runtime.
 
-## 6. Upstream asks
+## 7. Upstream asks
 
 Ask 1 and ask 2 from report 02 (a dispatch-shaped L2, and the empty failure
 message) are unchanged and still open; §3.1 above is what living with them
 costs. Ask 3 from report 02 — no way to reach a third-party dependency from
 `ost … build` — is now the reason an entire lane is hand-authored rather than an
-inconvenience in a shell, and it is restated here at that weight.
+inconvenience in a shell, and it is restated here at that weight. Ask 5 — a
+published runtime a current `ost` will not validate — is stated where it was
+found, in §4.1.
 
 ### Ask 4 — a cell that declares pins without being generated
 
@@ -262,7 +353,7 @@ would let the matrix stay the single declaration of every pin, and let
 `ost ci plan` report honestly that one cell's job lives elsewhere — instead of a
 reader having to notice that a `graph` cell on Windows is doing a second job.
 
-## 7. When this changes
+## 8. When this changes
 
 - `ost` gains a Windows host-package installer, or a `--cmake-arg` /
   `cmake.find_package_hints` passthrough: `plugin-windows-ci.yml` is deleted,
@@ -272,6 +363,11 @@ reader having to notice that a `graph` cell on Windows is doing a second job.
   `up_to: 5` and pick up L3, L4, and L5.
 - `ost ci` gains a non-generated cell: ask 4 above; the thin Windows graph cell
   becomes an honest declaration of the lane it is standing in for.
-- A cell first runs on a real pull request: this report records local walks and
-  a generated workflow. The first CI run is evidence this report does not yet
-  have, and it belongs in a successor rather than in an edit here.
+- The `cy2026`/`usd` runtimes are republished by a current `ost`, or
+  `runtime validate` learns to read an older manifest schema: ask 5 in §4.1;
+  `bootstrap.ost.version` moves back up from 0.21.0 and the workflow is
+  regenerated by the version it pins.
+- A cell runs green on a real pull request. This report records local walks, a
+  generated workflow, and one CI run that failed for a reason outside this
+  repository. A fully green matrix is evidence it does not have yet, and it
+  belongs in a successor rather than in an edit here.

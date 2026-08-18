@@ -10,7 +10,7 @@ observed, repository-side fixes, and any follow-up asks for OpenStrata.
 | --- | --- | --- | --- | --- |
 | [01](01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md) | 2026-08-16 | The `v0.1.0` CI cells, and why they are hand-authored rather than generated | 0.22.2 | Landed, with two upstream asks |
 | [02](02-2026-08-18-resolver-bundle-under-the-pyramid.md) | 2026-08-18 | The first `usd-asset-resolver` bundle through build, doctor, and the verification pyramid | 0.22.2 | Landed; L2 fails structurally, with three upstream asks |
-| [03](03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md) | 2026-08-18 | `openstrata.ci.yaml` lands: which rungs its cells run, and the Windows lane it could not express | 0.22.2 | Landed; six generated cells, one hand-authored lane, one new upstream ask |
+| [03](03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md) | 2026-08-18 | `openstrata.ci.yaml` lands: which rungs its cells run, the Windows lane it could not express, and a CLI/runtime version skew | 0.22.2 local, 0.21.0 pinned in CI | Landed; six generated cells, one hand-authored lane, two new upstream asks |
 
 Reports are historical evidence. When a later OpenStrata version changes an
 observation, add a new report rather than rewriting the old one.

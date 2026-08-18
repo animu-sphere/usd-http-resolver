@@ -191,8 +191,19 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   `ost ci matrix --json`, so there is no second copy to drift. It also asserts
   `httpResolver_stage` by name from the `ctest` log, because a suite that
   skipped it reports the same "all tests passed" as one that ran it. Full
-  account, with a fourth upstream ask:
+  account, with two further upstream asks:
   [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
+- **CI pins `ost` 0.21.0, and the reason is a skew rather than a preference.**
+  This repository is developed against 0.22.2, and its `ost runtime validate`
+  requires runtime manifest schema 7. Every published `cy2026`/`usd` runtime
+  artifact was produced by `ost` 0.20.0 and carries schema 3, so a step every
+  generated cell runs before it builds anything fails with
+  `manifest-schema` and `digest-integrity`. It is not a CI fact — it reproduces
+  on a developer machine against a runtime that had just built and tested the
+  workspace. 0.21.0 is the newest CLI that accepts these artifacts, it accepts
+  this matrix unchanged, and the generated workflow is produced by it so the YAML
+  and the CLI that runs it are the same version. The pin moves back up when a
+  runtime built by a newer `ost` is published.
 
 ### Changed
 
@@ -372,12 +383,13 @@ have been debugged as backend bugs.
 
 ### Known gaps
 
-- **No cell has run on a real pull request yet.** The matrix validates, the
-  workflow generates, and every step in the hand-authored Windows lane was
-  walked locally on Windows first — `ost build` then `ost test`, 21 of 21
-  passing including `httpResolver_stage`. What none of that is, is a green run
-  on a hosted runner. The first one is evidence this release does not have, and
-  it belongs in the release record rather than in a claim here.
+- **The matrix has not yet been green end to end on a hosted runner.** It
+  validates, the workflow generates, and every step in the hand-authored Windows
+  lane was walked locally on Windows first — `ost build` then `ost test`, 21 of
+  21 passing including `httpResolver_stage`. The first CI run found the `ost`
+  version skew above and nothing else; the run that proves the rest is evidence
+  this release does not have yet, and it belongs in the release record rather
+  than in a claim here.
 - **The two bundle cells stop at L1, and the Windows cell at `graph`.** Neither
   cap is a workaround. `ost plugin test`'s L2 asserts that `Resolve` returned a
   path, which for a network resolver means an origin has to be listening, and
