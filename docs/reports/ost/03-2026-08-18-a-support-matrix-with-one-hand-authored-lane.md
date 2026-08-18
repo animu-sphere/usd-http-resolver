@@ -271,18 +271,36 @@ toolchain file, which activates vcpkg's wrapper and supplies the release and
 debug paths explicitly — and that file is exactly what `ost build` will not
 accept.
 
-`ZLIB_ROOT` was already exported and was not sufficient. The fix names the
-directories directly instead: `CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH` are
-read from the environment by CMake and are searched by every `find_library` and
-`find_path` regardless of which module issues it, which does not depend on
-`FindZLIB` honouring a prefix or a root.
+`ZLIB_ROOT` was already exported and was not sufficient, and neither were
+`CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH` when they were added. None of them
+could be, and the reason took a directory listing rather than an argument:
 
-The lane also now asserts what it is standing on, before it builds: it lists the
-vcpkg library directory and fails with its own message if no `zlib*.lib` is
-there. The configure that failed reported a header and no library, and telling a
-naming mismatch from a missing package apart required looking — three seconds of
-`ls` that turns the next failure of this kind into a diagnosis rather than
-another round trip.
+```text
+$ ls C:/vcpkg/installed/x64-windows-static-md/lib
+libcurl.lib
+pkgconfig
+zs.lib
+```
+
+vcpkg's zlib port installs its release library as **`zs.lib`**. CMake's
+`FindZLIB` searches for a library named one of `z`, `zlib`, `zdll`, `zlib1`,
+`zlibstatic`, `zlibwapi`. `zs` is not among them, and no amount of pointing the
+search at the right directory helps when the name it is looking for is not
+there. vcpkg solves this with a wrapper that supplies the release and debug
+paths explicitly, activated by its toolchain file — which is what `core-ci.yml`
+uses, and what `ost build` will not accept.
+
+So the lane gives the file the name the module looks for: `zs.lib` is copied to
+`zlib.lib` (and `zsd.lib` to `zlibd.lib`), conditional on the canonical name
+being absent, so the day vcpkg renames the output back this step stops doing
+anything rather than starting to do something wrong. It copies bytes and changes
+nothing about what is linked — the same static zlib either way.
+
+The diagnostic that found it is worth its own sentence, because the first
+version of it did not. It grepped the listing for `zlib|curl` and printed one
+line, `libcurl.lib`, which hid the file that was the entire problem — a listing
+that only shows what you already suspected is not a listing. It prints the
+directory unfiltered now.
 
 This is ask 3 from report 02 collecting interest. Every one of these is a
 consequence of a build argument that is real and cannot be expressed.

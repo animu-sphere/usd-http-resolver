@@ -210,12 +210,15 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   puts a `libpython3.13.so.1.0` on the Linux loader path — without it
   `httpResolver_stage`, the only test here that links OpenUSD, died before
   `main` while the other twenty passed. And on the Windows lane,
-  `CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH` named directly rather than a
-  prefix alone, because `find_dependency(ZLIB)` inside vcpkg's `CURLConfig.cmake`
-  leaves CMake's `FindZLIB` guessing the name of a static zlib — the exact
-  failure `core-ci.yml` documents and solves with the vcpkg toolchain file, which
-  is what `ost build` will not take. That lane now also lists the vcpkg library
-  directory and fails with its own message if no `zlib*.lib` is there.
+  vcpkg's `zs.lib` aliased to `zlib.lib`. `find_dependency(ZLIB)` inside vcpkg's
+  `CURLConfig.cmake` reaches CMake's own `FindZLIB`, which searches for `z`,
+  `zlib`, `zdll`, `zlib1`, `zlibstatic`, or `zlibwapi`; vcpkg's zlib port
+  installs `zs.lib`, so the module finds `zlib.h`, reports the version it read
+  out of it, and misses the library. `core-ci.yml` avoids this through the vcpkg
+  toolchain file, which is what `ost build` will not take. Copying the file to
+  the name the module looks for changes nothing about what is linked, and the
+  lane lists the directory unfiltered so the next mismatch of this kind is a
+  diagnosis rather than a round trip.
 
 ### Changed
 
