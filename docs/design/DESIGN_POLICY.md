@@ -510,12 +510,12 @@ A transport backend counts as supported only when all of the following hold:
 1. Ship validator capture, conditional range requests, and `AssetChanged` with
    the first HTTP backend rather than after it. A range backend without
    revision binding is not a correct range backend.
-2. Write `openstrata.ci.yaml` with the first bundle, and generate its workflows.
-   It could not be written for `v0.1.0`: every `ost` cell pins and materializes
-   an OpenUSD runtime, which the core lanes must not, and no cell can name a
-   workspace that contains no bundle. The runtime-free lanes stay hand-authored
-   in `.github/workflows/core-ci.yml` even then. See
-   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+2. Record the release's I/O baseline. `v0.2.0` is the first release that can
+   produce one — bytes now cross a network — and until it does, this project
+   makes no performance claim. §6 of
+   [METRICS.md](../architecture/METRICS.md) names the five scenarios it has to
+   cover. The instrumentation is not what is missing; a fixture large enough for
+   `selectivity` to mean anything is.
 
 Done and no longer pending:
 
@@ -534,6 +534,16 @@ Done and no longer pending:
 - The shared boundary suite exists, is parameterized over backends, and the
   local backend passes it. The HTTP backend is now written against a passing
   oracle, which is the whole reason this order was not negotiable.
+- `openstrata.ci.yaml` is written and its workflow is generated. It was action 2
+  here and could not have been done for `v0.1.0`: no cell can name a workspace
+  that contains no bundle. The runtime-free lanes stayed hand-authored in
+  `.github/workflows/core-ci.yml`, as this action said they would, and one lane
+  more than expected joined them — the Windows plugin lane, because libcurl
+  there comes from vcpkg and a generated cell can neither install it nor hand
+  CMake a prefix. See
+  [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md)
+  and
+  [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
 - The fixture server is up, and it was action 1 here. `tests/fixture-server`
   serves the corpus in §11.2 over loopback, and its own self-test proves each
   behavior puts on the wire what its name claims — checked against deliberately

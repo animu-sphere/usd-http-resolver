@@ -268,7 +268,8 @@ The bundle declares `kind: usd-asset-resolver` and
 | --- | --- |
 | `openstrata.toml` | Project identity, version, platform, and profile |
 | `.github/workflows/core-ci.yml` | The runtime-free lanes, hand-authored: the core build and test on three platforms with no OpenUSD present, and the sanitizer builds. No `ost` cell can express a lane that pins no runtime |
-| `openstrata.ci.yaml` | The CI support matrix, from `v0.2.0` and its first bundle; workflows are generated from it and never hand-edited |
+| `openstrata.ci.yaml` | The CI support matrix, from `v0.2.0` and its first bundle. `.github/workflows/ost-source-ci.yml` is generated from it by `ost ci generate github` and is never hand-edited |
+| `.github/workflows/plugin-windows-ci.yml` | The plugin lane on Windows, hand-authored: libcurl there comes from vcpkg and no generated cell can hand CMake a prefix. It declares no pins of its own — it reads them out of `openstrata.ci.yaml` at run time — so the matrix stays the single declaration |
 | `CMakeLists.txt` | Libs-first root: always adds `libs/` and `tests/`, resolves OpenUSD and adds bundles only when `USD_HTTP_RESOLVER_BUILD_PLUGIN` is `ON`, so a plain CMake user can build with or without `ost` and with or without OpenUSD. Also owns `USD_HTTP_RESOLVER_SANITIZER`, because a sanitizer must cover the libraries and the suite that drives them with one switch |
 | `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-msvc` (the same, through the Visual Studio generator), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |

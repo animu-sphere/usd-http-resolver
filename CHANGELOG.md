@@ -168,6 +168,61 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   workspace contract had already architected as a sibling backend on the
   unchanged `AssetReader` contract. The ADR records this as an accepted cost
   and states what would falsify the reasoning.
+- **`openstrata.ci.yaml`, and the workflow generated from it.** The house rule
+  is that CI semantics live in the matrix and the workflow YAML is generated;
+  at `v0.1.0` that rule could not apply, because no cell shape can name a
+  workspace that contains no bundle. `plugins/http-resolver` is what it was
+  waiting for. Six `pull_request` cells: the dependency graph on Linux and
+  Windows, `ost build` plus `ost test` on Linux and macOS arm64 — which is where
+  the release's remote claim lives, in `httpResolver_stage` — and the bundle
+  itself through the verification pyramid on Linux and macOS arm64. One rung
+  that could not run before now does: `ost plugin test --workspace --graph-only`
+  reported `PRECONDITION_FAILED` at `v0.1.0` and now reports 1 bundle, 3
+  libraries, 3 library edges, valid.
+- **`.github/workflows/plugin-windows-ci.yml`, hand-authored, and why.** libcurl
+  on Windows comes from vcpkg (ADR-0003); a generated cell renders a
+  host-package installer for `apt` and `brew` only, and `ost build` accepts no
+  prefix, no toolchain file, and no `-D`. A generated Windows cell therefore
+  fails at `find_package(CURL)` before anything is compiled, and `v0.2.0`'s exit
+  criterion names Windows. The lane installs libcurl itself and then runs the
+  same two commands the generated workspace cells run — but it **declares no
+  pins of its own**: the `ost` version, the runtime artifact digest, and its OCI
+  reference are read back out of `openstrata.ci.yaml` at run time through
+  `ost ci matrix --json`, so there is no second copy to drift. It also asserts
+  `httpResolver_stage` by name from the `ctest` log, because a suite that
+  skipped it reports the same "all tests passed" as one that ran it. Full
+  account, with two further upstream asks:
+  [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
+- **CI pins `ost` 0.21.0, and the reason is a skew rather than a preference.**
+  This repository is developed against 0.22.2, and its `ost runtime validate`
+  requires runtime manifest schema 7. Every published `cy2026`/`usd` runtime
+  artifact was produced by `ost` 0.20.0 and carries schema 3, so a step every
+  generated cell runs before it builds anything fails with
+  `manifest-schema` and `digest-integrity`. It is not a CI fact — it reproduces
+  on a developer machine against a runtime that had just built and tested the
+  workspace. 0.21.0 is the newest CLI that accepts these artifacts, it accepts
+  this matrix unchanged, and the generated workflow is produced by it so the YAML
+  and the CLI that runs it are the same version. The pin moves back up when a
+  runtime built by a newer `ost` is published.
+- **Two more things contact with CI found, both fixed where they belong.**
+  `host_python: "3.13"` on the workspace cells: the field is documented for
+  schema tooling, which this workspace has none of, and the step it renders also
+  puts a `libpython3.13.so.1.0` on the Linux loader path — without it
+  `httpResolver_stage`, the only test here that links OpenUSD, died before
+  `main` while the other twenty passed — and the Windows lane, which renders no
+  cell and so inherits nothing, needed the same `actions/setup-python` written
+  out: without it the same test exited `0xC0000135`, `STATUS_DLL_NOT_FOUND`, for
+  want of a `python313.dll` a developer machine has and a runner does not. On the
+  Windows lane also,
+  vcpkg's `zs.lib` aliased to `zlib.lib`. `find_dependency(ZLIB)` inside vcpkg's
+  `CURLConfig.cmake` reaches CMake's own `FindZLIB`, which searches for `z`,
+  `zlib`, `zdll`, `zlib1`, `zlibstatic`, or `zlibwapi`; vcpkg's zlib port
+  installs `zs.lib`, so the module finds `zlib.h`, reports the version it read
+  out of it, and misses the library. `core-ci.yml` avoids this through the vcpkg
+  toolchain file, which is what `ost build` will not take. Copying the file to
+  the name the module looks for changes nothing about what is linked, and the
+  lane lists the directory unfiltered so the next mismatch of this kind is a
+  diagnosis rather than a round trip.
 
 ### Changed
 
@@ -347,11 +402,21 @@ have been debugged as backend bugs.
 
 ### Known gaps
 
-- **No consumer can open a remote asset yet.** The backend works and nothing
-  above it reaches it: there is no `ArResolver` registration, no `ArAsset`, and
-  no `HTTPxxx` code is emitted. `plugins/http-resolver` is what remains of the
-  release, and [the capability matrix](docs/reference/CAPABILITY_MATRIX.md) says
-  so rather than letting a green transport read as a working resolver.
+- **The matrix has not yet been green end to end on a hosted runner.** It
+  validates, the workflow generates, and every step in the hand-authored Windows
+  lane was walked locally on Windows first — `ost build` then `ost test`, 21 of
+  21 passing including `httpResolver_stage`. The first CI run found the `ost`
+  version skew above and nothing else; the run that proves the rest is evidence
+  this release does not have yet, and it belongs in the release record rather
+  than in a claim here.
+- **The two bundle cells stop at L1, and the Windows cell at `graph`.** Neither
+  cap is a workaround. `ost plugin test`'s L2 asserts that `Resolve` returned a
+  path, which for a network resolver means an origin has to be listening, and
+  there is no way to skip one rung and keep the ones above it — so L3, L4, and
+  L5 pass and are not in a cell. The Windows cell cannot build at all, for the
+  reason above. Both are recorded in
+  [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md)
+  with the upstream change that would lift each.
 - **No I/O baseline is recorded.** `v0.2.0` is the first release that can record
   one, and it has not. The counters are populated and asserted; what is missing
   is a fixture large enough for `selectivity` to mean anything — the loopback

@@ -10,6 +10,13 @@
 CMakeUserPresets.json
 strata.lock
 
+# CI scratch: the isolated artifact registry and the evidence files the lanes
+# write. Both are produced on a runner and are uploaded as workflow artifacts,
+# never committed -- but `ost ci matrix` and the bootstrap steps are runnable
+# locally, so they turn up in a working tree.
+/.ost-ci/
+/.ost-ci-home/
+
 # --- CMake / MSVC generated ---
 CMakeCache.txt
 CMakeFiles/
