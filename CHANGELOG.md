@@ -204,6 +204,18 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   this matrix unchanged, and the generated workflow is produced by it so the YAML
   and the CLI that runs it are the same version. The pin moves back up when a
   runtime built by a newer `ost` is published.
+- **Two more things contact with CI found, both fixed where they belong.**
+  `host_python: "3.13"` on the workspace cells: the field is documented for
+  schema tooling, which this workspace has none of, and the step it renders also
+  puts a `libpython3.13.so.1.0` on the Linux loader path — without it
+  `httpResolver_stage`, the only test here that links OpenUSD, died before
+  `main` while the other twenty passed. And on the Windows lane,
+  `CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH` named directly rather than a
+  prefix alone, because `find_dependency(ZLIB)` inside vcpkg's `CURLConfig.cmake`
+  leaves CMake's `FindZLIB` guessing the name of a static zlib — the exact
+  failure `core-ci.yml` documents and solves with the vcpkg toolchain file, which
+  is what `ost build` will not take. That lane now also lists the vcpkg library
+  directory and fails with its own message if no `zlib*.lib` is there.
 
 ### Changed
 

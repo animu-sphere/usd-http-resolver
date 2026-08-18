@@ -217,19 +217,52 @@ jobs:
           # survives: the environment, which CMake reads and the composed
           # session does not overwrite (report 02, ask 3).
           #
-          # ZLIB_ROOT is named as well as CMAKE_PREFIX_PATH, and that is not
-          # redundancy. vcpkg's CURLConfig.cmake does find_dependency(ZLIB),
-          # which leaves CMake's own FindZLIB to locate a *static* vcpkg zlib by
-          # guessing library names; on the static triplet it can find the header
-          # and miss the library, and the configure then fails with
-          # "Could NOT find ZLIB (missing: ZLIB_LIBRARY)" while reporting a
-          # version it read out of zlib.h. core-ci.yml avoids this by using the
-          # vcpkg toolchain file, which is not reachable from here.
+          # CMAKE_PREFIX_PATH alone is not enough, and the failure is the one
+          # core-ci.yml documents. vcpkg's CURLConfig.cmake does
+          # find_dependency(ZLIB), which hands CMake's own FindZLIB the job of
+          # locating a *static* vcpkg zlib by guessing library names; it finds
+          # zlib.h, misses the library, and fails the configure with
+          # "Could NOT find ZLIB (missing: ZLIB_LIBRARY) (found suitable version
+          # 1.3.2)" -- a version it read out of the header it did find.
+          # core-ci.yml avoids it by configuring through the vcpkg toolchain
+          # file, which activates vcpkg's own wrapper and supplies the release
+          # and debug paths explicitly. That file is exactly what is unreachable
+          # from `ost build`.
+          #
+          # So the directories are named directly. CMAKE_LIBRARY_PATH and
+          # CMAKE_INCLUDE_PATH are read from the environment by CMake and are
+          # searched by every find_library and find_path, whatever module issues
+          # it -- which is a channel that does not depend on FindZLIB honouring
+          # a prefix or a root. ZLIB_ROOT stays because it is the documented
+          # hint and costs nothing; it was not sufficient on its own.
           prefix="$VCPKG_INSTALLATION_ROOT/installed/$VCPKG_TARGET_TRIPLET"
           prefix="$(cygpath -m "$prefix")"
           test -d "$prefix" || { echo "::error title=vcpkg prefix::$prefix does not exist" >&2; exit 1; }
-          echo "CMAKE_PREFIX_PATH=$prefix" >> "$GITHUB_ENV"
-          echo "ZLIB_ROOT=$prefix" >> "$GITHUB_ENV"
+          test -d "$prefix/lib" || { echo "::error title=vcpkg prefix::$prefix/lib does not exist" >&2; exit 1; }
+          {
+            echo "CMAKE_PREFIX_PATH=$prefix"
+            echo "CMAKE_LIBRARY_PATH=$prefix/lib"
+            echo "CMAKE_INCLUDE_PATH=$prefix/include"
+            echo "ZLIB_ROOT=$prefix"
+          } >> "$GITHUB_ENV"
+
+      - name: Record what the vcpkg prefix actually contains
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Named rather than assumed. The configure that failed reported a zlib
+          # header and no zlib library, and the only way to tell a naming
+          # mismatch from a missing package apart is to look. This is three
+          # seconds of `ls` that turns the next failure of this kind into a
+          # diagnosis instead of another round trip.
+          echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
+          echo "CMAKE_LIBRARY_PATH=$CMAKE_LIBRARY_PATH"
+          ls -l "$CMAKE_LIBRARY_PATH" | grep -iE 'zlib|curl|^total' || true
+          if ! ls "$CMAKE_LIBRARY_PATH" | grep -qiE '^zlib.*\.lib$'; then
+            echo "::error title=vcpkg prefix::no zlib import library under $CMAKE_LIBRARY_PATH; curl cannot resolve its own dependency" >&2
+            ls "$CMAKE_LIBRARY_PATH" >&2
+            exit 1
+          fi
 
       - name: Validate the materialized runtime (runnable tools)
         shell: bash

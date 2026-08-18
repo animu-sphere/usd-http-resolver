@@ -3,11 +3,11 @@
 | Field | Value |
 | --- | --- |
 | Date | 2026-08-18 |
-| Subject | `openstrata.ci.yaml` lands; which rungs its cells run, and which lanes stay outside it |
+| Subject | `openstrata.ci.yaml` lands; which rungs its cells run, which lanes stay outside it, and what the first runs found |
 | `ost` version | 0.22.2 for every local walk; **0.21.0 pinned in CI**, for the reason in §4 |
 | Runtimes pinned | `openstrata-runtime-cy2026-usd`, OpenUSD 26.08, on Linux, macOS arm64, and Windows |
 | Platform (local walk) | Windows 11 (26200), MSVC 19.34, CMake 4.4, Ninja |
-| Result | Six cells generated; one lane hand-authored; two rung caps recorded; a CLI/runtime version skew found by the first CI run; five upstream asks, two of them new |
+| Result | Six cells generated; one lane hand-authored; two rung caps recorded; three defects found by contact with CI and fixed; five upstream asks, two of them new |
 
 [Report 02](02-2026-08-18-resolver-bundle-under-the-pyramid.md) closed by naming
 the decision this report exists to record:
@@ -124,7 +124,12 @@ resolution.
 
 Not because of a rung, but because the build cannot start; §5.
 
-## 4. The first CI run found a version skew, and the pin moved down
+## 4. What contact with CI found
+
+Three things, none of which a local walk could have found, and each fixed in the
+place it belongs.
+
+### 4.1 A version skew, and the pin moved down
 
 Everything in §1 through §3 was walked locally with `ost` 0.22.2 and passed. The
 first run on hosted runners failed all four cells that materialize a runtime,
@@ -193,7 +198,7 @@ two can disagree again. What makes that survivable is that the disagreement is
 observable in one command — `ost runtime validate` — and the pin is one line
 with the reason attached to it.
 
-### 4.1 Ask 5 — a runtime that a current `ost` will not validate
+#### Ask 5 — a runtime that a current `ost` will not validate
 
 The artifacts are fine: `ost artifact verify --require-sbom
 --require-provenance` passes on all three, in CI, under 0.22.2. What fails is
@@ -212,6 +217,75 @@ Either resolves it:
 The second is the more valuable of the two, because the first is a treadmill:
 every CLI release that bumps the schema strands every published runtime until
 someone rebuilds it.
+
+### 4.2 `host_python` is not only about schema tooling
+
+With the pin fixed, the Linux workspace cell got as far as its own test suite
+and failed one test out of twenty-one:
+
+```text
+21/21 Test #21: httpResolver_stage ...............***Failed    0.00 sec
+  httpResolver_test_stage: error while loading shared libraries:
+  libpython3.13.so.1.0: cannot open shared object file: No such file or directory
+```
+
+`0.00 sec` is the tell: the process died before `main`. `httpResolver_stage` is
+the only test here that links OpenUSD, and therefore the only one that links
+Python; the other twenty link `libs/` and a socket and passed.
+
+The cell had no `host_python`, and that was a considered omission — the field is
+documented for a runtime that ships no interpreter but whose profile still needs
+`usdGenSchema`, and this workspace generates no schema. That reasoning was about
+*build* time and the failure is at *run* time. The step `host_python` renders is
+a pinned `actions/setup-python`, which on Linux also puts a
+`libpython3.13.so.1.0` on the loader path. `usd-vrm-plugins` declares it on
+every Linux and macOS cell, which is the second time in this report that reading
+the neighbouring workspace was faster than reading the documentation.
+
+Declared on both `verify: test` cells now. macOS never needed it — it resolved
+Python through the runtime's own rpath and passed — and it is declared there
+anyway, because a lane that passes for a reason its neighbour does not share is
+a lane that breaks on a runner image change and takes an afternoon to explain.
+
+### 4.3 The ZLIB failure `core-ci.yml` predicted, in the lane that cannot use its fix
+
+The Windows lane failed at configure, and the failure was already written down
+in this repository — in the comment on `core-ci.yml`'s configure step, which
+explains why that lane uses the vcpkg toolchain file and not a bare prefix:
+
+```text
+CMake Error at FindPackageHandleStandardArgs.cmake:233 (message):
+  Could NOT find ZLIB (missing: ZLIB_LIBRARY) (found suitable version "1.3.2",
+  minimum required is "1")
+Call Stack (most recent call first):
+  C:/vcpkg/installed/x64-windows-static-md/share/curl/CURLConfig.cmake:80 (find_dependency)
+  libs/usd-asset-http/CMakeLists.txt:60 (find_package)
+```
+
+`CMAKE_PREFIX_PATH` worked — `CURLConfig.cmake` was found under the vcpkg
+prefix, which is the whole reason the trace reaches `find_dependency(ZLIB)`.
+What did not work is CMake's own `FindZLIB` guessing the name of a *static*
+vcpkg zlib: it finds `zlib.h`, reports the version it read out of it, and misses
+the library. `core-ci.yml` avoids this by configuring through the vcpkg
+toolchain file, which activates vcpkg's wrapper and supplies the release and
+debug paths explicitly — and that file is exactly what `ost build` will not
+accept.
+
+`ZLIB_ROOT` was already exported and was not sufficient. The fix names the
+directories directly instead: `CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH` are
+read from the environment by CMake and are searched by every `find_library` and
+`find_path` regardless of which module issues it, which does not depend on
+`FindZLIB` honouring a prefix or a root.
+
+The lane also now asserts what it is standing on, before it builds: it lists the
+vcpkg library directory and fails with its own message if no `zlib*.lib` is
+there. The configure that failed reported a header and no library, and telling a
+naming mismatch from a missing package apart required looking — three seconds of
+`ls` that turns the next failure of this kind into a diagnosis rather than
+another round trip.
+
+This is ask 3 from report 02 collecting interest. Every one of these is a
+consequence of a build argument that is real and cannot be expressed.
 
 ## 5. The lane `ost` could not express
 

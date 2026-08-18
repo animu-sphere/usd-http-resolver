@@ -138,6 +138,18 @@ cells:
   # plus this repository's own libcurl, which is the acquisition ADR-0003 names
   # and core-ci.yml already performs. macOS needs neither: the system libcurl is
   # in the SDK, and there is no X11 edge.
+  #
+  # `host_python` is declared on both, and the first attempt omitted it on the
+  # grounds that this workspace has no schema to generate -- which is what the
+  # field is documented for, and is not the whole of what it does. The step it
+  # renders is a pinned `actions/setup-python`, and on Linux that also puts a
+  # libpython3.13.so.1.0 on the loader path. Without it httpResolver_stage --
+  # the one test here that links OpenUSD, and therefore Python -- died before
+  # main with "error while loading shared libraries: libpython3.13.so.1.0", with
+  # the other twenty passing. macOS resolved it through the runtime's own rpath
+  # and did not need the step; it is declared there anyway, because a lane that
+  # passes for a reason the neighbouring lane does not share is a lane that will
+  # break on a runner image change and take an afternoon to explain.
   - name: workspace-pr-linux
     kind: workspace
     lane: pull_request
@@ -148,6 +160,7 @@ cells:
       expected_oci_digest: sha256:1a873111e4edf0cec7fdcf03e7bd2bbdf9723e1019cadcbcab9280c3229ac3af
     platform: cy2026
     profile: usd
+    host_python: "3.13"
     host_packages:
       apt: [libx11-dev, libxt-dev, libcurl4-openssl-dev]
     verify: test
@@ -162,6 +175,7 @@ cells:
       expected_oci_digest: sha256:f8de29a4176d02ffbcf50a2205bb6b23d9a3cd9463e0d58a28a3c1c6ee5cb82c
     platform: cy2026
     profile: usd
+    host_python: "3.13"
     verify: test
 
   # --- the bundle as a bundle ------------------------------------------------

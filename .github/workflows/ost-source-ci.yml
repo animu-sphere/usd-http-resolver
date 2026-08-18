@@ -217,6 +217,24 @@ jobs:
           set -euo pipefail
           mkdir -p .ost-ci
           ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json | tee .ost-ci/runtime-validate.json
+      - name: Set up host Python for schema tooling
+        if: ${{ matrix.hosted && matrix.host_python != '' }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.host_python }}
+      - name: Record the schema-tooling Python contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          if [ "${{ matrix.hosted }}" = "true" ] && [ -n "${{ matrix.host_python }}" ]; then
+            source=host-setup-python
+          elif [ -n "${{ matrix.host_python }}" ]; then
+            source=operator-provisioned
+          else
+            source=runtime-bundled
+          fi
+          printf '{"schema":1,"host_python":"%s","source":"%s"}\n' "${{ matrix.host_python }}" "$source" > .ost-ci/python-setup.json
       - name: Build the plugin from source
         shell: bash
         run: ost plugin build ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
@@ -388,7 +406,7 @@ jobs:
             runner_profile: linux-hosted
             verify: test
             runtime_remote: "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:1a873111e4edf0cec7fdcf03e7bd2bbdf9723e1019cadcbcab9280c3229ac3af"
-            host_python: ""
+            host_python: "3.13"
             host_packages_apt: "libx11-dev libxt-dev libcurl4-openssl-dev"
             host_packages_brew: ""
           - name: workspace-pr-macos-arm64
@@ -405,7 +423,7 @@ jobs:
             runner_profile: macos-arm64-hosted
             verify: test
             runtime_remote: "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:f8de29a4176d02ffbcf50a2205bb6b23d9a3cd9463e0d58a28a3c1c6ee5cb82c"
-            host_python: ""
+            host_python: "3.13"
             host_packages_apt: ""
             host_packages_brew: ""
     steps:
@@ -553,6 +571,24 @@ jobs:
           set -euo pipefail
           mkdir -p .ost-ci
           ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json | tee .ost-ci/runtime-validate.json
+      - name: Set up host Python for schema tooling
+        if: ${{ matrix.hosted && matrix.host_python != '' }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.host_python }}
+      - name: Record the schema-tooling Python contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          if [ "${{ matrix.hosted }}" = "true" ] && [ -n "${{ matrix.host_python }}" ]; then
+            source=host-setup-python
+          elif [ -n "${{ matrix.host_python }}" ]; then
+            source=operator-provisioned
+          else
+            source=runtime-bundled
+          fi
+          printf '{"schema":1,"host_python":"%s","source":"%s"}\n' "${{ matrix.host_python }}" "$source" > .ost-ci/python-setup.json
       - name: Validate the workspace dependency graph
         shell: bash
         run: ost plugin test --workspace --graph-only --json
