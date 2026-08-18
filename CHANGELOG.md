@@ -168,6 +168,31 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   workspace contract had already architected as a sibling backend on the
   unchanged `AssetReader` contract. The ADR records this as an accepted cost
   and states what would falsify the reasoning.
+- **`openstrata.ci.yaml`, and the workflow generated from it.** The house rule
+  is that CI semantics live in the matrix and the workflow YAML is generated;
+  at `v0.1.0` that rule could not apply, because no cell shape can name a
+  workspace that contains no bundle. `plugins/http-resolver` is what it was
+  waiting for. Six `pull_request` cells: the dependency graph on Linux and
+  Windows, `ost build` plus `ost test` on Linux and macOS arm64 — which is where
+  the release's remote claim lives, in `httpResolver_stage` — and the bundle
+  itself through the verification pyramid on Linux and macOS arm64. One rung
+  that could not run before now does: `ost plugin test --workspace --graph-only`
+  reported `PRECONDITION_FAILED` at `v0.1.0` and now reports 1 bundle, 3
+  libraries, 3 library edges, valid.
+- **`.github/workflows/plugin-windows-ci.yml`, hand-authored, and why.** libcurl
+  on Windows comes from vcpkg (ADR-0003); a generated cell renders a
+  host-package installer for `apt` and `brew` only, and `ost build` accepts no
+  prefix, no toolchain file, and no `-D`. A generated Windows cell therefore
+  fails at `find_package(CURL)` before anything is compiled, and `v0.2.0`'s exit
+  criterion names Windows. The lane installs libcurl itself and then runs the
+  same two commands the generated workspace cells run — but it **declares no
+  pins of its own**: the `ost` version, the runtime artifact digest, and its OCI
+  reference are read back out of `openstrata.ci.yaml` at run time through
+  `ost ci matrix --json`, so there is no second copy to drift. It also asserts
+  `httpResolver_stage` by name from the `ctest` log, because a suite that
+  skipped it reports the same "all tests passed" as one that ran it. Full
+  account, with a fourth upstream ask:
+  [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
 
 ### Changed
 
@@ -347,11 +372,20 @@ have been debugged as backend bugs.
 
 ### Known gaps
 
-- **No consumer can open a remote asset yet.** The backend works and nothing
-  above it reaches it: there is no `ArResolver` registration, no `ArAsset`, and
-  no `HTTPxxx` code is emitted. `plugins/http-resolver` is what remains of the
-  release, and [the capability matrix](docs/reference/CAPABILITY_MATRIX.md) says
-  so rather than letting a green transport read as a working resolver.
+- **No cell has run on a real pull request yet.** The matrix validates, the
+  workflow generates, and every step in the hand-authored Windows lane was
+  walked locally on Windows first — `ost build` then `ost test`, 21 of 21
+  passing including `httpResolver_stage`. What none of that is, is a green run
+  on a hosted runner. The first one is evidence this release does not have, and
+  it belongs in the release record rather than in a claim here.
+- **The two bundle cells stop at L1, and the Windows cell at `graph`.** Neither
+  cap is a workaround. `ost plugin test`'s L2 asserts that `Resolve` returned a
+  path, which for a network resolver means an origin has to be listening, and
+  there is no way to skip one rung and keep the ones above it — so L3, L4, and
+  L5 pass and are not in a cell. The Windows cell cannot build at all, for the
+  reason above. Both are recorded in
+  [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md)
+  with the upstream change that would lift each.
 - **No I/O baseline is recorded.** `v0.2.0` is the first release that can record
   one, and it has not. The counters are populated and asserted; what is missing
   is a fixture large enough for `selectivity` to mean anything — the loopback

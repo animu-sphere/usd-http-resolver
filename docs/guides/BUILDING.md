@@ -151,7 +151,7 @@ set by the test presets, so a local run uses what CI uses.
 
 ## CI
 
-Two workflows, with two different owners.
+Three workflows, with two different owners.
 
 `.github/workflows/core-ci.yml` is hand-authored and runs the lanes above: the
 core build and test on Windows, Linux, and macOS arm64 with no OpenUSD present,
@@ -165,12 +165,13 @@ so the sanitizer lanes are unreachable from a matrix. The reasoning and the
 upstream asks are in
 [docs/reports/ost/01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
 
-`openstrata.ci.yaml` arrives in `v0.2.0` with `plugins/http-resolver`, the first
-thing here a cell can name. From then on it is the support matrix and its
-workflows are generated:
+`openstrata.ci.yaml` arrived in `v0.2.0` with `plugins/http-resolver`, the first
+thing here a cell can name. It is the support matrix, and
+`.github/workflows/ost-source-ci.yml` is generated from it:
 
 ```sh
 ost ci validate
+ost ci plan
 ost ci generate github
 ```
 
@@ -178,3 +179,22 @@ Never hand-edit the generated workflow YAML. A host package requirement is
 declared in `openstrata.ci.yaml` so regeneration re-renders it instead of
 dropping a hand-added step. `core-ci.yml` stays hand-authored and outside that
 rule, because it stays runtime-free.
+
+`.github/workflows/plugin-windows-ci.yml` is the third, and the one exception
+that needed arguing. libcurl on Windows comes from vcpkg (ADR-0003), a generated
+cell installs host packages through `apt` and `brew` only, and `ost build`
+accepts no prefix, no toolchain file, and no `-D` — so a generated Windows cell
+fails at `find_package(CURL)` before it compiles anything, and `v0.2.0`'s exit
+criterion names Windows. The lane installs libcurl itself and then runs the same
+`ost build` and `ost test` the generated workspace cells run. It declares no
+pins: it reads the `ost` version, the runtime artifact, and its OCI reference
+back out of `openstrata.ci.yaml` through `ost ci matrix --json`, so a pin bumped
+in the matrix is bumped everywhere. Reproduce it locally with:
+
+```sh
+CMAKE_PREFIX_PATH="<vcpkg>/installed/x64-windows-static-md"   ost build --target cy2026 --profile usd
+CMAKE_PREFIX_PATH="<vcpkg>/installed/x64-windows-static-md"   ost test  --target cy2026 --profile usd
+```
+
+The reasoning and the fourth upstream ask are in
+[docs/reports/ost/03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).

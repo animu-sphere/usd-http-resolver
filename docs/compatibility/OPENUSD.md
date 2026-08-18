@@ -135,7 +135,10 @@ accepted version range is bounded rather than open-ended.
 
 Generated workflow YAML is never hand-edited: a host requirement is declared in
 `openstrata.ci.yaml` so that regeneration re-renders it instead of dropping it.
-The exception is `core-ci.yml`, which is hand-authored on purpose. Every `ost`
-cell must pin and materialize an OpenUSD runtime, and that lane's contract is
-that it needs none; see
+Two lanes are hand-authored on purpose, and each names its reason.
+`core-ci.yml`, because every `ost` cell must pin and materialize an OpenUSD
+runtime and that lane's contract is that it needs none; see
 [docs/reports/ost/01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+`plugin-windows-ci.yml`, because libcurl on Windows comes from vcpkg and a
+generated cell can neither install it nor hand CMake a prefix; see
+[docs/reports/ost/03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).

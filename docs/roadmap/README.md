@@ -110,11 +110,13 @@ release gate, including the three rows that could not apply before a transport
 exists, is walked in [the record](../releases/v0.1.0.md).
 
 The sanitizer cells are hand-authored in `.github/workflows/core-ci.yml` rather
-than generated from `openstrata.ci.yaml`, which does not exist yet and could
-not: every `ost` cell pins and materializes an OpenUSD runtime, and a lane whose
-contract is that it needs none must not. The matrix arrives in `v0.2.0` with the
-first bundle. See
-[report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md)
+than generated from `openstrata.ci.yaml`, which at `v0.1.0` did not exist and
+could not: every `ost` cell pins and materializes an OpenUSD runtime, and a lane
+whose contract is that it needs none must not. The matrix arrived in `v0.2.0`
+with the first bundle, and those two lanes stayed where they are, for the same
+reason. See
+[report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md),
+[report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md),
 and [implementation status](implementation-status.md).
 
 ### `v0.2.0` — HTTP range reads, the resolver bundle, and revision binding
@@ -252,7 +254,7 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | --- | --- | --- | --- |
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
-| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend and the bundle have both landed; a stage opens over HTTP. What remains is `openstrata.ci.yaml` and the recorded I/O baseline |
+| 2 | HTTP backend, resolver bundle, validator capture and revision binding | In progress for `v0.2.0` | The backend, the bundle, and the support matrix have all landed; a stage opens over HTTP on all three platforms. What remains is the recorded I/O baseline |
 | 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |

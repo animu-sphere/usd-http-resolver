@@ -26,8 +26,12 @@ over the backend's reader, emits the `HTTPxxx` codes, and reads the five
 transport bounds from the environment. A `UsdStage` opens over HTTP against the
 hostile fixture corpus, over a real socket, in `httpResolver_test_stage`.
 
-What remains in phase 2 is `openstrata.ci.yaml` — which now, for the first time,
-has a bundle to name — and the release's recorded I/O baseline.
+`openstrata.ci.yaml` has now landed on top of that, which it could not before:
+every cell shape names a bundle or a workspace containing one, and until
+`plugins/http-resolver` existed there was neither. Six cells run on pull
+requests; the Windows lane is hand-authored, because libcurl there comes from
+vcpkg and no generated cell can hand CMake a prefix. What remains in phase 2 is
+the release's recorded I/O baseline.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -95,7 +99,7 @@ has a bundle to name — and the release's recorded I/O baseline.
 | Backend run against the hostile corpus, every behavior projected onto the typed vocabulary | Done — `tests/corpus`; coverage asserted against `AllBehaviors()` at runtime |
 | Boundary suite passing against the HTTP backend, unchanged | Done — 243 fixed cases, 10,000 property cases, and the concurrency cases; not one line of the suite changed |
 | Sanitizer lanes over the HTTP path | Done — ASan, UBSan, and TSan green, including the boundary row and the corpus projection |
-| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Outstanding — the bundle now exists to name |
+| `openstrata.ci.yaml` and its generated cells, once a bundle exists to name | Done — six `pull_request` cells and `.github/workflows/ost-source-ci.yml`; the Windows lane is hand-authored because no generated cell can reach vcpkg. [Report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md) |
 | `plugins/http-resolver`: registration, normalization, anchoring | Done — one type, two schemes; RFC 3986 reference resolution; normalization asserted including idempotence |
 | `ArAsset` adapter, with `GetBuffer()` null by contract | Done — `Read` and `GetSize` are the whole path, and a failed read returns no bytes |
 | `HTTPxxx` projection and OpenUSD diagnostics | Done — the table asserted rather than restated, and every rendering elides credentials |
@@ -104,7 +108,7 @@ has a bundle to name — and the release's recorded I/O baseline.
 | Remote stage opened end to end, over a socket | Done — `httpResolver_test_stage`, against the fixture corpus: a relative reference followed to a second remote layer, and a 4 KiB window out of 1 MiB with the `Range` header asserted from the server's log |
 | Metadata request where `HEAD` is unavailable | Outstanding, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
 | Recorded I/O baseline for the release | Outstanding — `v0.2.0` is the first release that can record one |
-| Cross-platform CI cells (Windows, Linux, macOS arm64) | Done for the core lane — `core-ci.yml` installs libcurl per platform and still asserts from the configure log that OpenUSD was never reached |
+| Cross-platform CI cells (Windows, Linux, macOS arm64) | Done — `core-ci.yml` for the runtime-free lane, and the plugin lane on all three: generated cells on Linux and macOS arm64, `plugin-windows-ci.yml` on Windows. Each asserts `httpResolver_stage` by name rather than trusting a green suite |
 
 ## Phase 3 — cache (`v0.3.0`)
 
@@ -147,16 +151,20 @@ has a bundle to name — and the release's recorded I/O baseline.
 ## Blocking items
 
 1. **`ost ci` cannot express a lane that pins no runtime.** Not blocking
-   anything — the lanes landed hand-authored in `.github/workflows/core-ci.yml`
-   and are green — but it is why `openstrata.ci.yaml` does not exist yet and why
-   two cells will stay outside it after it does. Every `SupportCell` requires a
-   `runtime_artifact` and materializes it before building, which would remove
-   the very property the core lane demonstrates; a `kind: workspace` cell's
+   anything — those lanes are hand-authored in `.github/workflows/core-ci.yml`
+   and are green — but it is why the two runtime-free lanes stay outside
+   `openstrata.ci.yaml` now that the matrix exists. Every `SupportCell` requires
+   a `runtime_artifact` and materializes it before building, which would remove
+   the very property the core lane demonstrates; and a `kind: workspace` cell's
    build step takes no preset, `--intent`, or cache variable, so the sanitizer
-   presets are unreachable; and `verify: graph`, the one runtime-free rung,
-   fails with `PRECONDITION_FAILED: no plugin bundles found in the workspace
-   member set`. Full account and the two upstream asks:
-   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
+   presets are unreachable. One third of this resolved itself: `verify: graph`,
+   the one runtime-free rung, no longer fails with `PRECONDITION_FAILED: no
+   plugin bundles found in the workspace member set`, because
+   `plugins/http-resolver` is the bundle that precondition was waiting for, and
+   it is now a cell. Full account and the two upstream asks:
+   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md);
+   what the matrix does with what remains:
+   [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
 2. **`ost library build` cannot resolve a library-to-library edge on its own.**
    `libs/usd-asset-local` declares `requires.libraries: [usdAssetIo]` and builds
    through plain CMake, `ost library build libs/usd-asset-io`, and the root
@@ -168,16 +176,23 @@ has a bundle to name — and the release's recorded I/O baseline.
    and it is worth resolving before the bundle in `v0.2.0` consumes the closure.
 
 3. **`ost … build` cannot reach a third-party dependency, and `ost plugin test`
-   L2 cannot be satisfied by a network resolver.** Neither blocks the release.
-   The first is worked around by setting `CMAKE_PREFIX_PATH` in the environment
-   before invoking `ost`, which is invisible in the descriptor and is therefore
-   an upstream ask. The second is a disagreement about what the rung asserts:
-   L2 runs `Ar.GetResolver().Resolve("<scheme>:<fixture>")` and requires a
-   non-empty path, which for this resolver requires an origin to be listening,
-   and the alternatives — a local-file branch in the resolver, or a fixture that
-   is a URL — are both worse than a recorded failure. Full account, with the
-   probe and the three asks:
-   [report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md).
+   L2 cannot be satisfied by a network resolver.** Neither blocks the release,
+   and the first now costs more than it did. Setting `CMAKE_PREFIX_PATH` in the
+   environment before invoking `ost` works on a developer's machine and is
+   invisible in the descriptor; in CI there is no step to set it in, because a
+   generated cell renders a host-package installer for `apt` and `brew` only and
+   `ost build` takes no prefix, no toolchain file, and no `-D`. So the Windows
+   plugin lane is hand-authored in `.github/workflows/plugin-windows-ci.yml`,
+   reading its pins back out of the matrix rather than copying them. The second
+   is a disagreement about what the rung asserts: L2 runs
+   `Ar.GetResolver().Resolve("<scheme>:<fixture>")` and requires a non-empty
+   path, which for this resolver requires an origin to be listening, and the
+   alternatives — a local-file branch in the resolver, or a fixture that is a
+   URL — are both worse than a recorded failure; the two bundle cells are capped
+   at `up_to: 1` because of it. Full account, with the probe and the three asks:
+   [report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md);
+   what each costs in the matrix, and a fourth ask:
+   [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
 
 No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`. Also no
 longer blocking: the sanitizer runs, which now happen; and the HTTP client
@@ -186,21 +201,13 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. `openstrata.ci.yaml` and its generated cells. The bundle is the first thing
-   in this repository a cell can name, which is what was missing; the two
-   runtime-free lanes stay hand-authored and are never absorbed into it, for the
-   reasons in
-   [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
-   The cells that matter are the bundle build and `httpResolver_stage` on
-   Windows, Linux, and macOS arm64 — the exit criterion that a remote layer
-   opens on all three.
-2. The recorded I/O baseline. `v0.2.0` is the first release that can produce
+1. The recorded I/O baseline. `v0.2.0` is the first release that can produce
    one, and §6 of [METRICS.md](../architecture/METRICS.md) names the five
    scenarios it has to cover. The counters exist and are populated, and the
    resolver now drives them from a stage rather than from a test harness; what
    does not exist yet is a fixture large enough for `selectivity` to mean
    anything.
-3. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
+2. Gates 4, 6, and 9 of [the release gate](../releases/README.md) bind for the
    first time in this release, having been not-applicable in `v0.1.0`.
 
 Done, and no longer next: `plugins/http-resolver`, and before it
@@ -217,3 +224,11 @@ reading would have produced — that `ArResolver`'s default `GetExtension` canno
 name a signed URL's format, and that copying OpenUSD's DLLs beside a test
 executable leaves `PlugRegistry` with nothing registered and kills the process
 before `main` with no output at all.
+
+Also done, and no longer next: `openstrata.ci.yaml`. What it surfaced was a
+third thing the same shape as the other two — that the arguments a build needs
+can be real and still be inexpressible. `ost build` composes a runtime, a
+toolchain, and a library closure correctly, and has nowhere to put
+`CMAKE_PREFIX_PATH`; on Linux and macOS `host_packages` hides that, and on
+Windows it is the difference between a generated cell and a hand-authored lane.
+See [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).

@@ -1,0 +1,287 @@
+# The Windows half of the `v0.2.0` exit criterion: a UsdStage opened over HTTP
+# on Windows, Linux, and macOS. The other two platforms are cells in
+# `openstrata.ci.yaml` and run from the workflow generated out of it; this one
+# is hand-authored, for one reason:
+#
+#   HOW THIS DIFFERS FROM A GENERATED CELL, AND WHEN IT STOPS. libcurl is this
+#   repository's one third-party dependency and on Windows it comes from vcpkg
+#   (ADR-0003). `ost ci generate github` renders a host-package step for `apt`
+#   and `brew` and fails everywhere else with "provision the dependency on the
+#   runner image instead", and `ost build` accepts no prefix, no toolchain file,
+#   and no `-D` passthrough (report 02, ask 3). So a generated Windows cell
+#   cannot configure this workspace at all -- `find_package(CURL)` fails before
+#   anything is built. Everything else in this file is what the generator would
+#   have emitted, and the day `ost` can install a Windows host package or accept
+#   a prefix, this file is deleted and the cell moves into the matrix.
+#
+# What keeps it honest in the meantime: it declares no pins of its own. The
+# `ost` version, the runtime artifact digest, and its OCI reference are read at
+# run time out of `openstrata.ci.yaml`, from the `workspace-graph-pr-windows`
+# cell, which exists to carry them. A pin bumped in the matrix is a pin bumped
+# here, and there is no second copy to forget.
+#
+# See docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md.
+#
+# Fork-PR safety: this workflow never publishes, uses no secrets, and takes only
+# `contents: read`. Keep it that way.
+name: plugin windows ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # The same registry isolation the generated workflow uses on a hosted runner:
+  # a per-workspace OST_HOME, so nothing leaks between runs and the cache key is
+  # the only thing that carries state.
+  OST_HOME: ${{ github.workspace }}/.ost-ci-home
+  OST_CI_CELL: workspace-graph-pr-windows
+  # The vcpkg triplet ADR-0003 asks for: static libcurl with the dynamic CRT, so
+  # the linkage is private and no test executable has to find a DLL at run time.
+  VCPKG_TARGET_TRIPLET: x64-windows-static-md
+
+jobs:
+  windows-stage:
+    name: workspace-pr-windows (hand-authored)
+    runs-on: windows-2022
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Hosted runner billing notice
+        shell: bash
+        run: echo "::notice title=OpenStrata hosted-runner usage::This job uses GitHub-hosted infrastructure. Private repositories may incur GitHub Actions usage charges. Review repository billing and Actions usage settings."
+
+      - name: Read the bootstrap pin out of the support matrix
+        id: bootstrap-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The one field this file parses by hand, because it has to be read
+          # *before* `ost` exists to read it. Anchored to the `bootstrap:` block
+          # rather than matched loosely: a bare `version:` grep would also find
+          # a plugin's.
+          matrix=openstrata.ci.yaml
+          version="$(sed -n '/^bootstrap:/,/^[a-z]/p' "$matrix" \
+                     | sed -n 's/^ *version: *"\{0,1\}\([0-9][^"]*\)"\{0,1\} *$/\1/p' | head -n 1)"
+          repository="$(sed -n '/^bootstrap:/,/^[a-z]/p' "$matrix" \
+                       | sed -n 's/^ *repository: *\(.*\) *$/\1/p' | head -n 1)"
+          if [ -z "$version" ] || [ -z "$repository" ]; then
+            echo "::error title=bootstrap pin::could not read bootstrap.ost from $matrix" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ost $version from $repository"
+
+      - name: Bootstrap ost (pinned release asset, checksum-verified)
+        shell: bash
+        env:
+          OST_VERSION: ${{ steps.bootstrap-pin.outputs.version }}
+          OST_REPOSITORY: ${{ steps.bootstrap-pin.outputs.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci/bootstrap-bin
+          asset="ost-cli-x86_64-pc-windows-msvc.zip"
+          base="https://github.com/$OST_REPOSITORY/releases/download/v$OST_VERSION"
+          curl -fsSLo "$asset" "$base/$asset"
+          curl -fsSLo "$asset.sha256" "$base/$asset.sha256"
+          actual="$( (command -v sha256sum > /dev/null && sha256sum "$asset" || shasum -a 256 "$asset") | cut -d' ' -f1 )"
+          published="$(cut -d' ' -f1 "$asset.sha256")"
+          if [ "$actual" != "$published" ]; then
+            echo "::error title=ost bootstrap::$asset hashes to $actual but the release publishes $published" >&2
+            exit 1
+          fi
+          powershell -NoProfile -Command "Expand-Archive -LiteralPath '$asset' -DestinationPath '.ost-ci/bootstrap-bin' -Force"
+          bin="$(find .ost-ci/bootstrap-bin -type f -name ost.exe | head -n 1)"
+          if [ -z "$bin" ]; then
+            echo "::error title=ost bootstrap::no ost.exe inside $asset" >&2
+            exit 1
+          fi
+          cygpath -w "$(cd "$(dirname "$bin")" && pwd)" >> "$GITHUB_PATH"
+
+      - name: Check ost is available and record its version
+        shell: bash
+        env:
+          OST_VERSION: ${{ steps.bootstrap-pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          version="$(powershell -NoProfile -Command "& ost.exe --version" | tr -d '\r')"
+          echo "$version"
+          if [ "$version" != "ost $OST_VERSION" ]; then
+            echo "::error title=ost bootstrap::expected 'ost $OST_VERSION', got '$version'" >&2
+            exit 1
+          fi
+          printf '{"schema":1,"ost_version":"%s"}\n' "$version" > .ost-ci/ost-version.json
+
+      - name: Validate the CI manifest
+        shell: bash
+        run: ost ci validate
+
+      - name: Read this lane's runtime pins out of the support matrix
+        id: cell
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `ost ci matrix` exists precisely for this: "emit the resolved cells
+          # so a workflow `ost ci generate` cannot express can consume the same
+          # pins instead of copying them". Python is the runner's, and `json` is
+          # in its standard library, so nothing is installed to read this.
+          ost ci matrix --lane pull_request --json > .ost-ci/matrix.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+          cell_name = os.environ["OST_CI_CELL"]
+          cells = json.load(open(".ost-ci/matrix.json"))["data"]["cells"]
+          cell = next((c for c in cells if c["name"] == cell_name), None)
+          if cell is None:
+              print(f"::error title=cell pin::no cell named {cell_name} in openstrata.ci.yaml", file=sys.stderr)
+              raise SystemExit(1)
+          if cell["os"] != "windows":
+              print(f"::error title=cell pin::{cell_name} is not a Windows cell", file=sys.stderr)
+              raise SystemExit(1)
+          for key in ("runtime_artifact", "runtime_remote", "platform", "profile"):
+              print(f"{key}={cell[key]}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Restore the artifact registry cache (speed only, never correctness)
+        id: runtime-cache-restore
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-${{ steps.bootstrap-pin.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-windows-stage-${{ steps.cell.outputs.runtime_artifact }}
+
+      - name: Pull the pinned runtime SDK from its remote reference
+        shell: bash
+        env:
+          RUNTIME_ARTIFACT: ${{ steps.cell.outputs.runtime_artifact }}
+          RUNTIME_REMOTE: ${{ steps.cell.outputs.runtime_remote }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          if ost artifact show "$RUNTIME_ARTIFACT" --json > /dev/null 2>&1 \
+             && ost artifact verify "$RUNTIME_ARTIFACT" --require-sbom --require-provenance --json > .ost-ci/runtime-cache-verify.json; then
+            echo "pinned runtime already present and verified (cache hit) -- skipping the remote pull"
+          else
+            rm -rf "${OST_HOME}/artifacts"
+            ost artifact pull "$RUNTIME_REMOTE" --expect-artifact "$RUNTIME_ARTIFACT" --require-kind runtime --json | tee .ost-ci/runtime-pull.json
+          fi
+
+      - name: Verify and materialize the pinned runtime SDK
+        shell: bash
+        env:
+          RUNTIME_ARTIFACT: ${{ steps.cell.outputs.runtime_artifact }}
+          PLATFORM: ${{ steps.cell.outputs.platform }}
+          PROFILE: ${{ steps.cell.outputs.profile }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          printf '{"schema":1,"runtime_artifact":"%s","source":"remote-pull"}\n' "$RUNTIME_ARTIFACT" > .ost-ci/runtime-source.json
+          ost artifact verify "$RUNTIME_ARTIFACT" --minimum-trust local --require-sbom --require-provenance
+          ost runtime pull "$PLATFORM" --profile "$PROFILE" --from-artifact "$RUNTIME_ARTIFACT" --force
+
+      - name: Remove resumable transfer state before caching
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: rm -rf .ost-ci-home/artifacts/.partial-blobs
+
+      - name: Save the verified artifact registry cache
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-${{ steps.bootstrap-pin.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-windows-stage-${{ steps.cell.outputs.runtime_artifact }}
+
+      - name: Install libcurl
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The whole reason this lane is hand-authored. Same acquisition as
+          # core-ci.yml and same triplet, so the two Windows lanes link the same
+          # library and a difference between them is a difference in what is
+          # built rather than in what was installed.
+          vcpkg install "curl:$VCPKG_TARGET_TRIPLET"
+
+      - name: Point CMake at the vcpkg prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `ost build` passes its own composed toolchain file and takes no
+          # prefix argument, so the prefix is handed to CMake the one way that
+          # survives: the environment, which CMake reads and the composed
+          # session does not overwrite (report 02, ask 3).
+          #
+          # ZLIB_ROOT is named as well as CMAKE_PREFIX_PATH, and that is not
+          # redundancy. vcpkg's CURLConfig.cmake does find_dependency(ZLIB),
+          # which leaves CMake's own FindZLIB to locate a *static* vcpkg zlib by
+          # guessing library names; on the static triplet it can find the header
+          # and miss the library, and the configure then fails with
+          # "Could NOT find ZLIB (missing: ZLIB_LIBRARY)" while reporting a
+          # version it read out of zlib.h. core-ci.yml avoids this by using the
+          # vcpkg toolchain file, which is not reachable from here.
+          prefix="$VCPKG_INSTALLATION_ROOT/installed/$VCPKG_TARGET_TRIPLET"
+          prefix="$(cygpath -m "$prefix")"
+          test -d "$prefix" || { echo "::error title=vcpkg prefix::$prefix does not exist" >&2; exit 1; }
+          echo "CMAKE_PREFIX_PATH=$prefix" >> "$GITHUB_ENV"
+          echo "ZLIB_ROOT=$prefix" >> "$GITHUB_ENV"
+
+      - name: Validate the materialized runtime (runnable tools)
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.cell.outputs.platform }}
+          PROFILE: ${{ steps.cell.outputs.profile }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost runtime validate "$PLATFORM" --profile "$PROFILE" --json | tee .ost-ci/runtime-validate.json
+
+      - name: Validate the workspace dependency graph
+        shell: bash
+        run: ost plugin test --workspace --graph-only --json
+
+      - name: Build the workspace from source
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.cell.outputs.platform }}
+          PROFILE: ${{ steps.cell.outputs.profile }}
+        run: ost build --target "$PLATFORM" --profile "$PROFILE"
+
+      - name: Run the workspace test suite
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.cell.outputs.platform }}
+          PROFILE: ${{ steps.cell.outputs.profile }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost test --target "$PLATFORM" --profile "$PROFILE" 2>&1 | tee .ost-ci/ctest.log
+
+      - name: Assert a stage actually opened over HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The criterion is not "the suite passed". It is that a UsdStage opened
+          # over a socket on this platform, and a green suite that skipped
+          # httpResolver_stage -- because the bundle branch was off, or because
+          # the plugin failed to register and the test was never generated --
+          # would report exactly the same thing. So the one test the lane exists
+          # for is asserted by name, from the log ctest wrote.
+          if ! grep -E "httpResolver_stage .*Passed" .ost-ci/ctest.log; then
+            echo "::error title=remote stage::httpResolver_stage did not run and pass; the Windows leg of the v0.2.0 exit criterion is unproven" >&2
+            exit 1
+          fi
+
+      - name: Upload the build logs and CI evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: report-workspace-pr-windows
+          path: |
+            .strata/targets/
+            .ost-ci/
