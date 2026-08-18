@@ -154,14 +154,20 @@ The bundle is a directory, not a bare library:
 
 ```text
 plugins/http-resolver/
-  openstrata.plugin.yaml                          the bundle manifest
-  lib/libHttpResolver.{dll,so,dylib}              built here, not in the build tree
-  plugin/resources/httpResolver/plugInfo.json     what OpenUSD reads
+  openstrata.plugin.yaml                             the bundle manifest
+  plugin/resources/httpResolver/plugInfo.json.in     tracked; the source of truth
+  plugin/resources/httpResolver/plugInfo.json        generated at configure time
+  lib/libHttpResolver.{dll,so,dylib}                 built here, not in the build tree
 ```
 
 `plugInfo.json`'s `LibraryPath` is relative to itself, which is why the library
-is staged into the bundle rather than left in the build directory. Composition
-is runtime-only:
+is staged into the bundle rather than left in the build directory. Both the
+generated `plugInfo.json` and the library are build products and neither is
+tracked: `LibraryPath` names a different file on each platform, so a committed
+copy is a file that every configure on another platform rewrites. Configure the
+bundle — through CMake or `ost plugin build` — and both appear.
+
+Composition is runtime-only:
 
 ```sh
 export PXR_PLUGINPATH_NAME=/path/to/plugins/http-resolver/plugin/resources/httpResolver

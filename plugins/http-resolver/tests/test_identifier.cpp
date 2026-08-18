@@ -222,6 +222,21 @@ void TestExtension() {
     CHECK(usdhttpresolver::ExtensionOf("https://example.org/a.b/main") == "");
     CHECK(usdhttpresolver::ExtensionOf("https://example.org/a/.hidden") == "");
     CHECK(usdhttpresolver::ExtensionOf("https://example.org/") == "");
+
+    // The authority is not a path segment. A URL with no path has no extension,
+    // and the answer must not depend on whether it was written with its
+    // trailing slash: `org` and `5:8080` are not file formats.
+    CHECK(usdhttpresolver::ExtensionOf("https://example.org") == "");
+    CHECK(usdhttpresolver::ExtensionOf("http://10.0.0.5:8080") == "");
+    CHECK(usdhttpresolver::ExtensionOf("http://[::1]:8080") == "");
+    CHECK(usdhttpresolver::ExtensionOf("https://example.org?q=a.b") == "");
+    CHECK(usdhttpresolver::ExtensionOf("//example.org") == "");
+
+    // A path with no scheme still has one, because `_GetExtension` is reachable
+    // with whatever OpenUSD hands it.
+    CHECK(usdhttpresolver::ExtensionOf("relative/main.usda") == "usda");
+    CHECK(usdhttpresolver::ExtensionOf("main.usdc") == "usdc");
+    CHECK(usdhttpresolver::ExtensionOf("") == "");
 }
 
 }  // namespace

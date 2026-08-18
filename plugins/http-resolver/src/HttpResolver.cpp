@@ -86,8 +86,13 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
 
     // A failure is not retained. Caching it would turn a server that was
     // restarting into an asset that does not exist for the rest of the process.
+    //
+    // Forgotten by identity and not by name: a second thread that was waiting on
+    // this same entry's mutex arrives here after the first has already removed
+    // it and a third has opened the identifier successfully, and erasing by key
+    // would throw away that third thread's reader.
     const usdasset::Status status = entry->result.status;
-    _Forget(identifier);
+    _Forget(identifier, entry);
 
     if (status.code != usdasset::StatusCode::NotFound) {
         usdhttpresolver::Report(status, identifier);
@@ -154,6 +159,16 @@ std::string HttpResolver::_GetExtension(const std::string& assetPath) const {
 
 std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(
     const std::string& identifier) const {
+    // Declared before the lock, and therefore destroyed after it is released.
+    //
+    // That ordering is the whole point of this vector. Dropping the last
+    // reference to an evicted entry runs `~HttpAssetReader`, which tears down a
+    // connection -- a socket close, and a TLS shutdown that can put bytes on the
+    // wire. Doing that while holding the table lock would block every unrelated
+    // identifier's resolution behind one eviction, which is exactly the "no lock
+    // across a request" property RESOLVER.md §7 requires.
+    std::vector<std::shared_ptr<_Opened>> evicted;
+
     std::lock_guard<std::mutex> lock(_tableMutex);
 
     const auto found = _table.find(identifier);
@@ -167,7 +182,11 @@ std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(
         // The evicted entry may still be held by a thread that is opening it;
         // `shared_ptr` is what makes that safe. What it loses is the chance to
         // reuse that open, which costs one later metadata request.
-        _table.erase(_order.front());
+        const auto oldest = _table.find(_order.front());
+        if (oldest != _table.end()) {
+            evicted.push_back(std::move(oldest->second));
+            _table.erase(oldest);
+        }
         _order.pop_front();
     }
     return entry;
@@ -191,9 +210,25 @@ std::shared_ptr<HttpResolver::_Opened> HttpResolver::_Take(
     return entry;
 }
 
-void HttpResolver::_Forget(const std::string& identifier) const {
+void HttpResolver::_Forget(const std::string& identifier,
+                           const std::shared_ptr<_Opened>& entry) const {
+    // Same ordering argument as `_GetOrCreate`: whatever this drops is dropped
+    // after the lock is released. A forgotten entry is a failed open and so
+    // usually holds no reader, but "usually" is not a reason to hold a lock
+    // across a destructor.
+    std::shared_ptr<_Opened> removed;
+
     std::lock_guard<std::mutex> lock(_tableMutex);
-    _table.erase(identifier);
+
+    const auto found = _table.find(identifier);
+    if (found == _table.end() || found->second != entry) {
+        // Somebody else has already replaced this entry. Theirs is newer than
+        // the failure being forgotten, and is not ours to discard.
+        return;
+    }
+    removed = std::move(found->second);
+    _table.erase(found);
+
     for (auto it = _order.begin(); it != _order.end(); ++it) {
         if (*it == identifier) {
             _order.erase(it);

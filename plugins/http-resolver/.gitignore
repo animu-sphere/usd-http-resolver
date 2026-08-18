@@ -1,8 +1,26 @@
-# The bundle's staged shared library.
+# The two build products that land in the *source* tree.
 #
-# `openstrata_configure_plugin` puts the built library here, in the *source*
-# tree, because plugInfo.json's LibraryPath is resolved relative to
-# plugInfo.json and a plugin bundle is a directory layout rather than a build
-# artifact. The root .gitignore already covers the Windows spelling; this covers
-# the other two, so that a Linux or macOS build does not offer to commit one.
+# They land here rather than in the build directory because a plugin bundle is a
+# directory layout that OpenUSD reads at runtime, not a build artifact:
+# plugInfo.json's LibraryPath is resolved relative to plugInfo.json, so the
+# library has to sit beside it.
+#
+# The staged shared library. The root .gitignore already covers the Windows
+# spelling; this covers the other two, so that a Linux or macOS build does not
+# offer to commit one.
 /lib/
+
+# The generated plugInfo.json, which `configure_file` writes from
+# plugInfo.json.in at configure time.
+#
+# Untracked because its content is platform-dependent: `LibraryPath` names
+# `libHttpResolver.dll`, `.so`, or `.dylib` according to who configured last.
+# Tracking it means every Linux configure rewrites what a Windows configure
+# committed, which dirties the tree and breaks any `git diff --exit-code` gate
+# for reasons that have nothing to do with the change under review.
+#
+# The tracked source of truth is plugInfo.json.in beside it. Both this and the
+# library are things `ost plugin inspect` expects to find, and both appear when
+# the bundle has been configured -- which is the same requirement, stated once
+# rather than half-satisfied by a committed file for one platform.
+/plugin/resources/httpResolver/plugInfo.json

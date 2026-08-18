@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "pxr/pxr.h"
 #include "pxr/usd/ar/resolvedPath.h"
@@ -116,7 +117,15 @@ private:
     /// mid-composition on.
     std::shared_ptr<_Opened> _Take(const std::string& identifier) const;
 
-    void _Forget(const std::string& identifier) const;
+    /// Removes `identifier`'s entry, but only if it is still `entry`.
+    ///
+    /// By identity rather than by name, because a failed resolve is forgotten
+    /// and two threads can be holding one failed entry: the second arrives after
+    /// the first has removed it and a third has opened the identifier
+    /// successfully, and erasing by key would discard that third thread's
+    /// reader.
+    void _Forget(const std::string& identifier,
+                 const std::shared_ptr<_Opened>& entry) const;
 
     /// Unclaimed opens the table will hold before dropping the oldest.
     ///

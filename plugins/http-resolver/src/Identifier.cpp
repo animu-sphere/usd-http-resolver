@@ -389,17 +389,22 @@ std::string CreateIdentifier(std::string_view assetPath,
 }
 
 std::string ExtensionOf(std::string_view assetPath) {
-    const std::size_t hash = assetPath.find('#');
-    if (hash != std::string_view::npos) assetPath = assetPath.substr(0, hash);
-    const std::size_t question = assetPath.find('?');
-    if (question != std::string_view::npos) {
-        assetPath = assetPath.substr(0, question);
-    }
+    // Split rather than trimmed, so that the authority is not mistaken for a
+    // path segment. `https://example.org` has no path at all, and reading the
+    // text after its last `/` gives `org` -- which `_GetExtension` would then
+    // hand OpenUSD as a file format. The trailing-slash spelling of the same URL
+    // gives the right answer, so trimming makes the result depend on whether
+    // normalization has run.
+    //
+    // The fragment and the query are removed by the split. Neither is part of
+    // the name of the thing, and a pre-signed URL always carries one.
+    Parts parts;
+    if (!SplitUriReference(assetPath, &parts)) return std::string();
 
-    const std::size_t slash = assetPath.find_last_of('/');
+    const std::size_t slash = parts.path.find_last_of('/');
     const std::string_view segment =
-        slash == std::string_view::npos ? assetPath
-                                        : assetPath.substr(slash + 1);
+        slash == std::string::npos ? std::string_view(parts.path)
+                                   : std::string_view(parts.path).substr(slash + 1);
 
     const std::size_t dot = segment.find_last_of('.');
     // A leading dot is a hidden name, not an extension, which is what
