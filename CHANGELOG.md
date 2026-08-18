@@ -209,7 +209,11 @@ they existed for has landed, and so has the bundle that makes it reachable: a
   schema tooling, which this workspace has none of, and the step it renders also
   puts a `libpython3.13.so.1.0` on the Linux loader path — without it
   `httpResolver_stage`, the only test here that links OpenUSD, died before
-  `main` while the other twenty passed. And on the Windows lane,
+  `main` while the other twenty passed — and the Windows lane, which renders no
+  cell and so inherits nothing, needed the same `actions/setup-python` written
+  out: without it the same test exited `0xC0000135`, `STATUS_DLL_NOT_FOUND`, for
+  want of a `python313.dll` a developer machine has and a runner does not. On the
+  Windows lane also,
   vcpkg's `zs.lib` aliased to `zlib.lib`. `find_dependency(ZLIB)` inside vcpkg's
   `CURLConfig.cmake` reaches CMake's own `FindZLIB`, which searches for `z`,
   `zlib`, `zdll`, `zlib1`, `zlibstatic`, or `zlibwapi`; vcpkg's zlib port

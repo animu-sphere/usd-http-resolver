@@ -247,6 +247,16 @@ Python through the runtime's own rpath and passed — and it is declared there
 anyway, because a lane that passes for a reason its neighbour does not share is
 a lane that breaks on a runner image change and takes an afternoon to explain.
 
+Windows failed the same way and said it differently. Once its configure was
+fixed (§4.3), `httpResolver_stage` built, ran, and exited `0xC0000135` —
+`STATUS_DLL_NOT_FOUND` — with the other twenty passing. Same cause: a stock
+runner carries no `python313.dll`, and `ost test` puts the *runtime's* bin on
+`PATH`, not an interpreter's. It worked on a developer machine because a
+developer machine has Python 3.13 on `PATH` and never had to think about it.
+The hand-authored lane now runs the same pinned `actions/setup-python` the
+generated cells do, which is what `host_python` renders — the same fix, written
+out, because a hand-authored lane inherits nothing.
+
 ### 4.3 The ZLIB failure `core-ci.yml` predicted, in the lane that cannot use its fix
 
 The Windows lane failed at configure, and the failure was already written down

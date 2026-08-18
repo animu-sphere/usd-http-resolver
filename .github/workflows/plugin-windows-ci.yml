@@ -292,6 +292,20 @@ jobs:
           echo "CMAKE_LIBRARY_PATH=$CMAKE_LIBRARY_PATH"
           ls -l "$VCPKG_PREFIX/lib"
 
+      - name: Set up the host Python the runtime's OpenUSD links against
+        # The hand-authored equivalent of `host_python: "3.13"` on the generated
+        # workspace cells, pinned to the same action and the same version they
+        # are, and here for the same reason they are: httpResolver_stage is the
+        # only test in this repository that links OpenUSD, and OpenUSD links
+        # Python. Without it the test built, ran, and died with 0xC0000135 --
+        # STATUS_DLL_NOT_FOUND -- while the other twenty passed, because a stock
+        # runner has no python313.dll and `ost test` puts the runtime's own bin
+        # on PATH rather than an interpreter's. The Linux cell failed the same
+        # way for the same reason, spelled libpython3.13.so.1.0.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
       - name: Validate the materialized runtime (runnable tools)
         shell: bash
         env:
