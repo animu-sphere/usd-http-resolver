@@ -1,0 +1,318 @@
+# The release lane: what happens when a `vX.Y.Z` tag is pushed.
+#
+# It publishes a **source** release and no binary package, which is a statement
+# about this project's scope rather than about this file. `docs/releases/`'s
+# gate 9 -- "package digests are reproducible for an unchanged build" -- binds a
+# release that publishes a binary package, and the roadmap puts packaged
+# cross-platform artifacts in `v0.6.0`. Attaching plugin binaries here would
+# make gate 9 bind, and `v0.2.0`'s record measured what that costs today: two
+# independent builds of the same tree agree on 24 of 28 installed files, and
+# `libHttpResolver.dll` differs in exactly two bytes, both of them the embedded
+# build clock. Closing that is `/Brepro` and `SOURCE_DATE_EPOCH`, and it belongs
+# with the packaging rather than in front of it.
+#
+#   WHERE THE BINARY MATRIX GOES WHEN IT ARRIVES. A `package` job between
+#   `verify` and `release`, one leg per platform, uploading to the same
+#   `dist-release` the source archive already lands in. Two things have to be
+#   true first: the timestamps above, and `ost build` accepting a prefix on
+#   Windows -- the blocking item that already makes `plugin-windows-ci.yml`
+#   hand-authored. Neither is this workflow's to fix.
+#
+# What it does do is refuse to tag something that does not hold together. The
+# gate in docs/releases/README.md has nine rows; two of them say they are checks
+# rather than readings, and both are mechanized here:
+#
+#   - Gate 1, version agreement across six places, is `check_release_metadata`.
+#   - Gate 7, no credential in any diagnostic, log, dump, or artifact, is the
+#     `credentials` job: the suite is run with the metrics dump on and the
+#     output is grepped, over a run that is pushing signed URLs and userinfo
+#     authorities through the elision. A grep over output with nothing to elide
+#     would assert nothing.
+#
+# Gates 3, 4, and 5 are re-run at the tag by calling the lanes that already
+# express them, rather than by copying their steps. `core-ci.yml` carries the
+# boundary suite against both backends, the hostile corpus, and both sanitizer
+# presets; `plugin-windows-ci.yml` carries the bundle and `httpResolver_stage`.
+# The generated cells in `ost-source-ci.yml` are declared for the `pull_request`
+# lane only, which is what `openstrata.ci.yaml` can express, so the record cites
+# their run on the release pull request.
+#
+# The release is created as a **draft**. Publishing it is a person's decision.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  # Dispatch from the tag itself rather than from a branch with the tag as an
+  # input. The lanes below are reusable workflows and check out `github.ref`,
+  # which for a branch dispatch would be the branch -- so an input tag and the
+  # code actually being verified could disagree, silently, which is the one
+  # thing a release lane must not do. Requiring the ref to *be* the tag makes
+  # that impossible rather than checked.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate the tag
+        id: resolve
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != tag ]; then
+            echo "::error::this workflow runs against a tag; it was dispatched from a ${REF_TYPE} (${REF_NAME}). Re-run it with the tag selected as the ref." >&2
+            exit 1
+          fi
+          case "$REF_NAME" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::${REF_NAME} is not a vX.Y.Z tag" >&2; exit 1 ;;
+          esac
+          version="$(tr -d '[:space:]' < VERSION)"
+          echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Gate 1 -- every version agrees
+        shell: bash
+        run: python tools/check_release_metadata.py --tag "${{ steps.resolve.outputs.tag }}"
+
+      - name: The record exists and is the one being tagged
+        shell: bash
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          # check_release_metadata already asserts the record exists, states
+          # this tag, and is linked from the index. What is asserted here is the
+          # thing only the tag knows: that the record was written *before* the
+          # tag rather than promised after it. releases/README.md requires the
+          # record to be prepared in the release commit immediately before the
+          # tag, and a tag pointing at a tree with no record is that rule
+          # broken.
+          record="docs/releases/v${VERSION}.md"
+          test -f "$record"
+          echo "$record is in the tagged tree"
+          # A record still carrying a placeholder is a record that was not
+          # finished. These are the ones this repository has used.
+          if grep -nE 'PENDING_[A-Z_]+|TBD|TODO' "$record"; then
+            echo "::error::${record} still contains placeholders" >&2
+            exit 1
+          fi
+
+  # Gates 3, 4, and 5, re-run against the tag by the lanes that define them
+  # rather than by a second copy of their steps. If either of these files
+  # changes, this lane changes with it, which is the point.
+  core:
+    name: Core lanes
+    needs: metadata
+    uses: ./.github/workflows/core-ci.yml
+
+  plugin-windows:
+    name: Bundle lane
+    needs: metadata
+    uses: ./.github/workflows/plugin-windows-ci.yml
+
+  credentials:
+    name: Gate 7 -- no credential in any output
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Give apt its own deadlines
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'Acquire::Retries "3";' \
+            'Acquire::http::Timeout "20";' \
+            'Acquire::https::Timeout "20";' \
+            'Acquire::ftp::Timeout "20";' \
+            | sudo tee /etc/apt/apt.conf.d/99-ci-deadlines >/dev/null
+
+      - name: Install ninja and libcurl
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libcurl4-openssl-dev
+
+      - name: Build the core preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset core
+          cmake --build --preset core
+
+      - name: Run the suite with the metrics dump on, and grep what it wrote
+        shell: bash
+        env:
+          USD_HTTP_RESOLVER_METRICS_DUMP: '1'
+        run: |
+          set -euo pipefail
+          # Verbose, so the assertion is over what every test printed and not
+          # only over ctest's summary. The dumps go to stderr at process exit,
+          # which -V captures with the rest.
+          ctest --preset core -V > release-output.log 2>&1 || {
+            echo "::error::the suite failed; gate 7 is not assessable" >&2
+            tail -50 release-output.log >&2
+            exit 1
+          }
+          lines="$(wc -l < release-output.log)"
+          dumps="$(grep -c 'usd-http-resolver metrics' release-output.log || true)"
+          echo "$lines lines, $dumps metrics dumps"
+          if [ "$dumps" -lt 1 ]; then
+            echo "::error::no metrics dump in the output; the grep below would assert nothing" >&2
+            exit 1
+          fi
+          # The elision tests push signed URLs and userinfo authorities through
+          # in this same run, so this grep is over output that had something to
+          # elide. Without them a clean grep would be a fact about the fixtures.
+          #
+          # Case-insensitive, which is stricter than the terms as gate 7 spells
+          # them: a header this project never writes is one an origin, a proxy,
+          # or a later diagnostic might, and `authorization` is as much a leak
+          # as `Authorization`. Verified to match nothing over a full verbose
+          # run before it was made a gate, so the strictness costs nothing here
+          # and catches something later.
+          if grep -inE 'authorization|token|x-amz-|signature|sig=' release-output.log; then
+            echo "::error::a credential-shaped string reached the output" >&2
+            exit 1
+          fi
+          echo "gate 7: no match for Authorization, token, X-Amz-, Signature, or sig="
+
+      - name: Keep the output the gate was asserted over
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gate-7-output
+          path: release-output.log
+          if-no-files-found: warn
+
+  release:
+    name: Assemble the draft release
+    needs: [metadata, core, plugin-windows, credentials]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Build the source archive and its checksums
+        shell: bash
+        env:
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          # From the tag object rather than from the working tree: what is
+          # published is then what the tag points at, and the tag is what this
+          # release is pinned by.
+          git archive --format=tar.gz \
+            --prefix="usd-http-resolver-${VERSION}/" \
+            -o "dist-release/usd-http-resolver-${VERSION}-src.tar.gz" "$TAG"
+
+          # Beside the archive rather than only inside it, so that the license
+          # and the two documents a consumer reads before downloading anything
+          # are readable from the release page.
+          cp LICENSE NOTICE dist-release/
+          cp docs/reference/CAPABILITY_MATRIX.md dist-release/
+          cp docs/compatibility/OPENUSD.md dist-release/
+          cp docs/reference/BASELINE.md dist-release/
+
+          cd dist-release
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' \
+            | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          ls -la
+
+      - name: Assemble the release notes from the record
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The record is the notes. It is the immutable statement of what
+          # shipped, what did not, and how every gate was answered, and a
+          # separate set of notes would be a second version of that to keep
+          # in agreement with the first.
+          cp "docs/releases/v${VERSION}.md" dist-release/RELEASE_NOTES.md
+          {
+            echo
+            echo '## Artifacts'
+            echo
+            echo 'This is a source release. No binary package is published; see §5,'
+            echo 'gate 9, above.'
+            echo
+            echo '| File | What it is |'
+            echo '| --- | --- |'
+            printf '| `usd-http-resolver-%s-src.tar.gz` | The tagged source tree |\n' "$VERSION"
+            echo '| `LICENSE`, `NOTICE` | Apache-2.0, and the third-party notices |'
+            echo '| `CAPABILITY_MATRIX.md` | What the tree implements at this tag |'
+            echo '| `OPENUSD.md` | The OpenUSD versions this tag supports |'
+            echo '| `BASELINE.md` | The recorded I/O baseline |'
+            echo '| `SHA256SUMS` | SHA-256 over every file above |'
+            echo
+            echo '## SHA-256 checksums'
+            echo
+            echo '```text'
+            cat dist-release/SHA256SUMS
+            echo '```'
+          } >> dist-release/RELEASE_NOTES.md
+
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A published release is never replaced by a re-run. A draft is,
+          # because a draft is a re-runnable step and a published release is a
+          # thing people have already downloaded.
+          if gh release view "$TAG" --json isDraft > existing.json 2>/dev/null; then
+            if [ "$(jq -r .isDraft existing.json)" = true ]; then
+              gh release delete "$TAG" --yes
+            else
+              echo "::error::release $TAG is already published; refusing to replace it" >&2
+              exit 1
+            fi
+          fi
+          gh release create "$TAG" --draft \
+            --title "$TAG" \
+            --notes-file dist-release/RELEASE_NOTES.md \
+            dist-release/usd-http-resolver-*-src.tar.gz \
+            dist-release/SHA256SUMS \
+            dist-release/LICENSE \
+            dist-release/NOTICE \
+            dist-release/CAPABILITY_MATRIX.md \
+            dist-release/OPENUSD.md \
+            dist-release/BASELINE.md
+          echo "::notice title=Draft release created::${TAG} is a draft. Publishing it is a person's decision."

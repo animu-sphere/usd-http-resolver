@@ -80,6 +80,28 @@ is a counter on a named fixture rather than a sentence.
   is recorded and not gated: the comparator reads 4 KiB at a time, which flatters
   the backend, and a comparison that flatters is not a gate.
 
+- **A release lane, and the mechanical half of the gate inside it.**
+  `.github/workflows/release.yml` runs on a `vX.Y.Z` tag: it validates that
+  `VERSION`, `openstrata.toml`, the plugin manifest, the bundle's standalone
+  CMake fallback, the newest changelog section, and the tag all agree
+  (`tools/check_release_metadata.py`); re-runs gates 3, 4, and 5 by *calling*
+  `core-ci.yml` and `plugin-windows-ci.yml` as reusable workflows rather than
+  copying their steps; greps the whole verbose suite output for credentials with
+  the metrics dump on; and assembles a draft release from the source tree, its
+  checksums, and the release record as its notes. Six places is more than a
+  reader reliably checks, and the failure is silent — a tree whose manifest says
+  `0.2.0` and whose `VERSION` says `0.1.0` builds, tests, and tags green, and is
+  discovered by whoever installs it.
+- **It publishes source and no binary package, deliberately.** Gate 9 binds a
+  release that publishes one, and the roadmap puts packaged cross-platform
+  artifacts in `v0.6.0`; attaching plugin binaries here would make gate 9 bind
+  on a build that, measured, is not yet reproducible. The file says where the
+  binary matrix goes when it arrives and what has to be true first.
+- The tag lane refuses a record that still carries a placeholder, which is the
+  one thing only the tag can check: the gate requires the record to be prepared
+  in the release commit *before* the tag, and a finished record is the evidence
+  that happened.
+
 - `plugins/http-resolver`, the `ArResolver` bundle, and the first module in this
   repository that includes an OpenUSD header. It registers `http` and `https` as
   URI schemes — not as the primary resolver, so installing it never changes how

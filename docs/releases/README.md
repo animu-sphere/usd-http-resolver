@@ -49,6 +49,30 @@ Gate 7 is checked mechanically, not by reading. A grep over test output,
 diagnostics, and the metrics dump for `Authorization`, `token`, `X-Amz-`,
 `Signature`, and `sig=` is part of the release run.
 
+## Where the gate is enforced
+
+`.github/workflows/release.yml` runs on a `vX.Y.Z` tag push, and from `v0.2.0`
+it is where the mechanical half of this gate lives. What it asserts, and why
+those and not the others:
+
+| Gate | How the tag lane answers it |
+| --- | --- |
+| 1 | `tools/check_release_metadata.py`, which compares `VERSION`, `openstrata.toml`, the plugin manifest, the bundle's standalone CMake fallback, the newest changelog section, and the tag. Six places is more than a reader reliably checks, and the failure is silent: a tree whose manifest and `VERSION` disagree builds, tests, and tags green |
+| 3, 4, 5 | By calling `core-ci.yml` and `plugin-windows-ci.yml` as reusable workflows, so the lanes that define these gates are the lanes that re-run them at the tag. There is no second copy of their steps to drift |
+| 7 | The `credentials` job: the suite with `USD_HTTP_RESOLVER_METRICS_DUMP=1`, verbose, and a case-insensitive grep over everything it wrote. It fails if there is no metrics dump in the output at all, because a grep over output with nothing to elide asserts nothing |
+| — | That the record exists in the tagged tree and carries no placeholder. `docs/releases/README.md` requires the record to be prepared in the release commit immediately *before* the tag; a tag pointing at a tree with no finished record is that rule broken, and it is the one thing only the tag can check |
+
+Gates 2, 6, 8, and 9 stay human. Gate 2 spans workflows and a matrix lane the
+tag cannot re-run — `openstrata.ci.yaml` declares its cells for `pull_request`
+only — so the record cites run ids. Gate 6 is a comparison between two recorded
+tables and a judgment about whether a difference is a regression, which is what
+a record is for. Gate 8 is a reading of `NOTICE` against what was actually
+linked. Gate 9 is scope: it binds a release that publishes a binary package, and
+the lane publishes source.
+
+The release is created as a **draft**. Everything above is a precondition for
+offering one, not for publishing it; publishing is a person's decision.
+
 ## Gates before a transport exists
 
 Gates 4, 6, and 9 describe a release that moves bytes over a network or ships a
