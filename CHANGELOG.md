@@ -53,6 +53,14 @@ rather than a sentence.
   quickly. It is registered as a test rather than kept as a tool a release run
   remembers to invoke, so it runs on all three platforms and, at 8 MiB, under
   both sanitizers.
+- Every request count asserted twice: against the backend's counter, and against
+  the number of requests the fixture server logged answering. The second is what
+  makes the first worth anything, because gate 6 is the one gate a self-report
+  can be wrong about — a request issued outside the metrics sink costs a round
+  trip and counts nothing, and a lane watching only the sink stays green while
+  the wire traffic doubles. The metadata-only scenario reads the method off the
+  wire too: "no content byte crosses the transport" is a property of the `HEAD`
+  that went out, not of the counter that classified it.
 - A plain download to compare the worst case against, performed by something
   that is not the client under test: the fixture server's own raw client, one
   `GET`, no `Range`, and no HTTP code shared with `usdAssetHttp` — the same
@@ -324,6 +332,17 @@ rather than a sentence.
 
 ### Fixed
 
+- **A stalled apt mirror held the CI lanes for six hours.** On 2026-08-18 three
+  Linux jobs of one run sat in `apt-get update` with nothing to show for it; two
+  recovered when the run was re-fired and the third ran until the six-hour job
+  limit killed it, having built nothing and tested nothing. apt has no deadline
+  of its own, so it was given one — `Acquire::Retries` and per-protocol timeouts
+  written once per job into `/etc/apt/apt.conf.d/`, covering the calls that exist
+  and any a later step adds — with `timeout-minutes` on each apt step as the
+  backstop for the hangs those options cannot see, the dpkg lock being the
+  realistic one. It is the rule this repository already applies to its own
+  fixtures, applied to the runner's package manager: a hung exchange fails the
+  lane rather than holding it.
 - **`usdAssetHttpConfig.cmake` did not find its own private dependency.** The
   bundle is the first thing to consume the *installed* `usdAssetHttp` package
   rather than the in-tree target, and it failed at generate time with "the link

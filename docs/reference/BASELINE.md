@@ -52,6 +52,15 @@ still be right.
 | `amplification`, `selectivity`, and the other derived ratios | Recorded | They are the byte counts divided by the fixture size, and a gate on them would move when the fixture did |
 | Latency and wall clock | Recorded | Loopback has no bandwidth-delay product. These are numbers about this process on this machine, and a lane that failed on them would fail for reasons that are not this repository's |
 
+Every request count is asserted twice: once against the backend's own counter,
+and once against the number of requests the fixture server logged answering.
+That second check is what makes the first worth anything. Gate 6 is precisely
+the gate a self-report can be wrong about — a request issued outside the metrics
+sink costs a round trip and counts nothing — and a lane watching only the sink
+stays green while the wire traffic doubles. The server's log is the independent
+witness, the same separation the plain-download comparator keeps from the client
+under test.
+
 The one comparison in the table that is not a counter is the fourth scenario's.
 "Must not be worse than a plain download" needs a plain download, performed by
 something that is not the client under test, so it is performed by the fixture
@@ -70,21 +79,21 @@ Measured with the shipped transport defaults, on Windows AMD64, MSVC 19.34.31937
 
 | Scenario | requests | metadata | retries | redirects | bytes requested | bytes transferred | amplification | selectivity | wall ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| metadata-only open | 1 | 1 | 0 | 0 | 0 | 0 | — | 0.000000 | 1.3 |
+| metadata-only open | 1 | 1 | 0 | 0 | 0 | 0 | — | 0.000000 | 1.4 |
 | header and index read | 18 | 1 | 0 | 0 | 69632 | 69632 | 1.000000 | 0.000519 | 1.4 |
-| bounded spatial query | 19 | 1 | 0 | 0 | 331776 | 331776 | 1.000000 | 0.002472 | 1.7 |
-| full sequential read | 33 | 1 | 0 | 0 | 134217728 | 134217728 | 1.000000 | 1.000000 | 157.7 |
-| parallel readers | 152 | 8 | 0 | 0 | 2654208 | 2654208 | 1.000000 | 0.019775 | 9.7 |
+| bounded spatial query | 19 | 1 | 0 | 0 | 331776 | 331776 | 1.000000 | 0.002472 | 1.5 |
+| full sequential read | 33 | 1 | 0 | 0 | 134217728 | 134217728 | 1.000000 | 1.000000 | 131.0 |
+| parallel readers | 152 | 8 | 0 | 0 | 2654208 | 2654208 | 1.000000 | 0.019775 | 3.5 |
 
 Latency, in microseconds. Quantiles are bucket upper bounds, not exact order statistics (METRICS.md §4), and the request and read columns are p50 / p90 / p99 / max.
 
 | Scenario | open | request | read |
 | --- | ---: | ---: | ---: |
-| metadata-only open | 1323 | 593 / 593 / 593 / 593 | — |
-| header and index read | 322 | 63 / 127 / 318 / 318 | 63 / 91 / 91 / 91 |
-| bounded spatial query | 284 | 63 / 127 / 280 / 280 | 63 / 96 / 96 / 96 |
-| full sequential read | 279 | 2047 / 2047 / 24841 / 24841 | 2047 / 2047 / 24846 / 24846 |
-| parallel readers | 7875 | 127 / 255 / 1023 / 7867 | 127 / 198 / 198 / 198 |
+| metadata-only open | 1350 | 632 / 632 / 632 / 632 | — |
+| header and index read | 327 | 63 / 127 / 322 / 322 | 63 / 88 / 88 / 88 |
+| bounded spatial query | 257 | 63 / 127 / 253 / 253 | 63 / 84 / 84 / 84 |
+| full sequential read | 264 | 1455 / 1455 / 1455 / 1455 | 1458 / 1458 / 1458 / 1458 |
+| parallel readers | 854 | 127 / 255 / 840 / 840 | 127 / 249 / 249 / 249 |
 
 Every cache counter in METRICS.md §2.2 is zero, and `bytesFromCache` with it, because no cache exists in this release -- not because none hit. `v0.3.0` is where these rows are expected to move, and the request counts above are what it has to move.
 
@@ -93,7 +102,7 @@ Every cache counter in METRICS.md §2.2 is zero, and `bytesFromCache` with it, b
 | metadata-only open | `openLatency`, `metadataRequestCount` — the cost of merely resolving | One `HEAD`. No content byte crosses the transport, and the reader is bound to a revision before any read is issued |
 | header and index read | The clustered small-read pattern the block cache exists for | One 4 KiB header read and 16 adjacent 4 KiB index reads. Every one of them is its own request today, which is the number `v0.3.0` exists to collapse |
 | bounded spatial query | `selectivity` — the headline claim | A header, a tail index, and 16 scattered 16 KiB chunks: 331776 bytes moved to answer a query against an asset of 134217728 |
-| full sequential read | The worst case; must not be worse than a plain download | 32 reads of 4 MiB against one plain `GET` of the whole asset over the fixture server's own raw client: identical content bytes, 33 requests against 1, 157.7 ms against 131.5 ms. The comparator reads 4 KiB at a time, so the times are recorded and not gated |
+| full sequential read | The worst case; must not be worse than a plain download | 32 reads of 4 MiB against one plain `GET` of the whole asset over the fixture server's own raw client: identical content bytes, 33 requests against 1, 131.0 ms against 120.0 ms. The comparator reads 4 KiB at a time, so the times are recorded and not gated |
 | parallel readers | `requestsSavedBySingleFlight`, contention | 8 readers running the bounded query at once, each with its own revision binding. Every request is issued 8 times, because nothing is shared between readers yet; that is the figure `requestsSavedBySingleFlight` has to move in `v0.3.0` |
 
 ## What the numbers say

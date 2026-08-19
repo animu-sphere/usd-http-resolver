@@ -44,12 +44,15 @@ split:
 
 | Quantity | Treatment |
 | --- | --- |
-| Bytes requested, bytes transferred, requests, retries, redirects | Asserted exactly. With no cache, a read of *n* bytes is one request moving exactly *n* bytes |
+| Bytes requested, bytes transferred, requests, retries, redirects | Asserted exactly, and the request count twice: against the backend's counter and against the fixture server's own request log |
 | `amplification`, `selectivity`, the other ratios | Recorded. They are byte counts over a fixture size, and a gate on one would move when the fixture did |
 | Latency and wall clock | Recorded. Loopback has no round-trip time worth the name |
 
 Every scenario verifies the bytes it counted: each byte of the fixture is a hash
-of its own offset, so a read that landed elsewhere cannot compare equal.
+of its own offset, so a read that landed elsewhere cannot compare equal. And
+every scenario checks the backend's request count against the server's log,
+because gate 6 is the one gate a self-report can be wrong about: a request
+issued outside the metrics sink costs a round trip and counts nothing.
 
 ```sh
 ctest --test-dir build/core -R usdAssetHttp_io_baseline

@@ -206,6 +206,15 @@ which would therefore ship unexercised.
    what each costs in the matrix, and a fourth ask:
    [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md).
 
+4. **A generated cell cannot be given a step timeout.** `openstrata.ci.yaml` has
+   no field for one and `ost ci generate` emits none, so every generated cell —
+   including the `host_packages` installer that runs the same `apt-get` that
+   held this repository's lanes for six hours on 2026-08-18 — inherits GitHub's
+   six-hour job default. The hand-authored lanes now bound their apt steps in
+   minutes; the generated ones cannot, and the ask is a per-step or per-cell
+   timeout in the matrix. It blocks nothing: a stalled cell fails eventually,
+   expensively.
+
 No longer blocking: ADR-0002, resolved as a hard error for `v0.2.0`. Also no
 longer blocking: the sanitizer runs, which now happen; and the HTTP client
 dependency, resolved as libcurl in

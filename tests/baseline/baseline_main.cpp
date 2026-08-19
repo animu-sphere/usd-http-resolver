@@ -29,10 +29,12 @@
 //   docs/design/DESIGN_POLICY.md   §9 measurement, §11.3 amplification
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <string>
 #include <thread>
@@ -83,6 +85,14 @@ constexpr std::uint64_t kDefaultAssetBytes = 128ull * 1024 * 1024;
 /// than no baseline.
 constexpr std::uint64_t kMinAssetBytes = 4ull * 1024 * 1024;
 
+/// And above this, refused for a different reason. The whole fixture is resident
+/// three times over at the peak -- the harness builds it, the server holds it,
+/// and the plain-download comparator buffers a copy of it -- so a size that
+/// cannot fit is a machine swapping or an allocation throwing, neither of which
+/// is a measurement. The bound is stated rather than discovered: a number that
+/// large is a typo or a mistaken unit far more often than it is a request.
+constexpr std::uint64_t kMaxAssetBytes = 4ull * 1024 * 1024 * 1024;
+
 constexpr std::uint64_t kHeaderBytes = 4 * 1024;
 constexpr std::uint64_t kIndexBytes = 64 * 1024;
 
@@ -129,20 +139,57 @@ std::vector<unsigned char> MakeContent(std::uint64_t size) {
     return content;
 }
 
-std::uint64_t AssetBytesFromEnvironment() {
-    const char* raw = std::getenv("USD_ASSET_BASELINE_ASSET_BYTES");
-    if (raw == nullptr || raw[0] == 0) return kDefaultAssetBytes;
-
-    char* end = nullptr;
-    const unsigned long long parsed = std::strtoull(raw, &end, 10);
-    if (end == raw || end == nullptr || end[0] != 0) {
-        std::fprintf(stderr,
-                     "FAIL: USD_ASSET_BASELINE_ASSET_BYTES is not a number: %s\n",
-                     raw);
-        ++usdassettest::FailureCount();
-        return kDefaultAssetBytes;
+/// Digits only, deliberately.
+///
+/// `strtoull` accepts a leading `-` and returns the two's-complement wrap of it,
+/// so `-1` parses as `18446744073709551615` with nothing to test afterwards --
+/// and the vector that size then throws `length_error` out of a function that
+/// promised to refuse a bad size rather than die of one. It also accepts a
+/// leading `+`, whitespace, and `0x`, none of which is a byte count anybody
+/// meant. So the digits are checked first and `strtoull` only converts what has
+/// already been established to be a number.
+bool ParseDigits(const char* text, std::uint64_t* out) {
+    if (text == nullptr || text[0] == 0) return false;
+    for (const char* c = text; *c != 0; ++c) {
+        if (*c < '0' || *c > '9') return false;
     }
-    return static_cast<std::uint64_t>(parsed);
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(text, &end, 10);
+    if (errno == ERANGE || end == nullptr || end[0] != 0) return false;
+    *out = static_cast<std::uint64_t>(parsed);
+    return true;
+}
+
+/// False, having already said why. A bad size is refused rather than replaced
+/// with the default: a run asked to measure one thing and quietly given another
+/// prints a report that is correct about a fixture nobody chose.
+bool AssetBytesFromEnvironment(std::uint64_t* out) {
+    const char* raw = std::getenv("USD_ASSET_BASELINE_ASSET_BYTES");
+    if (raw == nullptr || raw[0] == 0) {
+        *out = kDefaultAssetBytes;
+        return true;
+    }
+
+    std::uint64_t parsed = 0;
+    if (!ParseDigits(raw, &parsed)) {
+        std::fprintf(stderr,
+                     "FAIL: USD_ASSET_BASELINE_ASSET_BYTES is not a count of "
+                     "bytes: %s\n",
+                     raw);
+        return false;
+    }
+    if (parsed < kMinAssetBytes || parsed > kMaxAssetBytes) {
+        std::fprintf(stderr,
+                     "FAIL: a baseline asset of %llu bytes is outside the "
+                     "%llu..%llu bytes this layout and this machine allow\n",
+                     static_cast<unsigned long long>(parsed),
+                     static_cast<unsigned long long>(kMinAssetBytes),
+                     static_cast<unsigned long long>(kMaxAssetBytes));
+        return false;
+    }
+    *out = parsed;
+    return true;
 }
 
 // --- reading -----------------------------------------------------------------
@@ -241,12 +288,42 @@ std::unique_ptr<HttpAssetReader> OpenOrReport(const Fixture& fixture) {
     return std::move(opened.reader);
 }
 
+/// Every counter in METRICS.md §2.2, not the two a scenario happens to think
+/// about.
+///
+/// The report states that all of them are zero. That sentence is a claim, and
+/// this file's whole premise is that a claim must be a counter -- so it is
+/// checked here, in the one place that would otherwise let `BASELINE.md` assert
+/// something true today and false the first time `libs/usd-asset-cache` fills
+/// a field nobody was watching. The day that happens this fails, which is the
+/// correct outcome: a release that changes I/O behavior records a new baseline
+/// rather than inheriting one.
+bool NoCacheCounterMoved(const MetricsSnapshot& metrics) {
+    return metrics.bytesFromCache == 0 && metrics.blockHits == 0 &&
+           metrics.blockMisses == 0 && metrics.partialHits == 0 &&
+           metrics.requestsSavedByCoalescing == 0 &&
+           metrics.requestsSavedBySingleFlight == 0 &&
+           metrics.bytesOverFetched == 0 && metrics.evictions == 0 &&
+           metrics.peakResidentBytes == 0;
+}
+
 /// The counter assertions every scenario shares.
 ///
 /// With no cache, a read of n bytes is one request that moves exactly n bytes.
 /// Stating that once means each scenario declares only what is specific to it,
 /// and it means the day `v0.3.0` changes the rule, one place says so.
+///
+/// `serverRequests` is the fixture server's own count, and it is what makes the
+/// rest of these worth anything. Every other number here is the backend's
+/// account of what the backend did, and gate 6 is exactly the gate that account
+/// can be wrong about: a request issued outside the metrics sink costs a round
+/// trip and counts nothing, and a lane watching only the sink stays green while
+/// the wire traffic doubles. The server logged what it answered, so the two are
+/// independent expressions of one fact -- the same separation the plain-download
+/// comparator keeps from the client under test, and the boundary suite's oracle
+/// keeps from `usdAssetLocal`.
 void CheckUncachedShape(const MetricsSnapshot& metrics,
+                        std::uint64_t serverRequests,
                         std::uint64_t expectedBytes,
                         std::uint64_t expectedReadRequests,
                         std::uint64_t readers) {
@@ -256,19 +333,28 @@ void CheckUncachedShape(const MetricsSnapshot& metrics,
     CHECK_EQ(metrics.metadataRequestCount, readers);
     CHECK_EQ(metrics.retryCount, std::uint64_t{0});
     CHECK_EQ(metrics.redirectCount, std::uint64_t{0});
-    CHECK_EQ(metrics.bytesFromCache, std::uint64_t{0});
-    CHECK_EQ(metrics.bytesOverFetched, std::uint64_t{0});
+    CHECK(NoCacheCounterMoved(metrics));
+    CHECK_EQ(serverRequests, metrics.requestCount);
+}
+
+/// What the server has answered since its log was last cleared. Read after the
+/// reads it is meant to account for, and before anything else on this server
+/// issues one -- the plain-download comparator in particular, which is a request
+/// the backend did not make and must not be charged for.
+std::uint64_t ServerRequests(const Server& server) {
+    return static_cast<std::uint64_t>(server.RequestCount());
 }
 
 // --- the scenarios -----------------------------------------------------------
 
 /// METRICS.md §6, row 1: the cost of merely resolving.
-ScenarioRecord MetadataOnlyOpen(const Fixture& fixture) {
+ScenarioRecord MetadataOnlyOpen(const Fixture& fixture, Server& server) {
     ScenarioRecord record;
     record.name = "metadata-only open";
     record.exercises =
         "`openLatency`, `metadataRequestCount` — the cost of merely resolving";
 
+    server.ClearLog();
     const Clock::time_point started = Clock::now();
     std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
     record.wallMs = ElapsedMs(started);
@@ -278,7 +364,17 @@ ScenarioRecord MetadataOnlyOpen(const Fixture& fixture) {
 
     CHECK_EQ(record.metrics.assetSize, fixture.size);
     CHECK(reader->Metadata().supportsRandomAccess);
-    CheckUncachedShape(record.metrics, 0, 0, 1);
+    CheckUncachedShape(record.metrics, ServerRequests(server), 0, 0, 1);
+
+    // The one request, named by the server rather than by the counter that
+    // classified it. "No content byte crosses the transport" is a property of
+    // the method that went out, and the wire is the only place to read it off.
+    const std::vector<usdassetfixture::RequestRecord> log = server.Log();
+    CHECK_EQ(log.size(), std::size_t{1});
+    if (log.size() == 1) {
+        CHECK(log[0].method == "HEAD");
+        CHECK(log[0].range.empty());
+    }
     // The one request an open costs is the metadata request, and it moves no
     // content. A backend that read a byte to discover a size would show up here
     // and nowhere else.
@@ -292,14 +388,18 @@ ScenarioRecord MetadataOnlyOpen(const Fixture& fixture) {
 
 /// METRICS.md §6, row 2: the clustered small-read pattern the block cache exists
 /// for.
-ScenarioRecord HeaderAndIndexRead(const Fixture& fixture) {
+ScenarioRecord HeaderAndIndexRead(const Fixture& fixture, Server& server) {
     ScenarioRecord record;
     record.name = "header and index read";
     record.exercises = "The clustered small-read pattern the block cache exists for";
 
+    server.ClearLog();
     const Clock::time_point started = Clock::now();
     std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) return record;
+    if (!reader) {
+        record.wallMs = ElapsedMs(started);
+        return record;
+    }
 
     std::vector<unsigned char> buffer;
     bool ok = ReadChecked(*reader, 0, kHeaderBytes, &buffer);
@@ -312,7 +412,8 @@ ScenarioRecord HeaderAndIndexRead(const Fixture& fixture) {
     record.metrics = reader->Metrics().Snapshot();
     if (!ok) return record;
 
-    CheckUncachedShape(record.metrics, kHeaderBytes + kIndexBytes,
+    CheckUncachedShape(record.metrics, ServerRequests(server),
+                       kHeaderBytes + kIndexBytes,
                        1 + static_cast<std::uint64_t>(kIndexReads), 1);
 
     record.note = "One 4 KiB header read and " + std::to_string(kIndexReads) +
@@ -322,21 +423,26 @@ ScenarioRecord HeaderAndIndexRead(const Fixture& fixture) {
 }
 
 /// METRICS.md §6, row 3: `selectivity`, the headline claim.
-ScenarioRecord BoundedSpatialQuery(const Fixture& fixture) {
+ScenarioRecord BoundedSpatialQuery(const Fixture& fixture, Server& server) {
     ScenarioRecord record;
     record.name = "bounded spatial query";
     record.exercises = "`selectivity` — the headline claim";
 
+    server.ClearLog();
     const Clock::time_point started = Clock::now();
     std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) return record;
+    if (!reader) {
+        record.wallMs = ElapsedMs(started);
+        return record;
+    }
 
     const bool ok = ReadBoundedQuery(*reader, fixture);
     record.wallMs = ElapsedMs(started);
     record.metrics = reader->Metrics().Snapshot();
     if (!ok) return record;
 
-    CheckUncachedShape(record.metrics, kBoundedQueryBytes, kBoundedQueryReads, 1);
+    CheckUncachedShape(record.metrics, ServerRequests(server), kBoundedQueryBytes,
+                       kBoundedQueryReads, 1);
 
     // The amplification gate, and the reason this file exists. An absolute byte
     // budget rather than a ratio: the ratio moves with the fixture size, and a
@@ -362,14 +468,18 @@ ScenarioRecord BoundedSpatialQuery(const Fixture& fixture) {
 /// gated. Its *byte* count flatters nobody, and that is what is gated: a ranged
 /// full read must put no more content on the wire than a plain download of the
 /// same asset.
-ScenarioRecord FullSequentialRead(const Fixture& fixture, unsigned short port) {
+ScenarioRecord FullSequentialRead(const Fixture& fixture, Server& server) {
     ScenarioRecord record;
     record.name = "full sequential read";
     record.exercises = "The worst case; must not be worse than a plain download";
 
+    server.ClearLog();
     const Clock::time_point started = Clock::now();
     std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) return record;
+    if (!reader) {
+        record.wallMs = ElapsedMs(started);
+        return record;
+    }
 
     std::vector<unsigned char> buffer;
     bool ok = true;
@@ -386,12 +496,15 @@ ScenarioRecord FullSequentialRead(const Fixture& fixture, unsigned short port) {
     record.metrics = reader->Metrics().Snapshot();
     if (!ok) return record;
 
-    CheckUncachedShape(record.metrics, fixture.size, reads, 1);
+    // Read before the comparator issues its own request, which the backend did
+    // not make.
+    CheckUncachedShape(record.metrics, ServerRequests(server), fixture.size, reads,
+                       1);
 
     // The plain download, over a client that is not the one under test.
     const Clock::time_point downloadStarted = Clock::now();
     const usdassetfixturetest::RawResponse plain = usdassetfixturetest::FetchOnce(
-        port, usdassetfixturetest::GetRequest(kAssetPath), 300000);
+        server.Port(), usdassetfixturetest::GetRequest(kAssetPath), 300000);
     const double downloadMs = ElapsedMs(downloadStarted);
 
     CHECK_EQ(plain.status, 200);
@@ -420,10 +533,12 @@ ScenarioRecord FullSequentialRead(const Fixture& fixture, unsigned short port) {
 }
 
 /// METRICS.md §6, row 5: parallel readers on one asset.
-ScenarioRecord ParallelReaders(const Fixture& fixture) {
+ScenarioRecord ParallelReaders(const Fixture& fixture, Server& server) {
     ScenarioRecord record;
     record.name = "parallel readers";
     record.exercises = "`requestsSavedBySingleFlight`, contention";
+
+    server.ClearLog();
 
     // The process aggregate rather than one reader's counters, because there are
     // eight of them. Folding is what `~ReaderMetrics` does, so the readers are
@@ -450,9 +565,9 @@ ScenarioRecord ParallelReaders(const Fixture& fixture) {
     // `selectivity` is about it.
     record.metrics.assetSize = fixture.size;
 
-    CheckUncachedShape(record.metrics, kBoundedQueryBytes * kParallelReaders,
+    CheckUncachedShape(record.metrics, ServerRequests(server),
+                       kBoundedQueryBytes * kParallelReaders,
                        kBoundedQueryReads * kParallelReaders, kParallelReaders);
-    CHECK_EQ(record.metrics.requestsSavedBySingleFlight, std::uint64_t{0});
 
     record.note = std::to_string(kParallelReaders) +
                   " readers running the bounded query at once, each with its own "
@@ -491,15 +606,8 @@ int main(int argc, char** argv) {
         if (fromEnvironment != nullptr) outputPath = fromEnvironment;
     }
 
-    const std::uint64_t assetBytes = AssetBytesFromEnvironment();
-    if (assetBytes < kMinAssetBytes) {
-        std::fprintf(stderr,
-                     "FAIL: a baseline asset of %llu bytes is below the %llu-byte "
-                     "minimum this layout needs\n",
-                     static_cast<unsigned long long>(assetBytes),
-                     static_cast<unsigned long long>(kMinAssetBytes));
-        return 1;
-    }
+    std::uint64_t assetBytes = 0;
+    if (!AssetBytesFromEnvironment(&assetBytes)) return 1;
 
     std::string error;
     std::unique_ptr<Server> server = Server::Start(&error);
@@ -515,7 +623,20 @@ int main(int argc, char** argv) {
     {
         AssetSpec spec;
         spec.path = kAssetPath;
-        spec.content = MakeContent(assetBytes);
+        // The one allocation here big enough to fail. A machine that cannot hold
+        // the fixture must say which allocation it could not make, rather than
+        // terminate on an uncaught `bad_alloc` and leave a lane reporting that
+        // the baseline crashed.
+        try {
+            spec.content = MakeContent(assetBytes);
+        } catch (const std::exception& failure) {
+            std::fprintf(stderr,
+                         "FAIL: could not allocate the %llu-byte fixture: %s\n",
+                         static_cast<unsigned long long>(assetBytes),
+                         failure.what());
+            server->Stop();
+            return 1;
+        }
         spec.behavior = Behavior::Normal;
         spec.etag = "\"baseline-rev-1\"";
         spec.lastModified = "Tue, 18 Aug 2026 09:00:00 GMT";
@@ -531,11 +652,11 @@ int main(int argc, char** argv) {
     fixture.size = assetBytes;
 
     std::vector<ScenarioRecord> records;
-    records.push_back(MetadataOnlyOpen(fixture));
-    records.push_back(HeaderAndIndexRead(fixture));
-    records.push_back(BoundedSpatialQuery(fixture));
-    records.push_back(FullSequentialRead(fixture, server->Port()));
-    records.push_back(ParallelReaders(fixture));
+    records.push_back(MetadataOnlyOpen(fixture, *server));
+    records.push_back(HeaderAndIndexRead(fixture, *server));
+    records.push_back(BoundedSpatialQuery(fixture, *server));
+    records.push_back(FullSequentialRead(fixture, *server));
+    records.push_back(ParallelReaders(fixture, *server));
 
     RunContext context;
     context.assetBytes = assetBytes;

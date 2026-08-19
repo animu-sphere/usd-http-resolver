@@ -105,10 +105,37 @@ std::string FormatBaseline(const RunContext& context,
         out += " |\n";
     }
 
-    out += "\nEvery cache counter in METRICS.md §2.2 is zero, and `bytesFromCache`"
-           " with it, because no cache exists in this release -- not because none"
-           " hit. `v0.3.0` is where these rows are expected to move, and the"
-           " request counts above are what it has to move.\n";
+    // Stated only when it is true of the run that printed it. The harness
+    // asserts the same thing, so a report carrying the second sentence comes
+    // from a failing run -- but a document is read long after the run that made
+    // it, and this one is the place a claim without a counter behind it would
+    // be least excusable.
+    bool everyCacheCounterIsZero = true;
+    std::uint64_t cached = 0;
+    std::uint64_t overFetched = 0;
+    for (const ScenarioRecord& record : records) {
+        const usdasset::MetricsSnapshot& m = record.metrics;
+        cached += m.bytesFromCache;
+        overFetched += m.bytesOverFetched;
+        everyCacheCounterIsZero =
+            everyCacheCounterIsZero && m.bytesFromCache == 0 && m.blockHits == 0 &&
+            m.blockMisses == 0 && m.partialHits == 0 &&
+            m.requestsSavedByCoalescing == 0 && m.requestsSavedBySingleFlight == 0 &&
+            m.bytesOverFetched == 0 && m.evictions == 0 && m.peakResidentBytes == 0;
+    }
+
+    if (everyCacheCounterIsZero) {
+        out += "\nEvery cache counter in METRICS.md §2.2 is zero, and"
+               " `bytesFromCache` with it, because no cache exists in this release"
+               " -- not because none hit. `v0.3.0` is where these rows are expected"
+               " to move, and the request counts above are what it has to move.\n";
+    } else {
+        out += "\nThe cache counters in METRICS.md §2.2 are no longer all zero: "
+               "this run served " + Unsigned(cached) +
+               " bytes from a cache and over-fetched " + Unsigned(overFetched) +
+               ". A release whose cache moved is a release that records a new"
+               " baseline rather than inheriting this one.\n";
+    }
 
     out += "\n| Scenario | What it exercises | Notes |\n";
     out += "| --- | --- | --- |\n";
