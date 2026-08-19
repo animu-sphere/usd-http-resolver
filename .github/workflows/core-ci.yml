@@ -38,6 +38,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Called by `release.yml` at a tag, so that gates 3, 4, and 5 are re-run
+  # against what is about to be released by the lane that defines them,
+  # rather than by a second copy of these steps that could drift from it.
+  workflow_call:
 
 permissions:
   contents: read

@@ -5,9 +5,32 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <system_error>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace usdassetboundary {
+namespace {
+
+/// The owning process, spelled the way each platform spells it.
+///
+/// It is part of the workspace path rather than a random suffix so that a
+/// directory left behind by a crashed run can be attributed to the run that
+/// left it.
+unsigned long CurrentProcessId() {
+#if defined(_WIN32)
+    return static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
+
+}  // namespace
 
 std::vector<unsigned char> PositionalContent(std::size_t size, std::uint64_t seed) {
     std::vector<unsigned char> content(size);
@@ -40,7 +63,11 @@ FixtureWorkspace::FixtureWorkspace(const std::string& tag) {
     std::error_code error;
     const std::filesystem::path root =
         std::filesystem::temp_directory_path(error) /
-        ("usd-http-resolver-boundary-" + tag);
+        ("usd-http-resolver-boundary-" + tag + "-" + std::to_string(CurrentProcessId()));
+    // Of this process's own directory, which a previous run with the same
+    // process id may have left behind. The process id is what makes that safe:
+    // without it the tag is shared, and this line deletes the fixtures of
+    // whichever concurrent run of the same row started first.
     std::filesystem::remove_all(root, error);
     std::filesystem::create_directories(root, error);
     if (!error) {

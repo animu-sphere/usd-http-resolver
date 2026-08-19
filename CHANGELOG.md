@@ -13,15 +13,24 @@ one.
 
 ## Unreleased
 
-Work toward `v0.2.0`, whose scope is in the [roadmap](docs/roadmap/README.md).
+Nothing yet. `v0.3.0`'s scope is the block cache, and its definition of success
+is the table in [BASELINE.md](docs/reference/BASELINE.md) § *What the next
+release has to move*.
+
+## `v0.2.0` — 2026-08-20
+
+The release in which bytes cross a network. Its scope is in the
+[roadmap](docs/roadmap/README.md) and the immutable record is
+[docs/releases/v0.2.0.md](docs/releases/v0.2.0.md).
+
 It started with the HTTP client dependency decision rather than with code, and
-then with the server the code will be tested against rather than the code. Both
+then with the server the code would be tested against rather than the code. Both
 prerequisites in §17 of the [design policy](docs/design/DESIGN_POLICY.md) were
 done first, in the order it fixed, and neither ships in the release. The backend
-they existed for has landed, and so has the bundle that makes it reachable: a
-`UsdStage` now opens over HTTP. With the I/O baseline recorded, this release
-also makes its first performance claim — and it is a counter on a named fixture
-rather than a sentence.
+they existed for landed against two suites that already passed, and so did the
+bundle that makes it reachable: a `UsdStage` now opens over HTTP. With the I/O
+baseline recorded, this release also makes its first performance claim — and it
+is a counter on a named fixture rather than a sentence.
 
 ### Added
 
@@ -70,6 +79,28 @@ rather than a sentence.
   and the one row that could have embarrassed the architecture. Its wall clock
   is recorded and not gated: the comparator reads 4 KiB at a time, which flatters
   the backend, and a comparison that flatters is not a gate.
+
+- **A release lane, and the mechanical half of the gate inside it.**
+  `.github/workflows/release.yml` runs on a `vX.Y.Z` tag: it validates that
+  `VERSION`, `openstrata.toml`, the plugin manifest, the bundle's standalone
+  CMake fallback, the newest changelog section, and the tag all agree
+  (`tools/check_release_metadata.py`); re-runs gates 3, 4, and 5 by *calling*
+  `core-ci.yml` and `plugin-windows-ci.yml` as reusable workflows rather than
+  copying their steps; greps the whole verbose suite output for credentials with
+  the metrics dump on; and assembles a draft release from the source tree, its
+  checksums, and the release record as its notes. Six places is more than a
+  reader reliably checks, and the failure is silent — a tree whose manifest says
+  `0.2.0` and whose `VERSION` says `0.1.0` builds, tests, and tags green, and is
+  discovered by whoever installs it.
+- **It publishes source and no binary package, deliberately.** Gate 9 binds a
+  release that publishes one, and the roadmap puts packaged cross-platform
+  artifacts in `v0.6.0`; attaching plugin binaries here would make gate 9 bind
+  on a build that, measured, is not yet reproducible. The file says where the
+  binary matrix goes when it arrives and what has to be true first.
+- The tag lane refuses a record that still carries a placeholder, which is the
+  one thing only the tag can check: the gate requires the record to be prepared
+  in the release commit *before* the tag, and a finished record is the evidence
+  that happened.
 
 - `plugins/http-resolver`, the `ArResolver` bundle, and the first module in this
   repository that includes an OpenUSD header. It registers `http` and `https` as
@@ -332,6 +363,21 @@ rather than a sentence.
 
 ### Fixed
 
+- **Two concurrent runs of one boundary row deleted each other's fixtures.**
+  The suite's temporary workspace was named for the backend and the row —
+  `usd-http-resolver-boundary-http-property` — and its constructor removes a
+  stale directory of that name before creating it. That is correct for one
+  process and wrong for two: running the ASan and the TSan build of the same row
+  at once, which is what walking both sanitizer lanes on one machine does, meant
+  whichever started second deleted the fixtures the first was still reading. It
+  surfaced as `oracle NotFound` and `bytesRead 1, oracle 0` against a backend
+  that had returned correct bytes — a harness defect wearing a backend defect's
+  clothes, and intermittent, because it depended on which process reached the
+  constructor first. The workspace path now carries the owning process id, so a
+  run cleans up after itself and after nothing else; `usdAssetLocal`'s
+  `TempDirectory` had the same shape and got the same treatment. It was found
+  while walking the release gate and never reached CI, where each sanitizer lane
+  is its own runner and the collision cannot happen.
 - **A stalled apt mirror held the CI lanes for six hours.** On 2026-08-18 three
   Linux jobs of one run sat in `apt-get update` with nothing to show for it; two
   recovered when the run was re-fired and the third ran until the six-hour job
@@ -461,13 +507,12 @@ have been debugged as backend bugs.
 
 ### Known gaps
 
-- **The matrix has not yet been green end to end on a hosted runner.** It
-  validates, the workflow generates, and every step in the hand-authored Windows
-  lane was walked locally on Windows first — `ost build` then `ost test`, 21 of
-  21 passing including `httpResolver_stage`. The first CI run found the `ost`
-  version skew above and nothing else; the run that proves the rest is evidence
-  this release does not have yet, and it belongs in the release record rather
-  than in a claim here.
+- **No binary package is published, so gate 9 is not asserted.** This is a
+  source tag. The install rules exist and were exercised: two independent builds
+  of the same tree produce 24 of 28 installed files byte-identical, and the four
+  that differ — three static libraries and the bundle's shared library — differ
+  only in embedded build timestamps. The measurement and what it would take to
+  close the gap are in §5 of the [record](docs/releases/v0.2.0.md).
 - **The two bundle cells stop at L1, and the Windows cell at `graph`.** Neither
   cap is a workaround. `ost plugin test`'s L2 asserts that `Resolve` returned a
   path, which for a network resolver means an origin has to be listening, and
@@ -476,11 +521,6 @@ have been debugged as backend bugs.
   reason above. Both are recorded in
   [report 03](docs/reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md)
   with the upstream change that would lift each.
-- **No I/O baseline is recorded.** `v0.2.0` is the first release that can record
-  one, and it has not. The counters are populated and asserted; what is missing
-  is a fixture large enough for `selectivity` to mean anything — the loopback
-  corpus assets are kilobytes, and a ratio measured against them would be a
-  number without a meaning. It belongs in the release record.
 - **There is no fallback when a server refuses `HEAD`.** §4.1 of the design
   policy admits "a minimal metadata request where `HEAD` is unavailable"; a
   `405` or `501` is reported as `Unsupported` instead. The hostile corpus has no

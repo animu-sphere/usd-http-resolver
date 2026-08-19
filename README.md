@@ -29,20 +29,30 @@ index, and the chunks actually in view — not 10 GB.
 
 ## Status
 
-**`v0.1.0` is released: the read contract, the local backend, and the shared
-boundary suite are in the tree and passing. No network code exists.**
+**`v0.2.0` is released: a `UsdStage` opens over HTTP. The read contract, the
+local backend, the shared boundary suite, the hostile-server corpus, the HTTP
+backend, and the `ArResolver` bundle are in the tree and passing. There is no
+cache.**
 
-That ordering is the point. `v0.1.0` ships a local file reader, which is not
-interesting; what is interesting is that it arrives with the harness that makes
+That ordering is the point. `v0.1.0` shipped a local file reader, which is not
+interesting; what was interesting is that it arrived with the harness that makes
 every later transport cheap to verify and impossible to fake. An HTTP backend
-written before that harness is an HTTP backend whose bugs are
-indistinguishable from server behavior.
+written before that harness is an HTTP backend whose bugs are indistinguishable
+from server behavior. `v0.2.0` cashed that: the HTTP backend passes the `v0.1.0`
+boundary suite **unchanged**, against an independent oracle, and separately
+against 18 hostile-server behaviors on a real socket.
 
-There is no resolver, no HTTP, no cache, and no plugin bundle. The contracts
-were written first on purpose: this project's product is a boundary between
-repositories, and a boundary is cheaper to settle in a document than across five
-consumers. What the tree actually does is in
-[docs/reference/CAPABILITY_MATRIX.md](docs/reference/CAPABILITY_MATRIX.md).
+It also makes this project's first performance claim, and it is a counter on a
+named fixture rather than a sentence: **a bounded query moved 324 KiB of a
+128 MiB asset — 0.0025 of it — and every byte moved was a byte the caller asked
+for.** The record is
+[docs/reference/BASELINE.md](docs/reference/BASELINE.md), and `amplification` is
+exactly 1.000000 because there is nothing yet to over-fetch.
+
+What the tree actually does is in
+[docs/reference/CAPABILITY_MATRIX.md](docs/reference/CAPABILITY_MATRIX.md); what
+each release shipped is in
+[docs/releases/](docs/releases/README.md).
 
 ## Start here
 
@@ -99,8 +109,10 @@ it needs one, the abstraction leaked and the fix belongs here.
 
 The build graph is libs-first: everything under `libs/` and `tests/` builds and
 tests with no OpenUSD installation present, and OpenUSD is resolved only for the
-plugin bundle. This is the path `v0.1.0` is defined by, and it is the normal way
-to work on the read contract, the backends, and the boundary suite.
+plugin bundle. This is the path both releases so far are defined by, and it is
+the normal way to work on the read contract, the backends, and the boundary
+suite. Since `v0.2.0` it needs libcurl, which is the only third-party dependency
+this project has.
 
 ```sh
 cmake -S . -B build-core -DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF

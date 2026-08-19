@@ -4,7 +4,7 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-08-19, against `main`.
+Last updated: 2026-08-20, against `main` at `v0.2.0`.
 
 ## Summary
 
