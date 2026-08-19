@@ -19,3 +19,10 @@ add_subdirectory(boundary)
 if(TARGET usdasset::http AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/corpus/CMakeLists.txt")
     add_subdirectory(corpus)
 endif()
+
+# The recorded I/O baseline, guarded the same way and for the same reason: the
+# five scenarios in METRICS.md §6 measure a transport, and there is nothing to
+# measure until one is present.
+if(TARGET usdasset::http AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/baseline/CMakeLists.txt")
+    add_subdirectory(baseline)
+endif()

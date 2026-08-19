@@ -11,11 +11,12 @@ capture and by conditional range requests, and `retryCount` and `redirectCount`
 are asserted from tests rather than assumed. The cache counters in §2.2 are
 defined and stay at zero until `v0.3.0`.
 
-No baseline in §6 is recorded yet. `v0.2.0` is the first release that *can*
-record one — bytes now cross a network — and until it does, this project makes
-no performance claim. What is missing is not instrumentation but a fixture: the
-loopback corpus assets are kilobytes, and `selectivity` measured against them
-would be a number without a meaning.
+The baselines in §6 are recorded. `v0.2.0` is the first release that *could*
+record one — bytes now cross a network — and the fixture that was missing exists:
+`tests/baseline` serves one synthetic asset of 128 MiB, which is where
+`selectivity` starts meaning something and the kilobyte corpus assets stopped.
+The current record is [BASELINE.md](../reference/BASELINE.md); a release record
+copies it at its tag.
 
 ## 1. Why this is a contract and not a debug feature
 
@@ -147,3 +148,19 @@ required scenarios are:
 The fourth row is the one that keeps the project honest. A range-based reader
 that reads an entire asset must not lose badly to `curl`; if it does, the block
 and coalescing policy is wrong.
+
+`tests/baseline` runs all five against the loopback fixture server and is
+registered as a test, not kept as a tool a release run remembers to invoke. The
+division it keeps is the one this document implies: **byte counts and request
+counts are asserted exactly, and every ratio and every duration is recorded.**
+With no cache a read of *n* bytes is one request that moves exactly *n* bytes,
+so a byte count that moves is over-fetch, a retry, or a redirect, and each of
+those is a defect until a release says otherwise. A ratio, by contrast, is a
+byte count divided by the fixture size, and a gate on one would move when the
+fixture did; a duration on loopback is a fact about the process that measured
+it.
+
+Nothing measured over loopback is a network measurement, and the record says so
+rather than implying otherwise. What loopback measures exactly is how many bytes
+and how many requests an access pattern costs, which is what the counters above
+are for. Distance arrives with `v0.5.0` and its consumer fixture.

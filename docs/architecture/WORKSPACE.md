@@ -73,11 +73,12 @@ half: a corpus that could name `StatusCode` would start asserting the backend's
 interpretation, and a disagreement between the two would stop being evidence.
 
 Its reverse edges — a test linking both the fixture server and something that
-reads from it — are legal, and there are exactly three:
+reads from it — are legal, and there are exactly four:
 
 ```text
 tests/boundary/backends/boundary_http_main.cpp  -> usdAssetHttp, fixture server
 tests/corpus (usdAssetHttp_test_projection)     -> usdAssetHttp, fixture server
+tests/baseline (usdAssetHttp_baseline)          -> usdAssetHttp, fixture server
 plugins/http-resolver/tests/test_stage.cpp      -> OpenUSD, fixture server
 ```
 
@@ -87,19 +88,28 @@ provisioning *means* for it. The second is the projection of each corpus
 behavior onto the typed vocabulary, which is the one assertion neither side can
 make alone.
 
-The third is the only place in this repository that links OpenUSD and the
+The third is the recorded I/O baseline that gate 6 of
+[the release gate](../releases/README.md) binds a release to: the five scenarios
+in [METRICS.md](METRICS.md) §6, measured against an asset large enough for
+`selectivity` to mean something. It needs a server for the reason the counters
+do — nothing crosses a transport without one — and it compiles the fixture
+server's own raw client besides, because "must not be worse than a plain
+download" needs a plain download performed by a client that is not the one under
+test.
+
+The fourth is the only place in this repository that links OpenUSD and the
 fixture server at once, and it is the one test that can assert the release's
 actual claim: that a `UsdStage` opens over HTTP. It reaches the backend only
 through `ArResolver`, which is the point — a test that linked `usdAssetHttp`
 directly would be asserting the backend again rather than the bundle.
 
-Both live outside `libs/` rather than in the backend's own tests, and that
-placement is load-bearing rather than tidy: a module's tests must not depend on
-anything outside `libs/`, or `ost library build libs/usd-asset-http` — which
-builds the module alone — stops working.
+The first three live outside `libs/` rather than in the backend's own tests, and
+that placement is load-bearing rather than tidy: a module's tests must not
+depend on anything outside `libs/`, or `ost library build libs/usd-asset-http` —
+which builds the module alone — stops working.
 
-The direction stays one-way in both cases. The fixture server links neither of
-them and still does not know what a `StatusCode` is.
+The direction stays one-way in every case. The fixture server links none of them
+and still does not know what a `StatusCode` is.
 
 Reserved future directions:
 
@@ -235,6 +245,14 @@ tests/boundary/src/**
     The shared suite. Names no backend, and duplicates the read arithmetic in
     its oracle on purpose.
 
+tests/baseline/**
+    The recorded I/O baseline: the five scenarios METRICS.md §6 requires, the
+    fixture they run against, and the shape a release record pastes. It asserts
+    byte counts, which are exact, and reports ratios and wall clock, which are
+    about the fixture and the runner. Measurement only -- it owns no read
+    semantics, and a case it would be the first to catch belongs in
+    tests/boundary instead.
+
 tests/fixture-server/src/**
     The hostile corpus: a loopback origin, its socket layer, and the request
     parsing and range arithmetic it answers with. Stops at the wire. Nothing
@@ -274,7 +292,7 @@ The bundle declares `kind: usd-asset-resolver` and
 | `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-msvc` (the same, through the Visual Studio generator), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |
 | `LICENSE`, `NOTICE` | Apache-2.0, and the third-party record the release gate checks |
-| `tests/` | Cross-module tests: the shared boundary suite, which belongs to no single backend, and the hostile-server fixture corpus, which belongs to no module because it is the other side of the boundary |
+| `tests/` | Cross-module tests: the shared boundary suite, which belongs to no single backend; the hostile-server fixture corpus, which belongs to no module because it is the other side of the boundary; and the recorded I/O baseline, which belongs to no module because it measures the whole path |
 | `docs/` | Contracts, plans, and records |
 
 `openstrata.toml` gains a `[workspace] members` declaration once more than one

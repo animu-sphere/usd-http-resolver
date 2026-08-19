@@ -102,8 +102,9 @@ the boundary is checked by the build rather than by review.
 ## Tests
 
 ```sh
-ctest --test-dir build-core                       # everything
-ctest --test-dir build-core -R boundary_local     # the shared suite, one backend
+ctest --test-dir build-core                          # everything
+ctest --test-dir build-core -R boundary_local        # the shared suite, one backend
+ctest --test-dir build-core -R usdAssetHttp_io_baseline   # the recorded I/O baseline
 ```
 
 The boundary suite registers three tests per backend — `fixed`, `property`, and
@@ -112,9 +113,22 @@ run it, how to reproduce a property failure from its seed, and how to enter a
 new backend into it are in [tests/README.md](../../tests/README.md).
 
 The hostile-server corpus, which is additional to the boundary suite rather than
-a substitute for it, arrives with the HTTP backend in `v0.2.0`. It will run
-against a local fixture server started by the test harness, requiring no network
-access and no external service.
+a substitute for it, arrived with the HTTP backend in `v0.2.0`. It runs against a
+local fixture server the test harness starts, and needs no network access and no
+external service.
+
+So does the I/O baseline, which is a measurement rather than a suite: it serves
+one 128 MiB synthetic asset over loopback and records the five scenarios
+[METRICS.md](../architecture/METRICS.md) §6 requires. It is a test because its
+byte and request counts are asserted exactly, so a cache that over-fetches or a
+retry nobody asked for fails a lane rather than waiting for a release run; its
+ratios and durations are recorded and never gated. The current record is
+[BASELINE.md](../reference/BASELINE.md), and running it by hand writes a fresh
+one:
+
+```sh
+./build-core/tests/baseline/usdAssetHttp_baseline --output baseline.md
+```
 
 ## Sanitizers
 

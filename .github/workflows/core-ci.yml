@@ -67,9 +67,37 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # apt has no deadline of its own, and on 2026-08-18 that cost this
+      # workflow six hours. A stalled Azure mirror held `apt-get update` in
+      # three Linux jobs of one run; two recovered when the run was re-fired and
+      # the third sat in the step until the six-hour job limit killed it, having
+      # built nothing and tested nothing. The lane reported a failure whose
+      # cause was a socket that never answered.
+      #
+      # So apt is given deadlines and retries here, once per job, rather than
+      # spelled into every call site: a config file covers the calls below and
+      # any call a later step adds. `timeout-minutes` on each apt step is the
+      # backstop for the hangs these options cannot see -- waiting on the dpkg
+      # lock is the realistic one -- and the two together are the same rule this
+      # repository already applies to its own fixtures: a hung exchange fails
+      # the lane rather than holding it.
+      - name: Give apt its own deadlines
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'Acquire::Retries "3";' \
+            'Acquire::http::Timeout "20";' \
+            'Acquire::https::Timeout "20";' \
+            'Acquire::ftp::Timeout "20";' \
+            | sudo tee /etc/apt/apt.conf.d/99-ci-deadlines >/dev/null
+
       - name: Ensure Ninja is present
         if: runner.os != 'Windows'
         shell: bash
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           if command -v ninja >/dev/null 2>&1; then
@@ -85,6 +113,7 @@ jobs:
 
       - name: Install libcurl
         shell: bash
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           # The one third-party dependency this repository takes, acquired the
@@ -196,8 +225,23 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # The same deadlines the core lane gives apt, and for the same reason: it
+      # was this job's `Install libcurl` that ran for six hours on 2026-08-18.
+      - name: Give apt its own deadlines
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'Acquire::Retries "3";' \
+            'Acquire::http::Timeout "20";' \
+            'Acquire::https::Timeout "20";' \
+            'Acquire::ftp::Timeout "20";' \
+            | sudo tee /etc/apt/apt.conf.d/99-ci-deadlines >/dev/null
+
       - name: Ensure Ninja is present
         shell: bash
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           command -v ninja >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ninja-build; }
@@ -205,6 +249,7 @@ jobs:
 
       - name: Install libcurl
         shell: bash
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           sudo apt-get update
