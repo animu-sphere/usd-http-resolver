@@ -11,16 +11,39 @@
 #include <system_error>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace usdassettest {
 
+/// The owning process, spelled the way each platform spells it.
+inline unsigned long CurrentProcessId() {
+#if defined(_WIN32)
+    return static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
+
 /// A directory under the platform temporary directory, removed on destruction.
+///
+/// Named for the owning process as well as the tag. The tag and a per-process
+/// counter are not unique across processes: two runs of the same test -- an
+/// ASan build and a TSan build on one machine, or `ctest -j` over two
+/// configurations -- would share one path, and the constructor's cleanup would
+/// delete the other run's asset out from under an open reader.
 class TempDirectory {
 public:
     explicit TempDirectory(const std::string& tag) {
         static int counter = 0;
         std::error_code error;
         _path = std::filesystem::temp_directory_path(error) /
-                ("usd-http-resolver-" + tag + "-" + std::to_string(++counter));
+                ("usd-http-resolver-" + tag + "-" +
+                 std::to_string(CurrentProcessId()) + "-" +
+                 std::to_string(++counter));
         std::filesystem::remove_all(_path, error);
         std::filesystem::create_directories(_path, error);
     }

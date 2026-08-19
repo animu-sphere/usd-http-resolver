@@ -37,6 +37,14 @@ struct FixtureSize {
 const std::vector<FixtureSize>& RequiredFixtureSizes();
 
 /// A directory of fixture content, removed when the suite finishes.
+///
+/// The directory is named for the row *and* for the process that owns it. The
+/// tag alone is not unique: two runs of the same row -- an ASan build and a
+/// TSan build on one machine, or `ctest -j` over two configurations -- would
+/// otherwise share one path, and the constructor's cleanup of a stale directory
+/// would delete fixtures the other run was still reading. That failure arrives
+/// as `oracle NotFound` against a backend that returned correct bytes, which
+/// reads exactly like a defect in the backend and is not one.
 class FixtureWorkspace {
 public:
     explicit FixtureWorkspace(const std::string& tag);
