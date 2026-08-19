@@ -507,13 +507,24 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Ship validator capture, conditional range requests, and `AssetChanged` with
-   the first HTTP backend rather than after it. A range backend without
-   revision binding is not a correct range backend.
-2. Walk the `v0.2.0` release gate. Gates 4, 6, and 9 bind for the first time,
-   having been not-applicable in `v0.1.0`.
+1. Phase 3: the block cache, whose definition of success is the table in
+   [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
+   move*. Fewer requests for the clustered index read and for parallel readers,
+   a `bytesOverFetched` that is honest about what block alignment costs, and a
+   full sequential read that does not regress.
 
 Done and no longer pending:
+
+- The `v0.2.0` release gate is walked and
+  [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the
+  first time and both pass. Gate 9 did not bind after all: it binds a release
+  that publishes a binary package, and `v0.2.0` is a source tag. It was measured
+  anyway, because this is the first release whose install rules produce a bundle
+  — two independent builds agree on 24 of 28 installed files, and the four that
+  differ differ only in embedded build timestamps.
+- Validator capture, conditional range requests, and `AssetChanged` shipped with
+  the first HTTP backend rather than after it, which is what makes it a correct
+  range backend rather than a fast one.
 
 - The release's I/O baseline is recorded. `tests/baseline` runs the five
   scenarios §6 of [METRICS.md](../architecture/METRICS.md) names against a

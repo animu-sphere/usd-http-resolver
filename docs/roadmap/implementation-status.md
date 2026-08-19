@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-19.
+Last updated: 2026-08-20.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -32,16 +32,24 @@ every cell shape names a bundle or a workspace containing one, and until
 requests; the Windows lane is hand-authored, because libcurl there comes from
 vcpkg and no generated cell can hand CMake a prefix.
 
-The release's I/O baseline is now recorded, which was the last of it.
-`tests/baseline` runs the five scenarios METRICS.md §6 requires against a 128 MiB
-synthetic asset on loopback, asserts the byte and request counts exactly, and
-reports the ratios; the record is [BASELINE.md](../reference/BASELINE.md). The
-headline is `selectivity` on a bounded query: 0.0025 of a 128 MiB asset moved to
-answer it, with `amplification` at exactly 1.0 because there is no cache to
-over-fetch. What remains before the tag is the release gate itself, and one row
-of the table below that phase 2 declines rather than leaves undone: a metadata
-fallback for a server that refuses `HEAD`, which the corpus has no case for and
-which would therefore ship unexercised.
+The release's I/O baseline is recorded. `tests/baseline` runs the five scenarios
+METRICS.md §6 requires against a 128 MiB synthetic asset on loopback, asserts the
+byte and request counts exactly, and reports the ratios; the record is
+[BASELINE.md](../reference/BASELINE.md). The headline is `selectivity` on a
+bounded query: 0.0025 of a 128 MiB asset moved to answer it, with `amplification`
+at exactly 1.0 because there is no cache to over-fetch.
+
+**`v0.2.0` is released.** The gate is walked and
+[its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
+time and both pass; gate 9 turned out not to bind, because it binds a release
+that publishes a binary package and this is a source tag — it was measured
+anyway, and what that found is in §5 of the record. Walking the gate found one
+defect, in the suite rather than in the product: two concurrent runs of the same
+boundary row shared one temporary workspace and deleted each other's fixtures,
+which reads as a backend failure and is not one. Phase 2 ships with one row of
+the table below declined rather than left undone: a metadata fallback for a
+server that refuses `HEAD`, which the corpus has no case for and which would
+therefore ship unexercised.
 
 ## Phase 0 — scaffolding and contracts
 
@@ -116,7 +124,8 @@ which would therefore ship unexercised.
 | Environment configuration for the five transport bounds | Done — CONFIGURATION.md §2; a bad value warns and takes the default, and does not discard the other four |
 | Bundle through `ost`: inspect, doctor, build, and the verification pyramid | Done, with one recorded failure — L0/L1/L3/L4/L5 pass; L2 asserts that `Resolve` returned a path, which a network resolver cannot satisfy without an origin. [Report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md) |
 | Remote stage opened end to end, over a socket | Done — `httpResolver_test_stage`, against the fixture corpus: a relative reference followed to a second remote layer, and a 4 KiB window out of 1 MiB with the `Range` header asserted from the server's log |
-| Metadata request where `HEAD` is unavailable | Outstanding, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
+| `v0.2.0` release gate walked, record written, tag created | Done — [record](../releases/v0.2.0.md); gates 4 and 6 bind for the first time and pass, gate 9 does not bind and was measured anyway |
+| Metadata request where `HEAD` is unavailable | Declined for this release, and deliberately not guessed — reported as `Unsupported`. The corpus has no row that refuses `HEAD`, so a fallback would ship unexercised |
 | Recorded I/O baseline for the release | Done — `tests/baseline`, all five scenarios of METRICS.md §6 against a 128 MiB loopback fixture, registered as `usdAssetHttp_io_baseline` so a byte count that moves fails a lane. Record: [BASELINE.md](../reference/BASELINE.md) |
 | A fixture large enough for `selectivity` to mean something | Done — 128 MiB, synthesized rather than committed, every byte a hash of its own offset so no scenario can count bytes it did not verify |
 | A plain-download comparator that is not the client under test | Done — the fixture server's own raw client, one `GET`, no `Range`, no HTTP code shared with `usdAssetHttp` |
@@ -222,14 +231,30 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. The `v0.2.0` release gate and its record. Gates 4, 6, and 9 of
-   [the release gate](../releases/README.md) bind for the first time in this
-   release, having been not-applicable in `v0.1.0`; gate 6 is now answerable,
-   and the record copies [BASELINE.md](../reference/BASELINE.md) at the tag.
-2. Phase 3, whose success is defined against the numbers just recorded: fewer
+1. Phase 3, whose success is defined against the numbers just recorded: fewer
    requests for the clustered index read and for parallel readers, a
    `bytesOverFetched` that is honest about what block alignment costs, and a
-   full sequential read that does not regress.
+   full sequential read that does not regress. The table it is measured against
+   is [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
+   move*.
+
+Done, and no longer next: the `v0.2.0` release gate and its record. Two of the
+three gates that had been not-applicable in `v0.1.0` bound and passed; the third,
+gate 9, turned out not to bind at all, because it binds a release that publishes
+a binary package and this one is a source tag. That was worth measuring rather
+than arguing: two independent builds of the same tree agree on 24 of 28 installed
+files, and the four that differ — three static libraries and the bundle's shared
+library — differ only in embedded build timestamps, two bytes of it in the DLL.
+Closing that is a link flag, and it belongs to `v0.6.0` with the packaging rather
+than to a release commit after the lanes are green.
+
+What walking the gate surfaced was a defect in the harness rather than the
+product, and of a shape worth naming: the boundary suite's temporary workspace
+was unique per row but not per process, so running the ASan and the TSan build of
+one row at once meant each deleted the other's fixtures. It presented as
+`oracle NotFound` against a backend that had returned correct bytes. CI never saw
+it — each sanitizer lane is its own runner — and it took walking both lanes on
+one machine to produce it.
 
 Done, and no longer next: the recorded I/O baseline. What it surfaced was not a
 defect but a division worth writing down — byte counts are asserted and ratios

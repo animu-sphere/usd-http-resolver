@@ -8,6 +8,7 @@ rewritten after publication.
 | Version | Date | Record |
 | --- | --- | --- |
 | [`v0.1.0`](v0.1.0.md) | 2026-08-16 | Read contract, local backend, and the shared boundary suite. No network code. |
+| [`v0.2.0`](v0.2.0.md) | 2026-08-20 | HTTP range reads, the `ArResolver` bundle, and revision binding. The first recorded I/O baseline. No cache. |
 
 The rest of the planned sequence is in the [roadmap](../roadmap/README.md).
 

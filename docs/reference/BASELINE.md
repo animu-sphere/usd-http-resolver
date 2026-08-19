@@ -5,7 +5,7 @@ This file holds the current record for the five scenarios in
 today, not what it intends to measure later, which is why it lives beside
 [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md).
 
-Last recorded: 2026-08-19, against `main`.
+Last recorded: 2026-08-19, against `main`; unchanged at `v0.2.0`.
 
 A release record copies this table at its tag and never rewrites it; this file
 is rewritten whenever I/O behavior changes, which is what
