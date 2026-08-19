@@ -9,12 +9,15 @@ the summary is a documentation bug. When a summary disagrees with
 [architecture/WORKSPACE.md](architecture/WORKSPACE.md) about structure, the
 workspace contract wins; structural changes must update that contract first.
 
-This repository is at `v0.1.0`, released 2026-08-16; its
-[record](releases/v0.1.0.md) states what shipped and what did not. The read
-contract, the local backend, and the shared boundary suite are implemented; no
-network transport is. What the tree actually contains is stated in
-[reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md); everything
-else here is contract and plan.
+This repository is at `v0.2.0`, released 2026-08-20; its
+[record](releases/v0.2.0.md) states what shipped and what did not. The read
+contract, the local backend, the shared boundary suite, the hostile-server
+corpus, the HTTP backend, and the `ArResolver` bundle are implemented, and a
+`UsdStage` opens over HTTP; no cache is. What the tree actually contains is
+stated in [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md), and
+what a bounded query costs is in
+[reference/BASELINE.md](reference/BASELINE.md); everything else here is contract
+and plan.
 
 | Category | Answers | Start here |
 | --- | --- | --- |
