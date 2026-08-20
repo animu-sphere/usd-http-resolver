@@ -97,12 +97,14 @@ Measured with the shipped transport defaults and the shipped cache defaults -- 6
 | parallel readers (cached) | 25 | 8 | 0 | 0 | 2654208 | 1507328 | 0.567901 | 0.011230 | 3.0 |
 
 
-The cached parallel row is the one number in this record that is not identical
-from run to run: it lands at 25 or 26 requests depending on which reader wins
-each claim, because a reader that arrives while a block is in flight waits where
-a reader arriving a microsecond later finds it resident. The harness therefore
-asserts that it is *below* the uncached row rather than equal to a constant, and
-this record states which run it came from rather than implying it is fixed.
+The cached parallel row is the one row in this record that is not identical from
+run to run: it lands at 25 or 26 requests depending on which reader wins each
+claim, because a reader that arrives while a block is in flight waits where a
+reader arriving a microsecond later finds it resident. `blockHits` and
+`requestsSavedBySingleFlight` move with it, and for the same reason. The harness
+therefore asserts that the request count is *below* the uncached row rather than
+equal to a constant, and this record states which run it came from rather than
+implying it is fixed.
 
 Cache counters, for the rows that have them. Every one is zero on an uncached row, and those rows are omitted.
 
@@ -112,7 +114,7 @@ Cache counters, for the rows that have them. Every one is zero on an uncached ro
 | header and index read (cached) | 15 | 2 | 0 | 0 | 0 | 61440 | 122880 | 0 | 131072 |
 | bounded spatial query (cached) | 1 | 23 | 0 | 6 | 0 | 16384 | 1191936 | 0 | 1507328 |
 | full sequential read (cached) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| parallel readers (cached) | 16 | 23 | 0 | 6 | 153 | 2338816 | 1191936 | 0 | 1507328 |
+| parallel readers (cached) | 127 | 23 | 0 | 6 | 156 | 2338816 | 1191936 | 0 | 1507328 |
 
 Latency, in microseconds. Quantiles are bucket upper bounds, not exact order statistics (METRICS.md §4), and the request and read columns are p50 / p90 / p99 / max.
 
@@ -142,7 +144,7 @@ The cache counters in METRICS.md §2.2 are populated: the runs below served 2416
 | full sequential read | The worst case; must not be worse than a plain download | 32 reads of 4 MiB against one plain `GET` of the whole asset over the fixture server's own raw client: identical content bytes, 33 requests against 1, 132.4 ms against 127.9 ms. The comparator reads 4 KiB at a time, so the times are recorded and not gated |
 | full sequential read (cached) | The worst case; must not be worse than a plain download | 32 reads of 4 MiB against one plain `GET` of the whole asset over the fixture server's own raw client: identical content bytes, 33 requests against 1, 148.6 ms against 129.1 ms. Every read bypassed the cache, so this row is the uncached row and is asserted to be |
 | parallel readers | `requestsSavedBySingleFlight`, contention | 8 readers running the bounded query at once, each with its own revision binding. Every request is issued 8 times, because nothing is shared between readers |
-| parallel readers (cached) | `requestsSavedBySingleFlight`, contention | 8 readers running the bounded query at once, each with its own revision binding and all of them sharing one store. What they no longer share is the traffic: 25 requests against 152. `requestsSavedBySingleFlight` is 153 and `blockHits` is 16: those count blocks a reader did not have to fetch, not requests, so they do not subtract to the difference above and are not meant to |
+| parallel readers (cached) | `requestsSavedBySingleFlight`, contention | 8 readers running the bounded query at once, each with its own revision binding and all of them sharing one store. What they no longer share is the traffic: 25 requests against 152. `requestsSavedBySingleFlight` is 156 and `blockHits` is 127: those count blocks a reader did not have to fetch, not requests, so they do not subtract to the difference above and are not meant to |
 
 ## What the numbers say
 
@@ -160,7 +162,7 @@ query above it*. Eight readers of one revision moved one reader's worth of
 bytes. That is what the cache key buys: the eight have eight independent
 revision bindings and one identity, so seven of them found the blocks resident
 or waited on the flight that was already in the air.
-`requestsSavedBySingleFlight` is 153, and it counts blocks rather than requests,
+`requestsSavedBySingleFlight` is 156, and it counts blocks rather than requests,
 so it is not the arithmetic difference of the two request counts and is not
 meant to be.
 

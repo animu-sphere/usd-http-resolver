@@ -94,6 +94,19 @@ public:
     explicit Impl(const CacheOptions& requested) { Reset(requested); }
 
     void Reset(const CacheOptions& requested) {
+        const std::lock_guard<std::mutex> lock(identityMutex);
+        ResetLocked(requested);
+    }
+
+    /// Rebuilds the stripes. `identityMutex` must be held.
+    ///
+    /// The lock covers the rebuild and not merely the identity map, because
+    /// `shards` is what the rebuild replaces and `liveBindings` is the only
+    /// thing that says nobody is reading it. A caller that checked
+    /// `liveBindings == 0`, released the lock, and then rebuilt would be racing
+    /// a `Bind` that had already passed the same check -- and the binding it
+    /// returned would hold a stripe index into a vector that had been freed.
+    void ResetLocked(const CacheOptions& requested) {
         options = requested.Normalized();
         const std::uint32_t count = ChooseShardCount(options.budgetBytes, options.blockSize);
         shards.clear();
@@ -104,7 +117,6 @@ public:
         shardMask = count - 1;
         shardBudget = (std::max)(options.budgetBytes / count, options.blockSize);
         residentTotal.store(0, std::memory_order_relaxed);
-        const std::lock_guard<std::mutex> lock(identityMutex);
         identities.clear();
     }
 
@@ -188,16 +200,21 @@ BlockCache& BlockCache::Process() {
 
 bool BlockCache::ConfigureProcess(const CacheOptions& options) {
     BlockCache& store = Process();
-    {
-        const std::lock_guard<std::mutex> lock(store._impl->identityMutex);
-        if (store._impl->liveBindings != 0) {
-            // Refused rather than applied. Reconfiguring rebuilds the stripes,
-            // and a binding that held a stripe index across that rebuild would
-            // be reading a container that no longer exists.
-            return false;
-        }
+    // The check and the rebuild happen under one lock. Splitting them was the
+    // defect: `liveBindings == 0` is only true for as long as the lock is held,
+    // so releasing it before the rebuild let a `Bind` that had already been
+    // admitted hand back a binding whose stripe index pointed into the vector
+    // this call was about to free. A binding's destructor decrements
+    // `liveBindings` as its last act, after it has finished touching every
+    // stripe, so zero under this lock means no reader is inside `shards`.
+    const std::lock_guard<std::mutex> lock(store._impl->identityMutex);
+    if (store._impl->liveBindings != 0) {
+        // Refused rather than applied. Reconfiguring rebuilds the stripes, and
+        // a binding that held a stripe index across that rebuild would be
+        // reading a container that no longer exists.
+        return false;
     }
-    store._impl->Reset(options);
+    store._impl->ResetLocked(options);
     return true;
 }
 

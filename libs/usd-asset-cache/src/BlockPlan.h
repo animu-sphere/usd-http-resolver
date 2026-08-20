@@ -79,15 +79,22 @@ std::vector<FetchRun> PlanRuns(const std::vector<std::uint64_t>& blocks,
                                std::uint32_t coalesceGapBlocks,
                                std::uint64_t maxRequestBytes);
 
-/// The bytes of `run` that fall outside `[wantedOffset, wantedOffset + wantedLength)`.
+/// The bytes of `run` the caller did not take out of it.
 ///
 /// This is `bytesOverFetched` for one fetch: the cost of block alignment and of
 /// merging across a gap, charged where it is incurred. METRICS.md §2.2 calls it
 /// the honest counter, and it is charged at fetch time and never refunded when
 /// a later read hits those bytes -- that refund is what `cacheHitRatio` is.
-std::uint64_t OverFetchedBytes(const FetchRun& run,
-                               std::uint64_t wantedOffset,
-                               std::uint64_t wantedLength) noexcept;
+///
+/// `takenBytes` is what the caller actually copied out of this transfer, and it
+/// is the parameter rather than the caller's byte range because the two are not
+/// the same number. Merging across a gap re-fetches a block that was already
+/// resident; those bytes lie *inside* the caller's range, so charging by range
+/// would call them wanted and count nothing -- while the wire moved them and
+/// the caller read that block from the store. Charging by what was taken counts
+/// both halves of the cost: the alignment slack outside the range, and the gap
+/// inside it.
+std::uint64_t OverFetchedBytes(const FetchRun& run, std::uint64_t takenBytes) noexcept;
 
 }  // namespace detail
 }  // namespace cache

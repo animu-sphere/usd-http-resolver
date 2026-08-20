@@ -57,6 +57,59 @@ std::size_t CopyOverlap(unsigned char* dst,
     return length;
 }
 
+/// The blocks one read owns and has not published yet.
+///
+/// `BlockCache::Binding::Abandon` documents the invariant this exists to keep:
+/// every `Owned` acquisition ends in exactly one `Publish` or one `Abandon`,
+/// because a block left pending is one that every later reader of it waits on
+/// for a fetch that is not happening -- and `Await` has no deadline, so "waits"
+/// means forever.
+///
+/// Hand-written release paths kept that invariant across every `return` and
+/// across no `throw`. Both of the allocations on this path can throw: the
+/// transfer buffer is sized by the run and may be `maxRequestBytes`, and
+/// `Publish` copies the block. A `bad_alloc` out of either used to leave the
+/// remaining blocks pending for the life of the process. So ownership is held
+/// by a destructor now, which runs either way.
+class OwnedBlocks {
+public:
+    explicit OwnedBlocks(BlockCache::Binding& binding) noexcept : _binding(&binding) {}
+    ~OwnedBlocks() { AbandonAll(); }
+
+    OwnedBlocks(const OwnedBlocks&) = delete;
+    OwnedBlocks& operator=(const OwnedBlocks&) = delete;
+
+    void Add(std::uint64_t blockIndex) { _blocks.push_back(blockIndex); }
+
+    std::size_t Size() const noexcept { return _blocks.size(); }
+    bool Empty() const noexcept { return _blocks.empty(); }
+    const std::vector<std::uint64_t>& Blocks() const noexcept { return _blocks; }
+
+    /// The next block still owned, in fetch order.
+    std::uint64_t Next() const noexcept { return _blocks[_settled]; }
+    bool AllSettled() const noexcept { return _settled >= _blocks.size(); }
+
+    /// Records that `Publish` took the next block. `Publish` allocates before it
+    /// touches the store, so a throw from it leaves the block still owned and
+    /// the destructor still correct.
+    void MarkPublished() noexcept { ++_settled; }
+
+    /// Hands back every block still owned. Idempotent, so the destructor
+    /// running after an explicit call costs nothing.
+    void AbandonAll() noexcept {
+        while (_settled < _blocks.size()) {
+            _binding->Abandon(_blocks[_settled++]);
+        }
+        _blocks.clear();
+        _settled = 0;
+    }
+
+private:
+    BlockCache::Binding* _binding;
+    std::vector<std::uint64_t> _blocks;
+    std::size_t _settled = 0;
+};
+
 }  // namespace
 
 // --- Impl --------------------------------------------------------------------
@@ -134,11 +187,14 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
     std::vector<bool> resolved(blockCount, false);
     std::vector<unsigned char> transfer;
 
-    std::uint64_t residentHits = 0;
+    /// Blocks this read got without fetching them: resident on arrival, or
+    /// published by whoever owned them while this read waited. Both are bytes
+    /// that came out of the store, which is what classifies the read below.
+    std::uint64_t cacheServed = 0;
     std::uint64_t served = 0;
 
     for (int pass = 0; pass < kMaxCooperativePasses; ++pass) {
-        std::vector<std::uint64_t> owned;
+        OwnedBlocks owned(*binding);
         std::vector<std::size_t> busy;
 
         for (std::size_t i = 0; i < blockCount; ++i) {
@@ -156,7 +212,7 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                                     acquired.block->data(), extent.length);
                     metrics.AddBytesFromCache(copied);
                     served += copied;
-                    ++residentHits;
+                    ++cacheServed;
                     resolved[i] = true;
                     continue;
                 }
@@ -168,10 +224,7 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                 // below can fail and return, and a block left pending is a
                 // block every later reader waits on for a fetch that is not
                 // happening. The next pass acquires them again.
-                for (const std::uint64_t abandoned : owned) {
-                    binding->Abandon(abandoned);
-                }
-                owned.clear();
+                owned.AbandonAll();
 
                 const std::uint64_t begin = (std::max)(range.offset, extent.offset);
                 const std::uint64_t end =
@@ -188,28 +241,27 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                 continue;
             }
             if (acquired.outcome == BlockCache::Binding::Acquisition::Owned) {
-                owned.push_back(blockIndex);
+                owned.Add(blockIndex);
             } else {
                 busy.push_back(i);
             }
         }
 
-        if (owned.empty() && busy.empty()) {
+        if (owned.Empty() && busy.empty()) {
             break;
         }
 
         // --- fetch what this reader owns ------------------------------------
-        if (!owned.empty()) {
-            const std::vector<FetchRun> runs = PlanRuns(owned, blockSize, assetSize,
+        if (!owned.Empty()) {
+            const std::vector<FetchRun> runs = PlanRuns(owned.Blocks(), blockSize, assetSize,
                                                         options.coalesceGapBlocks,
                                                         options.maxRequestBytes);
             // Every owned block would have been its own request without the
             // merge. What the merge saved is the difference, and it is counted
             // here rather than inferred from a request total that a hit also
             // moves.
-            metrics.AddRequestsSavedByCoalescing(owned.size() - runs.size());
+            metrics.AddRequestsSavedByCoalescing(owned.Size() - runs.size());
 
-            std::size_t nextOwned = 0;
             for (const FetchRun& run : runs) {
                 transfer.assign(static_cast<std::size_t>(run.length), 0);
                 const ReadResult fetched =
@@ -220,9 +272,7 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                     // Give every block this read still owns back to the store
                     // before returning. A block left pending is a block every
                     // later reader waits on for a fetch that is not happening.
-                    for (std::size_t k = nextOwned; k < owned.size(); ++k) {
-                        binding->Abandon(owned[k]);
-                    }
+                    owned.AbandonAll();
                     if (!fetched.status.IsOk()) {
                         return ReadResult{0, fetched.status};
                     }
@@ -233,25 +283,35 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                                              inner->Metadata().resolvedIdentifier)};
                 }
 
-                metrics.AddBytesOverFetched(
-                    OverFetchedBytes(run, range.offset, range.length));
-
                 const std::uint64_t runLast = run.firstBlock + run.blockCount - 1;
-                while (nextOwned < owned.size() && owned[nextOwned] <= runLast) {
-                    const std::uint64_t blockIndex = owned[nextOwned];
+                std::uint64_t takenFromRun = 0;
+                while (!owned.AllSettled() && owned.Next() <= runLast) {
+                    const std::uint64_t blockIndex = owned.Next();
                     const BlockExtent extent = ExtentOf(blockIndex, blockSize, assetSize);
                     const unsigned char* bytes =
                         transfer.data() + (extent.offset - run.offset);
 
                     metrics.AddEviction(binding->Publish(
                         blockIndex, bytes, static_cast<std::size_t>(extent.length)));
+                    owned.MarkPublished();
                     metrics.AddBlockMiss();
 
-                    served += CopyOverlap(dst, range.offset, range.length, extent.offset,
-                                          bytes, extent.length);
+                    const std::size_t copied =
+                        CopyOverlap(dst, range.offset, range.length, extent.offset,
+                                    bytes, extent.length);
+                    takenFromRun += copied;
+                    served += copied;
                     resolved[static_cast<std::size_t>(blockIndex - span.first)] = true;
-                    ++nextOwned;
                 }
+
+                // Charged against what the caller took *out of this transfer*,
+                // not against the caller's byte range. The two differ exactly
+                // where coalescing merged across a block that was already
+                // resident: those bytes sit inside the range, so a range-based
+                // charge called them wanted, and the wire moved them anyway
+                // while the caller read that block from the store. They are the
+                // cost of the merge, which is the thing this counter is for.
+                metrics.AddBytesOverFetched(OverFetchedBytes(run, takenFromRun));
             }
         }
 
@@ -272,6 +332,14 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
             // single-flight buys and what the counter is for.
             metrics.AddBytesFromCache(copied);
             metrics.AddRequestsSavedBySingleFlight();
+            // And counted as a block this read did not fetch, which it had not
+            // been. `blockMisses` counts blocks *this* reader pulled over the
+            // transport and this is not one; the classification below then saw
+            // neither a hit nor a miss, so a read served entirely by
+            // single-flight landed in none of `blockHits`, `blockMisses`, or
+            // `partialHits` -- invisible in the three counters METRICS.md §2.2
+            // defines the cache by.
+            ++cacheServed;
             served += copied;
             resolved[i] = true;
         }
@@ -296,9 +364,9 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
         resolved[i] = true;
     }
 
-    if (residentHits == static_cast<std::uint64_t>(blockCount)) {
+    if (cacheServed == static_cast<std::uint64_t>(blockCount)) {
         metrics.AddBlockHit();
-    } else if (residentHits > 0) {
+    } else if (cacheServed > 0) {
         metrics.AddPartialHit();
     }
     // One relaxed load, not a snapshot: `Snapshot` locks every stripe, and a

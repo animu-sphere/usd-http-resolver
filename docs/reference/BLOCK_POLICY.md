@@ -119,11 +119,16 @@ Every other 4 KiB piece of the index, and then the whole index region in one
 read. The only pattern in the sweep in which the coalescing gap can bind at all,
 and it is here for that reason alone; see below.
 
+It is also the only pattern whose over-fetch comes from the *gap* rather than
+from alignment: the merged request re-transfers blocks that were already
+resident, and the caller reads those from the store while the wire moves them
+again. That is a real cost and it is charged here.
+
 | block | gap | requests | bytes moved | over-fetch |
 | ---: | ---: | ---: | ---: | ---: |
 | none | — | 10 | 98304 | 0 |
 | 4 KiB | 0 | 17 | 65536 | 0 |
-| **4 KiB** | **1–4** | **10** | **94208** | **0** |
+| **4 KiB** | **1–4** | **10** | **94208** | **28672** |
 | 16 KiB | 0–4 | 5 | 65536 | 49152 |
 | 64 KiB | 0–4 | 2 | 65536 | 61440 |
 | 256 KiB | 0–4 | 2 | 262144 | 258048 |

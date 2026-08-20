@@ -199,6 +199,21 @@ void AGapIsMergedIntoOneRequestAndCounted() {
     CHECK_EQ(snapshot.partialHits, std::uint64_t{1});
     // Two owned blocks that would have been two requests became one.
     CHECK_EQ(snapshot.requestsSavedByCoalescing, std::uint64_t{1});
+
+    // The honest counter, over both reads, and the case that says why it is
+    // charged against what the caller took out of each transfer rather than
+    // against the caller's byte range:
+    //
+    //   warm-up  one block moved, 16 bytes taken                kBlock - 16
+    //   merged   three blocks moved; block 0 and 16 bytes of
+    //            block 2 taken, and block 1 moved again while
+    //            the caller read it from the store          2 * kBlock - 16
+    //
+    // Charged by byte range instead, block 1 would have counted as nothing at
+    // all -- it sits inside the range the caller asked for -- and the merge
+    // would have reported kBlock - 16, hiding the whole cost of the gap in the
+    // one counter METRICS.md section 2.2 calls honest.
+    CHECK_EQ(snapshot.bytesOverFetched, kBlock * 3 - 32);
 }
 
 void ALargeReadBypassesTheCacheAndStoresNothing() {

@@ -124,9 +124,12 @@ usdasset::cache::CacheOptions CacheOptionsFrom(
                   static_cast<long long>(usdasset::cache::kMaxBlockSize),
                   &options.blockSize, problemsOut);
 
-    // A budget below one block is refused rather than clamped: it means the
-    // caller wanted no cache, and there is no variable for that, so saying so is
-    // better than quietly giving them a one-block one.
+    // The floor here is the smallest block this module will ever use, not one
+    // block of the size *this* configuration asked for -- the two differ
+    // whenever the block size is raised, and the normalizer then lifts the
+    // budget to one block. That lift is reported below rather than applied
+    // quietly, on the same principle as the rounding: an operator who set a
+    // number and got another one should learn it from a log.
     ReadBytesInto(lookup, kCacheBudget,
                   static_cast<long long>(usdasset::cache::kMinBlockSize),
                   64LL * 1024 * 1024 * 1024, &options.budgetBytes, problemsOut);
@@ -157,6 +160,20 @@ usdasset::cache::CacheOptions CacheOptionsFrom(
              "capped at " + std::to_string(normalized.coalesceGapBlocks) +
                  ", the widest gap that can fit under "
                  "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES"});
+    }
+    if (problemsOut != nullptr && normalized.budgetBytes != options.budgetBytes) {
+        problemsOut->push_back(
+            {kCacheBudget, std::to_string(options.budgetBytes),
+             "raised to " + std::to_string(normalized.budgetBytes) +
+                 ", one block: a budget that cannot hold a block does not "
+                 "cache nothing, it fetches a block and drops it"});
+    }
+    if (problemsOut != nullptr && normalized.maxRequestBytes != options.maxRequestBytes) {
+        problemsOut->push_back(
+            {kMaxRequestBytes, std::to_string(options.maxRequestBytes),
+             "raised to " + std::to_string(normalized.maxRequestBytes) +
+                 ", one block: a merged request that cannot carry a block "
+                 "cannot carry the block it was merging"});
     }
 
     return options;

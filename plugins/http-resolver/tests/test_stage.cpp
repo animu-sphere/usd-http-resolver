@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -136,8 +137,7 @@ void TestStageOpens() {
     mark.Clear();
 }
 
-/// §4: the `ArAsset` surface, and the reason this project exists -- a window
-/// `bytes=first-last`, as the fixture server logged it.
+/// Parses a `Range` header's `bytes=first-last`, as the fixture server logged it.
 ///
 /// The test parses the header itself rather than asking the backend what it
 /// sent, for the reason the baseline harness does: the server's log is the
@@ -154,6 +154,7 @@ bool ParseByteRange(const std::string& header, std::uint64_t* first,
     return *last >= *first;
 }
 
+/// §4: the `ArAsset` surface, and the reason this project exists -- a window
 /// out of an asset costs the window.
 void TestRangeRead() {
     const std::size_t size = 1u << 20;  // 1 MiB

@@ -50,8 +50,15 @@ CacheOptions CacheOptions::Normalized() const noexcept {
     // request ceiling is not a policy, it is a number that never applies. Cap
     // it where it stops meaning anything, so that a reader of the resolved
     // options sees the gap that is actually in force.
+    // Two, not one. Merging across a gap of G blocks puts G + 2 blocks in the
+    // request -- the block before the gap, the gap, and the block after it --
+    // so the widest gap a request ceiling of N blocks can carry is N - 2. At
+    // N - 1 the normalizer advertised a gap `PlanRuns` can never take: with a
+    // 4 KiB block and a 16 KiB ceiling it resolved to 3, and a gap of 3 needs
+    // 20 KiB. A resolved option that never applies is the thing this cap exists
+    // to prevent.
     const std::uint64_t blocksPerRequest = normalized.maxRequestBytes / normalized.blockSize;
-    const std::uint64_t gapCeiling = blocksPerRequest > 0 ? blocksPerRequest - 1 : 0;
+    const std::uint64_t gapCeiling = blocksPerRequest >= 2 ? blocksPerRequest - 2 : 0;
     if (normalized.coalesceGapBlocks > gapCeiling) {
         normalized.coalesceGapBlocks = static_cast<std::uint32_t>(
             (std::min)(gapCeiling, static_cast<std::uint64_t>(0xFFFFFFFFu)));

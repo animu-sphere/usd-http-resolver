@@ -121,17 +121,22 @@ void ARunAtTheEndOfTheAssetStopsAtTheEnd() {
     CHECK_EQ(runs[0].offset + runs[0].length, assetSize);
 }
 
-void OverFetchIsTheBytesNobodyAskedFor() {
+void OverFetchIsTheBytesTheCallerDidNotTake() {
     FetchRun run;
     run.offset = 0;
     run.length = kBlock * 4;
 
-    // A caller that wanted 100 bytes in the middle paid for four blocks.
-    CHECK_EQ(OverFetchedBytes(run, kBlock, 100), kBlock * 4 - 100);
-    // A caller that wanted all of it paid for nothing extra.
-    CHECK_EQ(OverFetchedBytes(run, 0, kBlock * 4), std::uint64_t{0});
-    // A run that overlaps nothing the caller wanted is over-fetch end to end.
-    CHECK_EQ(OverFetchedBytes(run, kBlock * 10, kBlock), kBlock * 4);
+    // A caller that took 100 bytes out of the middle paid for four blocks.
+    CHECK_EQ(OverFetchedBytes(run, 100), kBlock * 4 - 100);
+    // A caller that took all of it paid for nothing extra.
+    CHECK_EQ(OverFetchedBytes(run, kBlock * 4), std::uint64_t{0});
+    // A run nothing was taken out of is over-fetch end to end. This is also the
+    // shape of a merge across a resident gap, whose bytes the caller reads from
+    // the store rather than out of the transfer that moved them.
+    CHECK_EQ(OverFetchedBytes(run, 0), kBlock * 4);
+    // Never underflows. `takenBytes` is a sum the caller accumulates, and a
+    // counter that wrapped to 18 exabytes would be worse than one reporting 0.
+    CHECK_EQ(OverFetchedBytes(run, kBlock * 8), std::uint64_t{0});
 }
 
 void OptionsRoundTheBlockSizeDownToAPowerOfTwo() {
@@ -257,7 +262,7 @@ int main() {
     AMergeIsNeverTakenPastTheRequestCeiling();
     ASingleBlockIsAlwaysEmittedWhateverTheCeiling();
     ARunAtTheEndOfTheAssetStopsAtTheEnd();
-    OverFetchIsTheBytesNobodyAskedFor();
+    OverFetchIsTheBytesTheCallerDidNotTake();
     OptionsRoundTheBlockSizeDownToAPowerOfTwo();
     OptionsClampToSomethingUsable();
     NormalizationIsIdempotent();

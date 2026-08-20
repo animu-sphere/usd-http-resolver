@@ -79,15 +79,11 @@ std::vector<FetchRun> PlanRuns(const std::vector<std::uint64_t>& blocks,
     return runs;
 }
 
-std::uint64_t OverFetchedBytes(const FetchRun& run,
-                               std::uint64_t wantedOffset,
-                               std::uint64_t wantedLength) noexcept {
-    const std::uint64_t runEnd = run.offset + run.length;
-    const std::uint64_t wantedEnd = wantedOffset + wantedLength;
-    const std::uint64_t overlapBegin = (std::max)(run.offset, wantedOffset);
-    const std::uint64_t overlapEnd = (std::min)(runEnd, wantedEnd);
-    const std::uint64_t overlap = overlapEnd > overlapBegin ? overlapEnd - overlapBegin : 0;
-    return run.length - overlap;
+std::uint64_t OverFetchedBytes(const FetchRun& run, std::uint64_t takenBytes) noexcept {
+    // Clamped rather than trusted. `takenBytes` is a sum accumulated by the
+    // caller, and a counter that underflowed to 18 exabytes would be worse than
+    // one that reported zero.
+    return takenBytes < run.length ? run.length - takenBytes : 0;
 }
 
 }  // namespace detail

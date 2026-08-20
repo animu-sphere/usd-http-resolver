@@ -116,10 +116,13 @@ struct CachedOpenResult {
 /// is the normal case: the budget is process-wide and shared across assets
 /// (CACHE.md section 7), so a store per reader would not be one budget.
 ///
-/// Fails with `InvalidArgument` when `inner` is null, and passes through the
-/// reader unchanged -- undecorated -- when its metadata says it cannot serve
-/// random access. Caching a reader that cannot seek would store the one block
-/// it managed to read and miss forever after.
+/// Fails with `InvalidArgument` when `inner` is null.
+///
+/// It does **not** check `supportsRandomAccess`, and cannot: it returns a
+/// `CachedAssetReader`, so it has no way to hand back an undecorated reader.
+/// Caching a reader that cannot seek would store the one block it managed to
+/// read and miss forever after, so a caller that cannot guarantee random access
+/// wants `WrapAsset` below, which can pass one through.
 CachedOpenResult Wrap(std::unique_ptr<AssetReader> inner,
                       ReaderMetrics* innerMetrics,
                       const CacheOptions& options,

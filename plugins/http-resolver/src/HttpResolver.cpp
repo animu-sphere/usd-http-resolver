@@ -164,13 +164,23 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
 
     // The block cache goes on here rather than in `_Resolve`, because
     // `_Resolve` only has to establish that the asset exists and this is where
-    // bytes start being asked for. `WrapAsset` binds into the process store by
+    // bytes start being asked for. The wrap binds into the process store by
     // identity -- the resolved identifier and the validator the reader captured
     // at open -- so two `ArAsset`s over one revision share blocks, and two over
     // two revisions never do (CACHE.md section 6).
-    usdasset::cache::CachedOpenResult cached = usdasset::cache::Wrap(
-        std::unique_ptr<usdasset::AssetReader>(reader.release()), metrics,
-        _cacheOptions, nullptr);
+    //
+    // `WrapAsset` and not `Wrap`, which is what this comment used to say while
+    // the line below said otherwise. The difference is the `supportsRandomAccess`
+    // guard: `Wrap` returns a `CachedAssetReader` and therefore cannot decline
+    // to decorate, and a reader that cannot seek would store the one block it
+    // managed to read and miss forever after. ADR-0002 makes range support a
+    // hard error at open, so every reader that reaches this line supports it and
+    // the guard has never fired -- which is exactly how long a missing guard
+    // stays invisible.
+    usdasset::OpenResult opened;
+    opened.reader = std::unique_ptr<usdasset::AssetReader>(reader.release());
+    usdasset::OpenResult cached = usdasset::cache::WrapAsset(
+        std::move(opened), metrics, _cacheOptions, nullptr);
     if (!cached.reader) {
         usdhttpresolver::Report(cached.status, identifier);
         return nullptr;
