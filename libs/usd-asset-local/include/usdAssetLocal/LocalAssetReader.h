@@ -56,6 +56,14 @@ public:
     /// deliberately narrow.
     const ReaderMetrics& Metrics() const noexcept;
 
+    /// The same counters, writable.
+    ///
+    /// Exists for one caller: a decorator that composes this reader into a
+    /// stack has to be able to detach these counters from the process
+    /// aggregate and absorb them, or the stack folds the transport's bytes
+    /// twice (Metrics.h, `AbsorbTransport`). Nothing else writes them.
+    ReaderMetrics& Metrics() noexcept;
+
 private:
     class Impl;
     explicit LocalAssetReader(std::unique_ptr<Impl> impl);

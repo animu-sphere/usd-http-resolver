@@ -184,6 +184,25 @@ double MetricsSnapshot::Selectivity() const noexcept {
     return Ratio(bytesTransferred, assetSize);
 }
 
+void MetricsSnapshot::AbsorbTransport(const MetricsSnapshot& inner) {
+    // The asset is one asset however many readers are stacked over it, so its
+    // size is taken and not summed.
+    assetSize = (std::max)(assetSize, inner.assetSize);
+
+    bytesTransferred += inner.bytesTransferred;
+    requestCount += inner.requestCount;
+    metadataRequestCount += inner.metadataRequestCount;
+    retryCount += inner.retryCount;
+    redirectCount += inner.redirectCount;
+
+    // Not taken: bytesRequested, bytesFromCache, and every cache counter. Those
+    // belong to the layer that faces the caller, and the inner reader's
+    // bytesRequested is the expanded ask this cache made of it -- already
+    // visible, exactly once, as bytesTransferred.
+    openLatency = inner.openLatency;
+    requestLatency = inner.requestLatency;
+}
+
 void MetricsSnapshot::Add(const MetricsSnapshot& other) {
     assetSize += other.assetSize;
     bytesRequested += other.bytesRequested;
@@ -229,6 +248,9 @@ ReaderMetrics::ReaderMetrics(std::string identifier)
 }
 
 ReaderMetrics::~ReaderMetrics() {
+    if (_detached.load(kRelaxed)) {
+        return;
+    }
     MetricsRegistry::Instance().Fold(*this);
 }
 
@@ -265,6 +287,59 @@ void ReaderMetrics::AddRedirect(std::uint64_t count) noexcept {
     AddRelaxed(_redirectCount, count);
 }
 
+void ReaderMetrics::AddBlockHit(std::uint64_t count) noexcept {
+    AddRelaxed(_blockHits, count);
+}
+
+void ReaderMetrics::AddBlockMiss(std::uint64_t count) noexcept {
+    AddRelaxed(_blockMisses, count);
+}
+
+void ReaderMetrics::AddPartialHit(std::uint64_t count) noexcept {
+    AddRelaxed(_partialHits, count);
+}
+
+void ReaderMetrics::AddRequestsSavedByCoalescing(std::uint64_t count) noexcept {
+    AddRelaxed(_requestsSavedByCoalescing, count);
+}
+
+void ReaderMetrics::AddRequestsSavedBySingleFlight(std::uint64_t count) noexcept {
+    AddRelaxed(_requestsSavedBySingleFlight, count);
+}
+
+void ReaderMetrics::AddBytesOverFetched(std::uint64_t bytes) noexcept {
+    AddRelaxed(_bytesOverFetched, bytes);
+}
+
+void ReaderMetrics::AddEviction(std::uint64_t count) noexcept {
+    AddRelaxed(_evictions, count);
+}
+
+void ReaderMetrics::ObserveResidentBytes(std::uint64_t bytes) noexcept {
+    MaxRelaxed(_peakResidentBytes, bytes);
+}
+
+void ReaderMetrics::AbsorbTransport(const ReaderMetrics& inner) noexcept {
+    MaxRelaxed(_assetSize, inner._assetSize.load(kRelaxed));
+    AddRelaxed(_bytesTransferred, inner._bytesTransferred.load(kRelaxed));
+    // Deliberately not through AddMetadataRequest, which also bumps the request
+    // total: the inner reader already counted its metadata requests there, and
+    // routing them through that helper would count each one twice.
+    AddRelaxed(_requestCount, inner._requestCount.load(kRelaxed));
+    AddRelaxed(_metadataRequestCount, inner._metadataRequestCount.load(kRelaxed));
+    AddRelaxed(_retryCount, inner._retryCount.load(kRelaxed));
+    AddRelaxed(_redirectCount, inner._redirectCount.load(kRelaxed));
+
+    // Folded bucket by bucket rather than merged as summaries, which is the
+    // only way the quantiles survive.
+    _openLatency.Fold(inner._openLatency);
+    _requestLatency.Fold(inner._requestLatency);
+}
+
+void ReaderMetrics::DetachFromRegistry() noexcept { _detached.store(true, kRelaxed); }
+
+bool ReaderMetrics::IsDetached() const noexcept { return _detached.load(kRelaxed); }
+
 MetricsSnapshot ReaderMetrics::Snapshot() const {
     MetricsSnapshot snapshot;
     snapshot.identifier = _identifier;
@@ -276,6 +351,14 @@ MetricsSnapshot ReaderMetrics::Snapshot() const {
     snapshot.metadataRequestCount = _metadataRequestCount.load(kRelaxed);
     snapshot.retryCount = _retryCount.load(kRelaxed);
     snapshot.redirectCount = _redirectCount.load(kRelaxed);
+    snapshot.blockHits = _blockHits.load(kRelaxed);
+    snapshot.blockMisses = _blockMisses.load(kRelaxed);
+    snapshot.partialHits = _partialHits.load(kRelaxed);
+    snapshot.requestsSavedByCoalescing = _requestsSavedByCoalescing.load(kRelaxed);
+    snapshot.requestsSavedBySingleFlight = _requestsSavedBySingleFlight.load(kRelaxed);
+    snapshot.bytesOverFetched = _bytesOverFetched.load(kRelaxed);
+    snapshot.evictions = _evictions.load(kRelaxed);
+    snapshot.peakResidentBytes = _peakResidentBytes.load(kRelaxed);
     snapshot.openLatency = _openLatency.Snapshot();
     snapshot.requestLatency = _requestLatency.Snapshot();
     snapshot.readLatency = _readLatency.Snapshot();
@@ -406,8 +489,21 @@ void MetricsRegistry::Dump(std::ostream& out) const {
         << "  metadataRequestCount " << aggregate.metadataRequestCount << "\n"
         << "  retryCount           " << aggregate.retryCount << "\n"
         << "  redirectCount        " << aggregate.redirectCount << "\n"
+        // The cache block. Printed unconditionally, including the zeroes a
+        // release with no cache produces: a dump that hid them would make
+        // "no cache ran" and "the cache never hit" the same output.
+        << "  blockHits            " << aggregate.blockHits << "\n"
+        << "  blockMisses          " << aggregate.blockMisses << "\n"
+        << "  partialHits          " << aggregate.partialHits << "\n"
+        << "  savedByCoalescing    " << aggregate.requestsSavedByCoalescing << "\n"
+        << "  savedBySingleFlight  " << aggregate.requestsSavedBySingleFlight << "\n"
+        << "  bytesOverFetched     " << aggregate.bytesOverFetched << "\n"
+        << "  evictions            " << aggregate.evictions << "\n"
+        << "  peakResidentBytes    " << aggregate.peakResidentBytes << "\n"
         << "  amplification        " << aggregate.Amplification() << "\n"
         << "  selectivity          " << aggregate.Selectivity() << "\n"
+        << "  cacheHitRatio        " << aggregate.CacheHitRatio() << "\n"
+        << "  overFetchRatio       " << aggregate.OverFetchRatio() << "\n"
         << "  openLatency us       p50 " << aggregate.openLatency.p50 << " p90 "
         << aggregate.openLatency.p90 << " p99 " << aggregate.openLatency.p99 << " max "
         << aggregate.openLatency.max << "\n"

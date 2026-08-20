@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(usdAssetIo)
+
+include("${CMAKE_CURRENT_LIST_DIR}/usdAssetCacheTargets.cmake")
+
+check_required_components(usdAssetCache)

@@ -109,6 +109,19 @@ struct MetricsSnapshot {
     /// moved to answer a query.
     double Selectivity() const noexcept;
 
+    /// Takes the transport-side counters of an inner reader in a decorated
+    /// stack, leaving this snapshot's own caller-side counters alone.
+    ///
+    /// A decorated stack has one counter set, and it is the outermost reader's,
+    /// because the two ends of the stack disagree about what `bytesRequested`
+    /// means: to the cache it is what the caller asked for, and to the reader
+    /// underneath it is what the cache asked for expanded to whole blocks.
+    /// Summing them would make `amplification` a ratio over a denominator that
+    /// is two different measurements added together. So the outer set keeps
+    /// what the caller asked for and the cache served, and takes from the inner
+    /// set only what crossed the transport.
+    void AbsorbTransport(const MetricsSnapshot& inner);
+
     /// Sums counters. Latency merges only `count`, `sum`, and `max`: quantiles
     /// cannot be recovered from two summaries, so they are zeroed rather than
     /// averaged into a number that looks like a measurement. The aggregate in
@@ -149,6 +162,31 @@ public:
     void AddRetry(std::uint64_t count = 1) noexcept;
     void AddRedirect(std::uint64_t count = 1) noexcept;
 
+    // The cache counters of METRICS.md §2.2. Declared here rather than on a
+    // cache-owned structure because a counter set that is per reader for the
+    // transport and per decorator for the cache cannot be summed: the process
+    // aggregate and the top-assets table both fold one `ReaderMetrics`, and a
+    // cache hit that landed somewhere else would be invisible in exactly the
+    // report it is evidence for.
+    //
+    // A backend never calls these; `libs/usd-asset-cache` does, on the reader
+    // metrics of the reader it decorates.
+    void AddBlockHit(std::uint64_t count = 1) noexcept;
+    void AddBlockMiss(std::uint64_t count = 1) noexcept;
+    void AddPartialHit(std::uint64_t count = 1) noexcept;
+    void AddRequestsSavedByCoalescing(std::uint64_t count = 1) noexcept;
+    void AddRequestsSavedBySingleFlight(std::uint64_t count = 1) noexcept;
+    void AddBytesOverFetched(std::uint64_t bytes) noexcept;
+    void AddEviction(std::uint64_t count = 1) noexcept;
+
+    /// Raises the resident high-water mark to `bytes` if it is higher.
+    ///
+    /// A high-water mark is a maximum and not a sum, which is why it is
+    /// observed rather than added: two readers sharing one block store did not
+    /// make the store twice as large, and `MetricsSnapshot::Add` takes the
+    /// maximum of this field for the same reason.
+    void ObserveResidentBytes(std::uint64_t bytes) noexcept;
+
     LatencyHistogram& OpenLatency() noexcept { return _openLatency; }
     LatencyHistogram& RequestLatency() noexcept { return _requestLatency; }
     LatencyHistogram& ReadLatency() noexcept { return _readLatency; }
@@ -158,6 +196,22 @@ public:
     const LatencyHistogram& ReadLatency() const noexcept { return _readLatency; }
 
     const std::string& Identifier() const noexcept { return _identifier; }
+
+    /// Absorbs an inner reader's transport counters into this set, histograms
+    /// included, so that the decorator that owns this set folds the whole
+    /// stack into the process aggregate exactly once.
+    ///
+    /// The inner set is detached first; see `DetachFromRegistry`.
+    void AbsorbTransport(const ReaderMetrics& inner) noexcept;
+
+    /// Stops this counter set folding into the process aggregate when it is
+    /// destroyed.
+    ///
+    /// For the inner reader of a decorated stack, whose counters are folded by
+    /// the decorator above it. A set that both is absorbed and folds itself
+    /// would count every transferred byte twice.
+    void DetachFromRegistry() noexcept;
+    bool IsDetached() const noexcept;
 
     /// Readable while the reader lives.
     MetricsSnapshot Snapshot() const;
@@ -173,6 +227,17 @@ private:
     std::atomic<std::uint64_t> _metadataRequestCount{0};
     std::atomic<std::uint64_t> _retryCount{0};
     std::atomic<std::uint64_t> _redirectCount{0};
+
+    std::atomic<std::uint64_t> _blockHits{0};
+    std::atomic<std::uint64_t> _blockMisses{0};
+    std::atomic<std::uint64_t> _partialHits{0};
+    std::atomic<std::uint64_t> _requestsSavedByCoalescing{0};
+    std::atomic<std::uint64_t> _requestsSavedBySingleFlight{0};
+    std::atomic<std::uint64_t> _bytesOverFetched{0};
+    std::atomic<std::uint64_t> _evictions{0};
+    std::atomic<std::uint64_t> _peakResidentBytes{0};
+
+    std::atomic<bool> _detached{false};
 
     LatencyHistogram _openLatency;
     LatencyHistogram _requestLatency;

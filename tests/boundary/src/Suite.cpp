@@ -2,6 +2,7 @@
 
 #include "usdassetboundary/Suite.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -294,8 +295,11 @@ void RunRevisionChangeCase(const BackendUnderTest& backend,
         return;
     }
 
+    // The read that has to observe the change: an offset this reader has not
+    // read before, so nothing it already holds can answer it and the request
+    // reaches the transport.
     std::vector<unsigned char> after(size + kGuardBytes, kGuardFill);
-    const ReadResult second = opened.reader->Read(0, after.data(), size);
+    const ReadResult second = opened.reader->Read(kNominalBlockSize, after.data(), size);
 
     if (second.status.code != StatusCode::AssetChanged) {
         reporter.Fail(caseName, std::string("status ") +
@@ -305,11 +309,44 @@ void RunRevisionChangeCase(const BackendUnderTest& backend,
     }
     reporter.Pass();
 
+    // A range this reader already read, read again. Two answers are correct and
+    // one is not.
+    //
+    // A backend that reaches its transport observes the change and reports
+    // `AssetChanged`. A reader with a block cache over it answers from bytes it
+    // captured *under this binding*, observes nothing, and hands back the
+    // revision it is bound to -- which is the guarantee, not an exception to
+    // it: the contract's wording is "a reader that observes a changed validator
+    // fails subsequent reads", and CACHE.md section 6 admits in-memory caching
+    // for the reader's lifetime for exactly this reason. What neither is
+    // allowed to do is return the new revision's bytes, and that is what this
+    // checks. A byte comparison, because a status comparison cannot see it.
+    std::vector<unsigned char> reread(size + kGuardBytes, kGuardFill);
+    const ReadResult repeat = opened.reader->Read(0, reread.data(), size);
+    if (repeat.status.code == StatusCode::Ok) {
+        if (repeat.bytesRead != first.bytesRead ||
+            !std::equal(reread.begin(), reread.begin() + repeat.bytesRead,
+                        before.begin())) {
+            reporter.Fail(caseName + " (a repeated read serves the bound revision)",
+                          "the bytes changed underneath a reader that reported Ok");
+            return;
+        }
+    } else if (repeat.status.code != StatusCode::AssetChanged) {
+        reporter.Fail(caseName + " (a repeated read)",
+                      std::string("status ") +
+                          usdasset::StatusCodeName(repeat.status.code) +
+                          ", expected AssetChanged or the bound revision's bytes");
+        return;
+    }
+    reporter.Pass();
+
     // And it stays changed. A reader that recovers on the next call has
     // rebound to the new revision, which is the failure the code exists to
-    // prevent rather than a transient it survived.
+    // prevent rather than a transient it survived. Another offset this reader
+    // has not read, for the reason the first one was.
     std::vector<unsigned char> third(size + kGuardBytes, kGuardFill);
-    const ReadResult retry = opened.reader->Read(kNominalBlockSize, third.data(), size);
+    const ReadResult retry =
+        opened.reader->Read(kNominalBlockSize + size, third.data(), size);
     if (retry.status.code != StatusCode::AssetChanged) {
         reporter.Fail(caseName + " (does not rebind)",
                       std::string("a later read returned ") +

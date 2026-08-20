@@ -127,14 +127,76 @@ void TestIndependence() {
 void TestVariableSet() {
     const std::vector<const char*>& variables =
         usdhttpresolver::ConfiguredVariables();
-    CHECK_EQ(variables.size(), std::size_t{5});
+    // Five transport bounds from `v0.2.0` and four cache variables from
+    // `v0.3.0`, which is the whole of CONFIGURATION.md §2 except the metrics
+    // dump -- that one is read by usdAssetIo and not by this resolver.
+    CHECK_EQ(variables.size(), std::size_t{9});
     for (const char* name : variables) {
         CHECK(std::string(name).rfind("USD_HTTP_RESOLVER_", 0) == 0);
         std::vector<ConfigurationProblem> problems;
-        OptionsFrom(From({{name, "not a number"}}), &problems);
+        usdhttpresolver::ConfigurationFrom(From({{name, "not a number"}}),
+                                           &problems);
         // Every variable this version claims to read is actually read.
         CHECK_EQ(problems.size(), std::size_t{1});
     }
+}
+
+/// The cache variables, one at a time, and the two adjustments that are
+/// reported rather than made silently.
+void TestCacheVariables() {
+    std::vector<ConfigurationProblem> problems;
+    const usdasset::cache::CacheOptions defaults =
+        usdhttpresolver::CacheOptionsFrom(From({}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{0});
+    CHECK_EQ(defaults.blockSize, usdasset::cache::kDefaultBlockSize);
+    CHECK_EQ(defaults.budgetBytes, usdasset::cache::kDefaultBudgetBytes);
+
+    problems.clear();
+    const usdasset::cache::CacheOptions set = usdhttpresolver::CacheOptionsFrom(
+        From({{"USD_HTTP_RESOLVER_BLOCK_SIZE", "16384"},
+              {"USD_HTTP_RESOLVER_CACHE_BUDGET", "1048576"},
+              {"USD_HTTP_RESOLVER_COALESCE_GAP", "0"},
+              {"USD_HTTP_RESOLVER_MAX_REQUEST_BYTES", "65536"}}),
+        &problems);
+    CHECK_EQ(problems.size(), std::size_t{0});
+    CHECK_EQ(set.blockSize, std::uint64_t{16384});
+    CHECK_EQ(set.budgetBytes, std::uint64_t{1048576});
+    CHECK_EQ(set.coalesceGapBlocks, std::uint32_t{0});
+    CHECK_EQ(set.maxRequestBytes, std::uint64_t{65536});
+
+    // A block size that is not a power of two is rounded down, and the rounding
+    // is a diagnostic: an operator who set 100000 and got 65536 should learn it
+    // from a log rather than from a byte count.
+    problems.clear();
+    const usdasset::cache::CacheOptions rounded = usdhttpresolver::CacheOptionsFrom(
+        From({{"USD_HTTP_RESOLVER_BLOCK_SIZE", "100000"}}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+    CHECK_EQ(rounded.Normalized().blockSize, std::uint64_t{65536});
+
+    // Below the floor and above the ceiling are refused, not clamped.
+    problems.clear();
+    usdhttpresolver::CacheOptionsFrom(
+        From({{"USD_HTTP_RESOLVER_BLOCK_SIZE", "512"}}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+
+    problems.clear();
+    usdhttpresolver::CacheOptionsFrom(
+        From({{"USD_HTTP_RESOLVER_CACHE_BUDGET", "12"}}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+
+    // And one bad cache value does not discard the transport configuration, or
+    // the other three cache values.
+    problems.clear();
+    const usdhttpresolver::ResolverConfiguration mixed =
+        usdhttpresolver::ConfigurationFrom(
+            From({{"USD_HTTP_RESOLVER_BLOCK_SIZE", "nonsense"},
+                  {"USD_HTTP_RESOLVER_CACHE_BUDGET", "1048576"},
+                  {"USD_HTTP_RESOLVER_MAX_REDIRECTS", "1"}}),
+            &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+    CHECK_EQ(mixed.cache.blockSize, usdasset::cache::kDefaultBlockSize);
+    CHECK_EQ(mixed.cache.budgetBytes, std::uint64_t{1048576});
+    CHECK_EQ(mixed.transport.maxRedirects, 1);
 }
 
 }  // namespace
@@ -145,5 +207,6 @@ int main() {
     TestRejectedValues();
     TestIndependence();
     TestVariableSet();
+    TestCacheVariables();
     return usdassettest::Report("httpResolver configuration");
 }

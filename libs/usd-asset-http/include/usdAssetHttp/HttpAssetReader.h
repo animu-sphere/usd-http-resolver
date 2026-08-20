@@ -114,6 +114,11 @@ public:
     /// interface this project keeps deliberately narrow.
     const ReaderMetrics& Metrics() const noexcept;
 
+    /// The same counters, writable, for a decorator that composes this reader
+    /// into a stack and folds the whole stack once. See the local backend's
+    /// note and `ReaderMetrics::AbsorbTransport`.
+    ReaderMetrics& Metrics() noexcept;
+
 private:
     class Impl;
     explicit HttpAssetReader(std::unique_ptr<Impl> impl);

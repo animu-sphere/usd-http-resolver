@@ -40,7 +40,8 @@ http_resolver_offline_test(identifier Identifier)
 
 # `Identifier.cpp` needs nothing at all; the other two need the contracts they
 # are expressed in. Neither needs a transport, and neither opens a socket.
-target_link_libraries(httpResolver_test_configuration PRIVATE usdasset::http)
+target_link_libraries(httpResolver_test_configuration
+                      PRIVATE usdasset::http usdasset::cache)
 target_link_libraries(httpResolver_test_diagnostics PRIVATE usdasset::io)
 
 # The end-to-end test needs the fixture corpus, which exists only in a build

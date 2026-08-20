@@ -137,6 +137,23 @@ void TestStageOpens() {
 }
 
 /// §4: the `ArAsset` surface, and the reason this project exists -- a window
+/// `bytes=first-last`, as the fixture server logged it.
+///
+/// The test parses the header itself rather than asking the backend what it
+/// sent, for the reason the baseline harness does: the server's log is the
+/// independent witness, and a request issued outside the metrics sink counts
+/// nothing there and still costs a round trip.
+bool ParseByteRange(const std::string& header, std::uint64_t* first,
+                    std::uint64_t* last) {
+    const std::size_t equals = header.find('=');
+    if (equals == std::string::npos) return false;
+    const std::size_t dash = header.find('-', equals + 1);
+    if (dash == std::string::npos) return false;
+    *first = std::strtoull(header.c_str() + equals + 1, nullptr, 10);
+    *last = std::strtoull(header.c_str() + dash + 1, nullptr, 10);
+    return *last >= *first;
+}
+
 /// out of an asset costs the window.
 void TestRangeRead() {
     const std::size_t size = 1u << 20;  // 1 MiB
@@ -182,15 +199,42 @@ void TestRangeRead() {
     CHECK(mark.IsClean());
     mark.Clear();
 
-    // What was actually asked of the network. A `Range` header on the read,
-    // and no request that fetched the whole megabyte.
+    // What was actually asked of the network. A `Range` header on every read, a
+    // request that covers the window, and nothing that fetched the whole
+    // megabyte.
+    //
+    // The covering request is no longer the window itself. `v0.3.0` puts a
+    // block cache under this asset, so the window is expanded to the block that
+    // holds it, and CACHE.md section 3 trades the exact-bytes property away on
+    // purpose. What the release still claims -- and what this checks -- is that
+    // a 4 KiB window out of a megabyte costs a block and not the megabyte. The
+    // bound is stated here rather than imported from the cache's constants: a
+    // test that knew the block size would agree with the cache by construction,
+    // and the question being asked is whether the cache ran away.
+    const std::uint64_t windowEnd = offset + count;
     bool sawWindow = false;
+    std::uint64_t movedByGets = 0;
     for (const usdassetfixture::RequestRecord& record : g_server->Log()) {
         if (record.method != "GET") continue;
         CHECK(!record.range.empty());
-        if (record.range == "bytes=500000-504095") sawWindow = true;
+        std::uint64_t first = 0;
+        std::uint64_t last = 0;
+        if (!ParseByteRange(record.range, &first, &last)) {
+            std::fprintf(stderr, "FAIL %s:%d: unparseable Range: %s\n",
+                         __FILE__, __LINE__, record.range.c_str());
+            ++::usdassettest::FailureCount();
+            continue;
+        }
+        movedByGets += last - first + 1;
+        if (first <= offset && last + 1 >= windowEnd) sawWindow = true;
+        // No single request took a quarter of the asset.
+        CHECK(last - first + 1 <= size / 4);
     }
     CHECK(sawWindow);
+    // And neither did all of them together. Three reads of a megabyte-sized
+    // asset moved a fraction of it, which is the sentence the whole project is
+    // made of.
+    CHECK(movedByGets <= size / 4);
 }
 
 /// §2.3: one metadata request per identifier, reused by the open that follows.

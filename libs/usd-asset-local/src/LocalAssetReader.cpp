@@ -50,6 +50,8 @@ const ReaderMetrics& LocalAssetReader::Metrics() const noexcept {
     return _impl->metrics;
 }
 
+ReaderMetrics& LocalAssetReader::Metrics() noexcept { return _impl->metrics; }
+
 ReadResult LocalAssetReader::Read(std::uint64_t offset, void* dst, std::size_t size) {
     ScopedLatency readTimer(_impl->metrics.ReadLatency());
     _impl->metrics.AddBytesRequested(size);

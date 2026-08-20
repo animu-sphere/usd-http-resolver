@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// The environment-variable configuration surface, which CONFIGURATION.md §2
-// schedules for `v0.2.0`: the five transport bounds, and nothing else. The
-// cache variables arrive with the cache they configure, and the
+// The environment-variable configuration surface of CONFIGURATION.md §2: the
+// five transport bounds, which arrived in `v0.2.0`, and the four cache
+// variables, which arrive here in `v0.3.0` with the cache they configure. The
 // `ArResolverContext` form arrives in `v0.6.0`.
 //
 // Parsing is separated from reading the environment, and from reporting, on
@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "usdAssetCache/CacheOptions.h"
 #include "usdAssetHttp/HttpAssetReader.h"
 
 namespace usdhttpresolver {
@@ -53,6 +54,34 @@ usdasset::http::HttpOptions OptionsFrom(
 
 /// The same, against the process environment.
 usdasset::http::HttpOptions OptionsFromEnvironment(
+    std::vector<ConfigurationProblem>* problemsOut);
+
+/// The cache policy `lookup` describes, starting from the shipped defaults.
+///
+/// The values the defaults are is a measured question and its answer is
+/// docs/reference/BLOCK_POLICY.md; what this function does is let a deployment
+/// override them, and refuse to do so silently when it asks for something that
+/// is not a number.
+///
+/// The returned options are *not* normalized here. Normalization rounds and
+/// clamps, and a value that had to be rounded is worth a diagnostic rather than
+/// a silent adjustment -- so the rounding is reported as a problem and the
+/// caller normalizes when it applies them.
+usdasset::cache::CacheOptions CacheOptionsFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut);
+
+/// Everything one resolver is configured by, read in one pass.
+struct ResolverConfiguration {
+    usdasset::http::HttpOptions transport;
+    usdasset::cache::CacheOptions cache;
+};
+
+ResolverConfiguration ConfigurationFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut);
+
+ResolverConfiguration ConfigurationFromEnvironment(
     std::vector<ConfigurationProblem>* problemsOut);
 
 /// The variables this version reads, in the order CONFIGURATION.md lists them.

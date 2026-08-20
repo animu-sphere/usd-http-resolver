@@ -61,6 +61,12 @@ if(NOT TARGET usdasset::http)
     find_package(usdAssetHttp CONFIG REQUIRED)
 endif()
 
+# And the cache, resolved the same way. It is not a backend and knows no
+# transport: it decorates the reader the backend returns.
+if(NOT TARGET usdasset::cache)
+    find_package(usdAssetCache CONFIG REQUIRED)
+endif()
+
 set(PLUGIN_NAME HttpResolver)
 
 add_library(${PLUGIN_NAME} SHARED
@@ -75,7 +81,10 @@ target_compile_features(${PLUGIN_NAME} PRIVATE cxx_std_17)
 target_include_directories(${PLUGIN_NAME} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${PXR_INCLUDE_DIRS})
-target_link_libraries(${PLUGIN_NAME} PRIVATE usdasset::http)
+# The cache joins the link line in v0.3.0. WORKSPACE.md section 2 has admitted
+# the edge since the workspace contract was written; this is the release in
+# which the bundle takes it.
+target_link_libraries(${PLUGIN_NAME} PRIVATE usdasset::http usdasset::cache)
 
 if(MSVC)
     target_compile_options(${PLUGIN_NAME} PRIVATE /utf-8 /W4)

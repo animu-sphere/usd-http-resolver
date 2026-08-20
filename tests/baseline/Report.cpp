@@ -90,6 +90,40 @@ std::string FormatBaseline(const RunContext& context,
         out += " |\n";
     }
 
+    // The cache counters, for the rows that have any. Emitted as their own
+    // table rather than as eight more columns on the one above: the counter set
+    // METRICS.md §2.2 defines is about a different mechanism from the one §2.1
+    // defines, and a nineteen-column table is a table nobody reads. Cached rows
+    // whose counters are all zero are still printed -- the full sequential read
+    // is exactly that, and its zeroes are the bypass rule working.
+    bool anyCachedRow = false;
+    for (const ScenarioRecord& record : records) anyCachedRow |= record.cached;
+    if (anyCachedRow) {
+        out += "\n\nCache counters, for the rows that have them."
+               " Every one is zero on an uncached row, and those rows are"
+               " omitted.\n\n";
+        out += "| Scenario | blockHits | blockMisses | partialHits |"
+               " savedByCoalescing | savedBySingleFlight | bytesFromCache |"
+               " bytesOverFetched | evictions | peakResidentBytes |\n";
+        out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+               " ---: |\n";
+        for (const ScenarioRecord& record : records) {
+            if (!record.cached) continue;
+            const usdasset::MetricsSnapshot& m = record.metrics;
+            out += "| " + record.name;
+            out += " | " + Unsigned(m.blockHits);
+            out += " | " + Unsigned(m.blockMisses);
+            out += " | " + Unsigned(m.partialHits);
+            out += " | " + Unsigned(m.requestsSavedByCoalescing);
+            out += " | " + Unsigned(m.requestsSavedBySingleFlight);
+            out += " | " + Unsigned(m.bytesFromCache);
+            out += " | " + Unsigned(m.bytesOverFetched);
+            out += " | " + Unsigned(m.evictions);
+            out += " | " + Unsigned(m.peakResidentBytes);
+            out += " |\n";
+        }
+    }
+
     out += "\nLatency, in microseconds. Quantiles are bucket upper bounds, not"
            " exact order statistics (METRICS.md §4), and the request and read"
            " columns are p50 / p90 / p99 / max.\n\n";
@@ -130,11 +164,14 @@ std::string FormatBaseline(const RunContext& context,
                " -- not because none hit. `v0.3.0` is where these rows are expected"
                " to move, and the request counts above are what it has to move.\n";
     } else {
-        out += "\nThe cache counters in METRICS.md §2.2 are no longer all zero: "
-               "this run served " + Unsigned(cached) +
-               " bytes from a cache and over-fetched " + Unsigned(overFetched) +
-               ". A release whose cache moved is a release that records a new"
-               " baseline rather than inheriting this one.\n";
+        out += "\nThe cache counters in METRICS.md §2.2 are populated: the runs"
+               " below served " + Unsigned(cached) +
+               " bytes from a block store and over-fetched " +
+               Unsigned(overFetched) +
+               " to do it. Both halves belong in the record. A design that"
+               " reported only the first would be selling something, which is"
+               " what METRICS.md §2.2 calls `bytesOverFetched` the honest counter"
+               " for.\n";
     }
 
     out += "\n| Scenario | What it exercises | Notes |\n";
