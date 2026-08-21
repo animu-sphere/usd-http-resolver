@@ -39,6 +39,12 @@ byte and request counts exactly, and reports the ratios; the record is
 bounded query: 0.0025 of a 128 MiB asset moved to answer it, with `amplification`
 at exactly 1.0 because there is no cache to over-fetch.
 
+Phase 3 is implemented and unreleased. `libs/usd-asset-cache` is in the tree,
+entered into the shared boundary suite as its own row, wired into the resolver,
+and measured: the constants come from a sweep rather than from a decimal point,
+and the release's before-and-after is one run of one harness. What it has not
+had is a release gate walked over it.
+
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
 time and both pass; gate 9 turned out not to bind, because it binds a release
@@ -135,12 +141,18 @@ therefore ship unexercised.
 
 | Task | Status |
 | --- | --- |
-| `libs/usd-asset-cache`: alignment, expansion, eviction | Outstanding |
-| Validator-keyed `CacheKey` from the first commit | Outstanding |
-| Coalescing with measured thresholds | Outstanding |
-| Single-flight, tested under TSan | Outstanding |
-| Cache counters, including `bytesOverFetched` | Outstanding |
-| Block size and gap threshold measurement, recorded | Outstanding |
+| `libs/usd-asset-cache`: alignment, expansion, eviction | Done — a decorator over `AssetReader` that links `usdAssetIo` and nothing else. Reads expand to whole blocks, the final block is stored at its true length, and eviction is LRU under a process-wide budget shared across assets |
+| Validator-keyed `CacheKey` from the first commit | Done — identifier, validator, block size, block index. Two revisions at one URL are two identities, and the suite proves it rather than the code asserting it |
+| Coalescing with measured thresholds | Done — a one-block gap and an 8 MiB ceiling, both from `tests/cache-tuning`. [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md) also records that the gap does not bind at the shipped block size, which is the part a tuning document is most tempted to leave out |
+| Single-flight, tested under TSan | Done — per block, across readers as well as threads: eight threads missing one block issue one request, and eight readers of one revision issue one between them, with a latch that makes the moment single-flight has to work happen rather than hoping for it. Run under `core-tsan` and under `core-asan`, 25 of 25 tests green in each, GCC 15.2 |
+| Cache counters, including `bytesOverFetched` | Done — every counter in METRICS.md §2.2, and one counter set per decorated stack rather than two |
+| Block size and gap threshold measurement, recorded | Done — `tests/cache-tuning`, sixty-six runs over a real socket, recorded in [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md) |
+| The boundary suite passing against `cache over local`, unchanged | Done — a third row, 244 fixed cases, the property cases, and the concurrency cases. Not one line of the suite relaxed |
+| A read large enough to be a streaming pass bypasses the cache | Done — and it is what keeps the full sequential read byte for byte and request for request what it was, which the baseline asserts rather than observes |
+| The resolver takes the cache | Done — every `ArAsset` the bundle hands out is decorated and bound into the process store, and `httpResolver_stage` asserts from the server's log that a 4 KiB window out of a megabyte costs a block and not the megabyte |
+| The four cache variables in CONFIGURATION.md | Done — read once at resolver construction; a bad value warns and takes the default, an adjusted one warns and takes the adjustment |
+| Recorded before-and-after baseline | Done — [BASELINE.md](../reference/BASELINE.md), every scenario measured twice in one run of one harness |
+| On-disk persistence | Deferred to `v0.4.0` by the roadmap, deliberately: the validator exists, and what does not yet exist is a release's worth of evidence that capture is correct |
 
 ## Phase 4 — identity exposure and persistence (`v0.4.0`)
 
@@ -231,12 +243,50 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. Phase 3, whose success is defined against the numbers just recorded: fewer
-   requests for the clustered index read and for parallel readers, a
-   `bytesOverFetched` that is honest about what block alignment costs, and a
-   full sequential read that does not regress. The table it is measured against
-   is [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
+1. The `v0.3.0` release gate, and its record. Everything the release is defined
+   by is in the tree and green; what has not happened is walking
+   [the gate](../releases/README.md) over it and writing down what that found.
+   Gate 6 is the interesting one this time, because it is the first release in
+   which the byte counts moved on purpose and the gate has to be satisfied by a
+   *recorded* change rather than by an unchanged table.
+2. Phase 4, whose scope is what a persistent entry has to prove before it is
+   written: identity exposed through `GetAssetInfo`, and the strong-validator
+   rule for reuse across opens. The rows it is measured against are
+   [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
    move*.
+
+Done, and no longer next: the sanitizer lanes over the cache. Both are green
+over the whole core tree — 25 of 25 under `address,undefined` and 25 of 25 under
+`thread`, GCC 15.2 — and the ones that matter for this release are the three the
+cache added: `usdAssetCache_singleflight`, the `cached-local` boundary row, and
+the block-policy sweep, which drives the cache over a real socket at five block
+sizes. TSan is not optional for this module, because single-flight is where a
+naive implementation deadlocks and asserting a concurrency property in prose
+asserts nothing.
+
+Done, and no longer next: Phase 3 itself. What building it surfaced was a
+disagreement between two documents that had never been made to disagree before,
+and it was worth resolving in the contract rather than in the code. The boundary
+suite's mid-read revision case asserted `AssetChanged` on a re-read of a range
+the reader had already read; a block cache answers that read from bytes it
+captured under the same binding, observes nothing, and returns the revision the
+reader is bound to. §2.1 of ASSET_READER.md already said *observes*, and
+CACHE.md §6 already admitted in-memory caching for the reader's lifetime, so the
+suite was asserting something narrower than the contract it is the executable
+form of. The case now asserts `AssetChanged` at an offset the reader has not
+read, and for a repeated range asserts either `AssetChanged` or byte-for-byte
+the bound revision — never the new one. That is a strengthening: the byte
+comparison is new, and it would have caught a backend that rebound *and*
+reported `AssetChanged`, which the old case would have passed.
+
+Two smaller things the work surfaced, both recorded where they matter. The
+first is that a decorated stack cannot have two counter sets: the two ends
+disagree about what `bytesRequested` means, and summing them makes
+`amplification` a ratio over two different measurements added together. The
+second is that the coalescing gap does not bind at the block size the
+measurement chose, which is written into
+[BLOCK_POLICY.md](../reference/BLOCK_POLICY.md) rather than left for a reader to
+infer from a table of identical rows.
 
 Done, and no longer next: the `v0.2.0` release gate and its record. Two of the
 three gates that had been not-applicable in `v0.1.0` bound and passed; the third,

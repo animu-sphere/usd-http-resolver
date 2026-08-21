@@ -13,9 +13,102 @@ one.
 
 ## Unreleased
 
-Nothing yet. `v0.3.0`'s scope is the block cache, and its definition of success
-is the table in [BASELINE.md](docs/reference/BASELINE.md) § *What the next
-release has to move*.
+`v0.3.0`'s scope, the block cache, is implemented and unreleased. Its definition
+of success was the table in [BASELINE.md](docs/reference/BASELINE.md) *What the
+next release has to move*, and all four rows moved the way that table asked:
+the clustered header-and-index read went from 18 requests to 3, the bounded
+query's `amplification` went above 1.0 with `bytesOverFetched` to account for
+it, eight parallel readers of one asset went from 152 requests to 25, and the
+full sequential read did not move at all.
+
+### Added
+
+- **`libs/usd-asset-cache`**, the block cache, as a decorator over
+  `AssetReader`. It links `usdAssetIo` and nothing else: no transport, no
+  backend, no OpenUSD. Reads are expanded to whole blocks and served from them;
+  the final block of an asset is stored at its true length and never padded;
+  adjacent and near-adjacent fetches are merged into one request; concurrent
+  readers that miss the same block issue one request and the rest wait; blocks
+  are evicted LRU under a process-wide budget shared across assets; and a read
+  large enough to be a streaming pass bypasses the whole thing.
+  [CACHE.md](docs/architecture/CACHE.md) is the contract and the module
+  [README](libs/usd-asset-cache/README.md) states what it refuses to own.
+- **A validator-keyed `CacheKey` from the first commit.** The key is
+  `resolvedIdentifier + validator + blockSize + blockIndex`, and the rule it
+  exists for is that equal identifiers never imply equal content: two revisions
+  published at one URL are two cache identities. The validator is an opaque byte
+  string here — never parsed, never compared to an `ETag`, never read for
+  recency — and exactly one other field of it is read, `strength`, exactly once.
+- **Single-flight, across readers and not only across threads.** Eight threads
+  missing one block issue one request; so do eight independent readers of one
+  revision, because they share an identity and therefore share the store. That
+  second case is the one that moved the parallel-readers baseline, and it is why
+  the store is process-wide rather than per reader.
+- **The cache counters of [METRICS.md](docs/architecture/METRICS.md) §2.2**,
+  populated: hits, misses, partial hits, requests saved by coalescing and by
+  single-flight, `bytesOverFetched`, evictions, and a resident high-water mark.
+- **A third row in the shared boundary suite**, `cache over local`. The cache is
+  not a transport, so it is not a fourth backend — it is the same local backend
+  with a decorator on top, and entering it there is what makes "byte-for-byte
+  equivalence with the uncached path over the full suite" an assertion rather
+  than a claim. Every case runs unchanged.
+- **`tests/cache-tuning`**, the measurement that chose the constants: a sweep of
+  five block sizes against four coalescing gaps over four access patterns,
+  against a real socket, with every byte verified. Recorded in
+  [BLOCK_POLICY.md](docs/reference/BLOCK_POLICY.md), which also labels the two
+  constants that were *not* measured as the bounds they are.
+- **The four cache variables of
+  [CONFIGURATION.md](docs/reference/CONFIGURATION.md) §2**, read once when the
+  resolver is constructed. A block size that is not a power of two is rounded
+  down and the rounding is reported; a value outside the bounds is refused
+  rather than clamped.
+- **`ReaderMetrics::AbsorbTransport` and `DetachFromRegistry`**, so that a
+  decorated stack reports one counter set instead of two.
+- **Sanitizer coverage over all of it**, which needs no new lane: the module
+  tests, the boundary row, and the tuning sweep are `libs/` and `tests/`, which
+  is what `core-asan` and `core-tsan` already cover. Both are green over the
+  whole core tree, 25 of 25 each, under GCC 15.2.
+
+### Changed
+
+- **The resolver decorates every asset it opens.** `plugins/http-resolver` links
+  `usdasset::cache`, which [WORKSPACE.md](docs/architecture/WORKSPACE.md) §2 has
+  admitted since the workspace contract was written and this release is the
+  first to take. `httpResolver_stage` now asserts from the fixture server's log
+  that a 4 KiB window out of a megabyte costs a block and not the megabyte —
+  a bound rather than an exact range, because the exact-bytes property is what
+  CACHE.md §3 trades away on purpose.
+- **The recorded I/O baseline holds every scenario twice**, with the cache and
+  without it, in one run of one harness. METRICS.md §6 asks a release that
+  changes I/O behavior for the counter values before *and* after, and this is
+  the first release that changes them on purpose. `tests/baseline` gained the
+  cache on its link line and a set of assertions for the cached rows: the
+  server's log is the independent witness for the byte count, the request count
+  is asserted to be below the uncached row, and the full sequential read is
+  asserted to be *identical* rather than merely close.
+- **The boundary suite's mid-read revision case now asserts bytes as well as a
+  status**, and asserts them in the right place. It reports `AssetChanged` for a
+  read at an offset the reader has not read before; for a range it has already
+  read, it accepts either `AssetChanged` or byte-for-byte what the first read
+  returned, and rejects the new revision's bytes. This is a strengthening rather
+  than a relaxation — the byte comparison is new, and the old case would have
+  passed a backend that rebound *and* reported `AssetChanged`. It is also what a
+  reader with a cache under it can satisfy honestly: §2.1 of
+  [ASSET_READER.md](docs/architecture/ASSET_READER.md) says a reader that
+  *observes* a changed validator fails subsequent reads, and a hit observes
+  nothing and returns the revision the reader is bound to.
+- **`selectivity` on the bounded query went from 0.0025 to 0.0112**, on purpose.
+  Alignment converts request count into transferred bytes, and one percent of a
+  128 MiB asset to answer a query against it is still the sentence the
+  architecture is made of. The cost is in `bytesOverFetched`, which is reported
+  beside the saving rather than instead of it.
+- The metrics dump prints the cache block and the two cache ratios, including
+  the zeroes. A dump that hid them would make "no cache ran" and "the cache
+  never hit" the same output.
+
+### Fixed
+
+Nothing. No defect in `v0.2.0` was found by this work.
 
 ## `v0.2.0` — 2026-08-20
 

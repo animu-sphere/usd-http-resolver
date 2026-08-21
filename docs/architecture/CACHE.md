@@ -4,12 +4,27 @@ This document fixes block caching, request coalescing, single-flight
 de-duplication, and cache identity. It is the contract for `usdAssetCache`,
 which is a decorator over `AssetReader` and knows no transport concept.
 
-Status: planned for `v0.3.0`, with optional persistence in `v0.4.0`. Nothing
-here is implemented.
+Status: implemented in `libs/usd-asset-cache` as of `v0.3.0`, except §8, which
+is `v0.4.0`. The block model, coalescing, single-flight, the key, and eviction
+are in the tree and tested; the constants in §3 and §4 are measured and the
+measurement is [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md); the counters in
+§9 populate and are recorded in [BASELINE.md](../reference/BASELINE.md).
 
 The architecture below is unchanged by the `v0.2.0` reordering; what changed is
-that the validator it keys on already exists when the cache lands. There is no
+that the validator it keys on already existed when the cache landed. There is no
 interim URL-keyed cache and no migration away from one.
+
+Two things the implementation makes more specific than this document did, and
+both are narrower rather than wider:
+
+- **A read *at least* as large as the bypass threshold bypasses**, where §3 says
+  "larger than". The boundary had to fall somewhere and it falls on the side
+  that caches less.
+- **Sharing an entry between two readers requires a strong validator.** §6 keys
+  every entry on the validator, and §8 makes strength the test for outliving a
+  reader; the implementation applies the same test one level earlier, to
+  outliving *this* reader. A weak or absent validator still caches, privately,
+  for the reader's lifetime, which is what §6 promises.
 
 ## 1. Which cache this is
 
@@ -45,7 +60,7 @@ the cache is a decorator: the local backend is used without it.
 ## 3. Block model
 
 ```text
-blockSize        a power of two, default chosen by measurement in v0.3.0
+blockSize        a power of two; 65536 by default, chosen by measurement
 blockIndex       offset / blockSize
 blockRange       [blockIndex * blockSize, (blockIndex + 1) * blockSize)
 ```
@@ -81,6 +96,13 @@ Both numbers are recorded with the measurement that produced them, per
 [METRICS.md](METRICS.md). A tuned constant without a recorded measurement is a
 guess with a decimal point.
 
+They are, and the record is [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md): a
+maximum gap of one block and a maximum merged length of 8 MiB. The record also
+says the thing a tuning document is most tempted to leave out — that at the
+shipped block size the gap does not currently bind on any measured pattern. It
+is 1 because that is the entire measured benefit where the benefit exists, and
+because 2 and 4 were measured and bought nothing anywhere.
+
 ## 5. Single-flight
 
 Concurrent readers that miss the same block issue **one** request. The second
@@ -115,6 +137,12 @@ other validator question belongs to the backend, per §7.1 of
 construct it has become an HTTP cache, and the local backend stops being a
 usable oracle for the cached path.
 
+The key's identity half — identifier, validator, block size — is interned by the
+store, so a per-block lookup costs two integers rather than two string
+comparisons. That is an implementation detail of where the strings live and not
+of what the key is: two readers whose identities compare equal share entries,
+and two whose identities differ never do, which is what this section is about.
+
 The rule that follows is the whole point:
 
 ```text
@@ -131,10 +159,19 @@ reader.
 ## 7. Eviction
 
 - The cache has a bounded memory budget. It never grows to the asset size.
+  128 MiB by default.
 - Eviction is LRU by default, per process, with the budget shared across
   assets so one enormous asset cannot starve the rest of the stage.
 - Eviction is invisible to correctness. An evicted block is re-fetched; it is
   never served stale, and never served zero-filled.
+
+The implementation stripes the store, and the eviction order is therefore LRU
+within a stripe rather than globally. That is a consequence of §5's ban on a
+global lock — a store-wide LRU order needs a store-wide lock on every hit — and
+it is admissible precisely because of the third rule above: eviction is
+invisible to correctness, so an approximate order costs a re-fetch and nothing
+else. The stripe count falls back toward one for a small budget, which makes the
+order exact where a test can see it.
 
 ## 8. Persistence — Planned (`v0.4.0`)
 
@@ -176,3 +213,15 @@ saved by coalescing, requests saved by single-flight, and evictions.
 
 These are not diagnostics. They are the evidence for the project's central
 claim, and a cache change without a before-and-after number is not reviewable.
+
+`v0.3.0` records its before and after in one table:
+[BASELINE.md](../reference/BASELINE.md) measures every scenario twice, with the
+cache and without it, in one run of one harness.
+
+The counters are per reader, and a decorated stack has one reader as far as the
+counters are concerned — the outermost. The two ends of a stack disagree about
+what `bytesRequested` means, so the decorator keeps what the caller asked for
+and takes from the reader underneath only what crossed the transport
+(`ReaderMetrics::AbsorbTransport`). A stack that folded both would compute
+`amplification` over a denominator that is two different measurements added
+together.

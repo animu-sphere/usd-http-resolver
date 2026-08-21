@@ -151,6 +151,16 @@ and not a consistency feature layered on later:
 | Backend, on mismatch | Fail the read with `AssetChanged`; never rebind, never retry into the new revision |
 | Cache (`v0.3.0`) | Key on the validator, so an entry from revision A cannot serve revision B |
 
+The first row of that table is where the word *observes* earns its place. A
+reader that answers from bytes it captured under its own binding — a block cache
+serving a hit — observes nothing, and what it returns is the revision it is
+bound to. That is the guarantee holding, not an exception to it: the failure
+§2.1 exists to prevent is one reader composing bytes from two revisions, and a
+reader that never leaves revision A cannot. `AssetChanged` is reported by the
+layer that reaches the transport, on the reads that reach it. The boundary suite
+states both halves; see
+[BOUNDARY_SUITE.md](../contributing/BOUNDARY_SUITE.md) §3.
+
 A backend that cannot obtain a usable validator is still bound for its
 lifetime — see §7.3 — but the binding is best-effort, and it says so through
 `IdentityStability::Unavailable`.

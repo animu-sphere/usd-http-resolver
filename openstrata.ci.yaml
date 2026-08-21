@@ -86,7 +86,9 @@ cells:
   # exited PRECONDITION_FAILED with "no plugin bundles found in the workspace
   # member set", which is one of the three reasons this file did not exist yet.
   # plugins/http-resolver is the bundle that fixed it, and the rung now reports
-  # 1 bundle, 3 libraries, 3 library edges, valid.
+  # 1 bundle, 4 libraries, 4 library edges, valid -- the fourth library and the
+  # fourth edge are libs/usd-asset-cache and its one permitted edge onto
+  # usdAssetIo, landed in v0.3.0.
   - name: workspace-graph-pr-linux
     kind: workspace
     lane: pull_request

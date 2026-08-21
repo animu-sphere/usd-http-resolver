@@ -5,8 +5,7 @@ module identities, dependency directions, root responsibilities, artifact
 naming, and change invariants. A structural change that contradicts this
 document must change this document first.
 
-Status: everything in §1 exists and is tested except `usdAssetCache`, which is
-`v0.3.0`, and the reserved backends. A directory is created when its first
+Status: everything in §1 exists and is tested except the reserved backends. A directory is created when its first
 tested capability exists; see the [roadmap](../roadmap/README.md).
 
 ## 1. Components
@@ -16,7 +15,7 @@ tested capability exists; see the [roadmap](../roadmap/README.md).
 | `usdAssetIo` | `libs/usd-asset-io` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The transport-independent core: the `AssetReader` random-access contract, `AssetMetadata`, byte-range and validator value types, the typed diagnostic vocabulary, and the metrics counter definitions. Contains no transport, no cache, and no OpenUSD. |
 | `usdAssetLocal` | `libs/usd-asset-local` | plain CMake/OpenStrata static library | implemented (`v0.1.0`) | The local-file backend: positional reads against a file handle, size discovery, and filesystem-derived validators. It is the correctness oracle every other backend is compared against. |
 | `usdAssetHttp` | `libs/usd-asset-http` | plain CMake/OpenStrata static library | implemented (`v0.2.0`) | The HTTP backend: range requests, metadata requests, redirects, timeouts, bounded retry, response framing validation, and validator extraction. Owns the third-party HTTP client dependency; it is the only module that may name one, and it names it privately, in one translation unit, behind an internal transport seam. |
-| `usdAssetCache` | `libs/usd-asset-cache` | plain CMake/OpenStrata static library | planned (`v0.3.0`) | Aligned block caching, read expansion, request coalescing, single-flight de-duplication, eviction under a memory budget, and cache statistics. It is a decorator over `AssetReader`, keyed by an opaque validator. |
+| `usdAssetCache` | `libs/usd-asset-cache` | plain CMake/OpenStrata static library | implemented (`v0.3.0`); persistence is `v0.4.0` | Aligned block caching, read expansion, request coalescing, single-flight de-duplication, eviction under a memory budget, and cache statistics. It is a decorator over `AssetReader`, keyed by an opaque validator. |
 | `http-resolver` | `plugins/http-resolver` | OpenStrata plugin bundle (`usd-asset-resolver`) | implemented (`v0.2.0`); asset-info exposure is `v0.4.0` | The OpenUSD `ArResolver` implementation: URI scheme registration for `http` and `https`, URI normalization, relative and anchored resolution, asset-info exposure, and the `ArAsset` adapter over `AssetReader`. It is the only module that includes an OpenUSD header. Owns its `HTTPxxx` diagnostic codes. |
 | `usdAssetS3`, `usdAssetPackage`, `usdAssetWasm` | `libs/` | plain libraries | reserved, not implemented | Additional backends targeting the unchanged `AssetReader` contract. A backend that cannot be expressed through it is a design question, not a feature request. |
 
@@ -37,8 +36,11 @@ http-resolver   -> usdAssetIo, usdAssetCache, usdAssetLocal, usdAssetHttp
 http-resolver   -> OpenUSD (ar, tf, arch, js, plug, vt)
 ```
 
-What the bundle links today is `usdAssetHttp` and the Ar surface, and nothing
-else on either list. `usdAssetLocal` is permitted and unused: a local path is
+What the bundle links today is `usdAssetHttp`, `usdAssetCache`, and the Ar
+surface, and nothing else on either list. The cache edge is taken as of
+`v0.3.0`: the resolver decorates every asset it opens, and binds it into the
+process-wide block store by the identifier and the validator the backend
+captured. `usdAssetLocal` is permitted and unused: a local path is
 the primary resolver's business, and a URI-scheme resolver that reached for the
 local backend would be answering for paths it does not claim. The `js`, `plug`,
 and `vt` components are what `ar` itself needs in a non-monolithic build; a
@@ -73,12 +75,15 @@ half: a corpus that could name `StatusCode` would start asserting the backend's
 interpretation, and a disagreement between the two would stop being evidence.
 
 Its reverse edges — a test linking both the fixture server and something that
-reads from it — are legal, and there are exactly four:
+reads from it — are legal, and there are exactly five:
 
 ```text
 tests/boundary/backends/boundary_http_main.cpp  -> usdAssetHttp, fixture server
 tests/corpus (usdAssetHttp_test_projection)     -> usdAssetHttp, fixture server
-tests/baseline (usdAssetHttp_baseline)          -> usdAssetHttp, fixture server
+tests/baseline (usdAssetHttp_baseline)          -> usdAssetHttp, usdAssetCache,
+                                                   fixture server
+tests/cache-tuning (usdAssetCache_tuning)       -> usdAssetCache, usdAssetHttp,
+                                                   fixture server
 plugins/http-resolver/tests/test_stage.cpp      -> OpenUSD, fixture server
 ```
 
@@ -97,13 +102,26 @@ server's own raw client besides, because "must not be worse than a plain
 download" needs a plain download performed by a client that is not the one under
 test.
 
-The fourth is the only place in this repository that links OpenUSD and the
+The third also links the cache from `v0.3.0`, because that release is the first
+to change the numbers on purpose and METRICS.md §6 asks a release that changes
+I/O behavior for the counter values before *and* after. One harness, one
+fixture, each scenario twice.
+
+The fourth is the measurement that chose the cache's constants. It needs a
+server for a reason of its own rather than the shared one: the constants are
+about round trips, and a sweep over a local file would be a sweep over a cost
+that does not exist there. It is also the only place that links the cache and a
+backend at once, which is not the cache learning what a transport is — it holds
+an `AssetReader` and nothing else — but a measurement of a stack, made where the
+stack is.
+
+The fifth is the only place in this repository that links OpenUSD and the
 fixture server at once, and it is the one test that can assert the release's
 actual claim: that a `UsdStage` opens over HTTP. It reaches the backend only
 through `ArResolver`, which is the point — a test that linked `usdAssetHttp`
 directly would be asserting the backend again rather than the bundle.
 
-The first three live outside `libs/` rather than in the backend's own tests, and
+The first four live outside `libs/` rather than in a module's own tests, and
 that placement is load-bearing rather than tidy: a module's tests must not
 depend on anything outside `libs/`, or `ost library build libs/usd-asset-http` —
 which builds the module alone — stops working.
@@ -234,6 +252,11 @@ libs/usd-asset-http/src/*.cpp
 libs/usd-asset-cache/src/*.cpp
     Block alignment, coalescing, single-flight, eviction. No transport.
 
+    BlockPlan.h is the arithmetic with no state, no lock, and no reader, and it
+    is separated for the reason ResolveReadRange is separated in usdAssetIo:
+    this is where the off-by-one lives, and it should be checkable without
+    provisioning an asset. It is internal and not installed.
+
 libs/usd-asset-io/include/**
     Contracts only. Header-heavy by design; an implementation that belongs to
     a backend must not appear here. The one thing here that is shared logic
@@ -246,12 +269,19 @@ tests/boundary/src/**
     its oracle on purpose.
 
 tests/baseline/**
-    The recorded I/O baseline: the five scenarios METRICS.md §6 requires, the
-    fixture they run against, and the shape a release record pastes. It asserts
-    byte counts, which are exact, and reports ratios and wall clock, which are
-    about the fixture and the runner. Measurement only -- it owns no read
-    semantics, and a case it would be the first to catch belongs in
-    tests/boundary instead.
+    The recorded I/O baseline: the five scenarios METRICS.md §6 requires,
+    each measured with the cache and without it, the fixture they run against,
+    and the shape a release record pastes. It asserts byte counts, which are
+    exact, and reports ratios and wall clock, which are about the fixture and
+    the runner. Measurement only -- it owns no read semantics, and a case it
+    would be the first to catch belongs in tests/boundary instead.
+
+tests/cache-tuning/**
+    The block-policy measurement: a sweep of block size against coalescing gap
+    over the access patterns METRICS.md §6 names, plus one pattern of its own,
+    which exists because it is the only one in which the gap can bind at all. It
+    chooses constants and asserts correctness; it chooses nothing from wall
+    clock, and says so. Record: reference/BLOCK_POLICY.md.
 
 tests/fixture-server/src/**
     The hostile corpus: a loopback origin, its socket layer, and the request
@@ -292,7 +322,7 @@ The bundle declares `kind: usd-asset-resolver` and
 | `CMakePresets.json` | The `default` (whole repo), `core` (libs only, no OpenUSD), `core-msvc` (the same, through the Visual Studio generator), `core-asan`, and `core-tsan` configure, build, and test presets |
 | `VERSION` | The single source of the release version |
 | `LICENSE`, `NOTICE` | Apache-2.0, and the third-party record the release gate checks |
-| `tests/` | Cross-module tests: the shared boundary suite, which belongs to no single backend; the hostile-server fixture corpus, which belongs to no module because it is the other side of the boundary; and the recorded I/O baseline, which belongs to no module because it measures the whole path |
+| `tests/` | Cross-module tests: the shared boundary suite, which belongs to no single backend; the hostile-server fixture corpus, which belongs to no module because it is the other side of the boundary; the recorded I/O baseline, which belongs to no module because it measures the whole path; and the block-policy sweep, which belongs to no module because it measures a stack |
 | `docs/` | Contracts, plans, and records |
 
 `openstrata.toml` gains a `[workspace] members` declaration once more than one

@@ -8,7 +8,8 @@ belongs to no single module.
 | `boundary/` | The shared boundary suite: the executable form of the read contract, and the thing every backend is admitted by |
 | `fixture-server/` | The hostile-server corpus: a loopback HTTP origin that misbehaves on request, and the conditions only a server can produce |
 | `corpus/` | The projection of each corpus behavior onto the typed vocabulary — which `Behavior` produces which `StatusCode` |
-| `baseline/` | The recorded I/O baseline: the five scenarios METRICS.md §6 requires, measured against a fixture large enough for `selectivity` to mean something |
+| `baseline/` | The recorded I/O baseline: the five scenarios METRICS.md §6 requires, each measured with the cache and without it, against a fixture large enough for `selectivity` to mean something |
+| `cache-tuning/` | The block-policy measurement: a sweep of block size against coalescing gap, which is what chose the cache's constants |
 
 The first three are not the same suite and none substitutes for another. The boundary
 suite carries the correctness argument, over an oracle, for every backend. The
@@ -28,6 +29,33 @@ fails the run.
 ```sh
 ctest --test-dir build/core -R usdAssetHttp_corpus_projection
 ```
+
+## The block-policy sweep
+
+`cache-tuning/` is the other measurement here, and it answers a different
+question from the baseline: not "what does the shipped configuration cost" but
+"why is the shipped configuration that one". §5 of the
+[design policy](../docs/design/DESIGN_POLICY.md) says cache behavior is measured
+before it is tuned, and §4 of [CACHE.md](../docs/architecture/CACHE.md) says the
+coalescing numbers are recorded with the measurement that produced them.
+
+It runs four access patterns through the cache at five block sizes and four
+gaps — sixty-six runs, each against a fresh store — and verifies every byte. The
+verification is the part of it that is a test: the cache runs over a real socket
+at five block sizes, and a block boundary that is wrong at one of them fails the
+lane. The table it prints is the measurement, and the record is
+[BLOCK_POLICY.md](../docs/reference/BLOCK_POLICY.md).
+
+```sh
+ctest --test-dir build/core -R usdAssetCache_block_policy
+USD_ASSET_TUNING_ASSET_BYTES=8388608 ./build/core/tests/cache-tuning/usdAssetCache_tuning
+```
+
+Nothing in it chooses a default from wall clock. Loopback has no round-trip time
+worth the name, and the whole argument for merging small reads is about a
+round-trip time this harness cannot produce; the defaults come from the request
+counts and the byte counts, under a premise about round-trip cost that the
+record states outright and `v0.5.0` is where it gets tested.
 
 ## The baseline
 
@@ -119,6 +147,21 @@ Adding a transport adds a row, not a suite. A row declares four things:
 | Fixture provisioning | The oracle's own file; the suite writes the content |
 | Cancellation | Not admitted -- declared, not skipped |
 | Revision simulation | Admitted: rewrite the file underneath the open reader |
+
+There is a third row, and it is not a transport at all: `cache over local`.
+`backends/boundary_cached_local_main.cpp` runs the whole suite against
+`usdAssetCache` decorating `usdAssetLocal`, which is what makes "byte-for-byte
+equivalence with the uncached path over the full suite" an assertion rather than
+a claim. Its block size is 4096 rather than the shipped 65536, deliberately: the
+suite's interesting offsets are powers of two around 65536, and a block size of
+65536 would put every one of them exactly on a boundary, which is the one case
+block arithmetic never gets wrong. Its budget is small enough that eviction runs
+during the suite rather than sitting unexercised.
+
+It is over the local backend rather than the HTTP one for a reason worth
+stating: a cached row over a socket would be measuring two things at once, and
+the cache knows no transport concept — if this row had needed one, the decorator
+would have acquired knowledge WORKSPACE.md invariant 5 forbids it.
 
 `backends/boundary_local_main.cpp` is the whole of it. The HTTP row is
 `backends/boundary_http_main.cpp` beside it, and it is what the claim above

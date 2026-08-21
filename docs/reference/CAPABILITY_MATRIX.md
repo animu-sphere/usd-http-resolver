@@ -4,13 +4,14 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-08-20, against `main` at `v0.2.0`.
+Last updated: 2026-08-20, against `main` at `v0.3.0`.
 
 ## Summary
 
 **The read contract, the local backend, the shared boundary suite, the
-hostile-server corpus, the HTTP backend, and the `ArResolver` bundle are
-implemented. A `UsdStage` opens over HTTP. There is still no cache.**
+hostile-server corpus, the HTTP backend, the `ArResolver` bundle, and the block
+cache are implemented. A `UsdStage` opens over HTTP, and a clustered read of it
+costs three requests where it used to cost eighteen.**
 
 `libs/usd-asset-io` fixes the `AssetReader` contract, the typed diagnostic
 vocabulary, the validator value types, and the metrics counters.
@@ -45,13 +46,28 @@ emits the `HTTPxxx` codes the diagnostics contract allocated. A consumer opens a
 remote stage with no HTTP code of its own; `httpResolver_test_stage` does
 exactly that against the hostile fixture corpus, over a real socket.
 
-What is still missing is the cache: every read is a request, deliberately, so
-that the request pattern is visible before it is optimized. Identity is captured
-and used but not yet exposed to consumers, which is `v0.4.0`. The release's I/O
-baseline is recorded: `tests/baseline` runs the five scenarios METRICS.md §6
-requires against a 128 MiB fixture on loopback, and the numbers are in
-[BASELINE.md](BASELINE.md). A bounded query moves a quarter of one percent of
-that asset and every byte of it is a byte the caller asked for.
+`libs/usd-asset-cache` is the newest thing here and the first that changes what
+the numbers say. It is a decorator over `AssetReader` and knows no transport
+concept: read expansion to whole blocks, coalescing bounded by a gap and a
+length, single-flight so that N threads missing one block issue one request,
+LRU eviction under a process-wide budget, and a bypass for reads large enough to
+be a streaming pass. It is keyed on the validator from its first commit, so an
+entry from one revision cannot serve a read of another, and it is entered into
+the shared boundary suite as a row — `cache over local`, every case unchanged,
+byte-equivalent to the reader underneath.
+
+The resolver takes it. Every asset the bundle opens is decorated and bound into
+the process store, and the four cache variables in
+[CONFIGURATION.md](CONFIGURATION.md) are read at construction.
+
+What is still missing is persistence: nothing outlives the process, which is
+`v0.4.0`, and so does exposing identity to consumers. The release's I/O baseline
+is recorded twice over, with the cache and without it, in
+[BASELINE.md](BASELINE.md); what chose the cache's constants is
+[BLOCK_POLICY.md](BLOCK_POLICY.md). A clustered header-and-index read went from
+18 requests to 3, eight parallel readers of one asset went from 152 requests to
+25 and now move what one reader moves, and the full sequential read is byte for
+byte and request for request what it was.
 
 The whole tree still builds and tests with
 `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine with no OpenUSD
@@ -111,7 +127,8 @@ not planned                   explicitly out of scope
 | `GetBuffer()` whole-asset materialization | not planned, ever | Returns null by contract; see §4.1 of [RESOLVER.md](../architecture/RESOLVER.md) |
 | Interoperability with whole-buffer FileFormat Plugins | not planned, ever | Incompatible with the remote random-access path by construction |
 | Asset info and identity stability | planned (`v0.4.0`) | `Stable` / `Unstable` / `Unavailable` exposed to consumers |
-| Environment-variable configuration | implemented | The five transport bounds in [CONFIGURATION.md](CONFIGURATION.md); a bad value warns and takes the default |
+| Environment-variable configuration | implemented | All nine variables in [CONFIGURATION.md](CONFIGURATION.md) — five transport bounds and four cache values. A bad value warns and takes the default; an adjusted one warns and takes the adjustment |
+| Block cache under every opened asset | implemented | The bundle decorates every `ArAsset` it hands out and binds it into the process store by identifier and validator |
 | `ArResolverContext` configuration | planned (`v0.6.0`) | Per stage; the environment form is a process-wide bootstrap |
 | Write support | not planned | Fails explicitly |
 
@@ -126,10 +143,12 @@ not planned                   explicitly out of scope
 | `If-Range` with a `Last-Modified` validator | implemented, not covered by the corpus | The fixture server compares `If-Range` only against its `ETag`, so the server-side half cannot be exercised there. Unit-tested against a scripted transport |
 | Revision binding, one reader to one revision | implemented | Both backends. A correctness property of range reads, not of the cache |
 | `AssetChanged` detection | implemented | Local: the file identity re-derived after every transferring read. HTTP: two independent detectors — a `200` answering a conditional range, and a response whose validator or complete length contradicts the capture, including a `416` whose `bytes */<length>` does. Never repaired silently, never rebound |
-| In-memory block cache | planned (`v0.3.0`) | See [CACHE.md](../architecture/CACHE.md); validator-keyed from the start |
-| Request coalescing | planned (`v0.3.0`) | Measured gap and length thresholds |
-| Single-flight de-duplication | planned (`v0.3.0`) | Tested under ThreadSanitizer |
-| Bounded eviction | planned (`v0.3.0`) | Process-wide budget |
+| In-memory block cache | implemented | `libs/usd-asset-cache`, validator-keyed from the first commit. 64 KiB blocks, LRU under a 128 MiB process budget, single-flight, and a 1 MiB bypass. Entered into the boundary suite as its own row |
+| Request coalescing | implemented | Adjacent and near-adjacent blocks merged into one request, bounded by a one-block gap and 8 MiB. Both numbers measured: [BLOCK_POLICY.md](BLOCK_POLICY.md), which also records that the gap does not bind at the shipped block size |
+| Single-flight de-duplication | implemented | Per block, across readers as well as threads. `usdAssetCache_singleflight` races eight of each; the ThreadSanitizer lane is where it means something |
+| Bounded eviction | implemented | LRU under a process-wide budget shared across assets. Striped, so the order is LRU within a stripe — a global order would need a global lock, which §7 of the design policy forbids, and eviction is invisible to correctness |
+| Cache identity shared between readers | implemented | Only for a strong validator. A weak or absent one caches privately for the reader's lifetime and drops on close |
+| Large-read bypass | implemented | A read at least as large as the bypass threshold goes straight to the transport and stores nothing, which is what keeps the full sequential read from regressing |
 | On-disk persistence | planned (`v0.4.0`), may defer | Strong validator only |
 | Content-addressed identity | not planned in v0.x | Revisited only for cross-stage sharing |
 | Generated USD caching | not planned, ever | Owned by the consuming plugin repository |
@@ -142,7 +161,7 @@ not planned                   explicitly out of scope
 | Credential elision in messages and dumps | implemented | Query string and authority userinfo both removed, visibly |
 | `HTTPxxx` plugin codes | implemented | Every code in the table except `HTTP102`, which ADR-0002 defers. Errors as `TF_RUNTIME_ERROR`, cancellation as `TF_WARN`, an impossible request as `TF_CODING_ERROR` |
 | Per-asset I/O counters | implemented | Defined in `usdAssetIo`, populated by both backends, folded into a process aggregate. The HTTP backend populates `requestCount`, `metadataRequestCount`, `retryCount`, `redirectCount`, `bytesRequested`, `bytesTransferred`, and all three latency histograms |
-| Cache counters | defined, not populated | Fields exist and stay at zero until `libs/usd-asset-cache` in `v0.3.0` |
+| Cache counters | implemented | Populated by `libs/usd-asset-cache`, including `bytesOverFetched`, and recorded in [BASELINE.md](BASELINE.md). A decorated stack reports one counter set, the outermost reader's |
 | Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
 | Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr |
 | Recorded baselines | implemented | `tests/baseline`, the five scenarios in METRICS.md §6 against a 128 MiB loopback fixture. The record is [BASELINE.md](BASELINE.md); byte and request counts are asserted, ratios and durations are reported |
@@ -170,7 +189,7 @@ not planned                   explicitly out of scope
 | Redirect scheme-downgrade rejection | implemented | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. Tested in `usdAssetHttp` against a scripted `Location` |
 | Mid-read revision-change tests, HTTP | implemented | Both halves: `ValidatorChangeMidRead` in the corpus projection, and the boundary suite's own republish-underneath-an-open-reader case |
 | No credential in a message, asserted | implemented | The corpus projection opens a failing URL carrying userinfo and a query token and checks the rendered status for both |
-| Amplification baselines | implemented | `tests/baseline`, registered as `usdAssetHttp_io_baseline` so that a byte count which moves fails a lane rather than waiting for a release run. `amplification` is exactly 1.0 in every scenario that moves a byte, because there is no cache to over-fetch |
+| Amplification baselines | implemented | `tests/baseline`, registered as `usdAssetHttp_io_baseline` so that a byte count which moves fails a lane rather than waiting for a release run. each scenario is measured with the cache and without it, which is the before-and-after METRICS.md §6 asks a release that changes I/O behavior for |
 
 ## Consumers
 

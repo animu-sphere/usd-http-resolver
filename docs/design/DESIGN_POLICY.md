@@ -49,11 +49,20 @@ possible later consequences of that abstraction, not inputs to it.
 
 ## 2. Current Assessment
 
-The read contract, the local backend, and the shared boundary suite are
-implemented and passing. No resolver, no transport, and no cache is. The
-contracts under [architecture/](../architecture/) were written before their
-implementation, which is deliberate: the boundary is the product, and it is
-cheaper to fix here than in five consumers.
+The read contract, the local backend, the shared boundary suite, the
+hostile-server corpus, the HTTP backend, the `ArResolver` bundle, and the block
+cache are implemented and passing. What is not is persistence, identity exposed
+to consumers, and every transport after HTTP. The contracts under
+[architecture/](../architecture/) were written before their implementation,
+which is deliberate: the boundary is the product, and it is cheaper to fix here
+than in five consumers — and every one of those implementations has since landed
+against a contract that did not have to move to accept it.
+
+Invariant 11 below is worth checking against the tree rather than assuming, and
+it holds: the cache's block size and coalescing gap come from a recorded sweep
+(`tests/cache-tuning`, [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md)), and the
+two constants in that set that were *not* measured are labelled there as the
+bounds they are rather than presented as tuned values.
 
 The properties to establish, in order, are in the
 [roadmap](../roadmap/README.md). The invariants to preserve from the first
