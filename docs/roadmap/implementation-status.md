@@ -279,6 +279,18 @@ the bound revision — never the new one. That is a strengthening: the byte
 comparison is new, and it would have caught a backend that rebound *and*
 reported `AssetChanged`, which the old case would have passed.
 
+One thing the work surfaced late, in CI rather than locally, and it is the kind
+worth writing down because no local lane can see it. A bundle declares its
+library edges twice — once to the build graph and once in
+`openstrata.plugin.yaml` — and only the second is what `ost plugin build`
+installs into the workspace prefix before configuring the bundle standalone.
+`usdAssetCache` was added to the bundle's CMake and not to its descriptor, which
+builds correctly in-tree, in both local lanes and in `core-ci.yml`, and fails
+exactly the two bundle cells with a `find_package` that cannot be satisfied.
+The rung that would have caught it is `verify: graph`, which counts the edge:
+it now reports 5 library edges where it reported 4. WORKSPACE.md §2 says so
+now, next to the edge list a reader would otherwise trust.
+
 Two smaller things the work surfaced, both recorded where they matter. The
 first is that a decorated stack cannot have two counter sets: the two ends
 disagree about what `bytesRequested` means, and summing them makes

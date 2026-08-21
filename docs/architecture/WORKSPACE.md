@@ -42,7 +42,18 @@ surface, and nothing else on either list. The cache edge is taken as of
 process-wide block store by the identifier and the validator the backend
 captured. `usdAssetLocal` is permitted and unused: a local path is
 the primary resolver's business, and a URI-scheme resolver that reached for the
-local backend would be answering for paths it does not claim. The `js`, `plug`,
+local backend would be answering for paths it does not claim.
+
+A bundle's edges are declared twice and both declarations bind. The root build
+graph resolves them as in-tree targets, and `plugins/http-resolver/openstrata.plugin.yaml`
+declares them again under `requires.libraries` — which is the list
+`ost plugin build` installs into the workspace prefix before it configures the
+bundle standalone. The two are not redundant: a library the bundle links and
+does not declare there builds perfectly in-tree, in every local lane and in
+`core-ci.yml`, and fails only the bundle cells, with a `find_package` that
+cannot be satisfied. `usdAssetHttp` carries `usdAssetIo` transitively;
+`usdAssetCache` is its sibling over `usdAssetIo` and is carried by nothing, so
+it has to be named. The `js`, `plug`,
 and `vt` components are what `ar` itself needs in a non-monolithic build; a
 resolver reads bytes and hands them over, so no `usd` or `usdGeom` component
 appears.
