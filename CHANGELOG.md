@@ -11,9 +11,9 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
-## Unreleased
+## `v0.3.0` - 2026-08-21
 
-`v0.3.0`'s scope, the block cache, is implemented and unreleased. Its definition
+The block-cache release. Its definition
 of success was the table in [BASELINE.md](docs/reference/BASELINE.md) *What the
 next release has to move*, and all four rows moved the way that table asked:
 the clustered header-and-index read went from 18 requests to 3, the bounded
@@ -109,6 +109,9 @@ full sequential read did not move at all.
 ### Fixed
 
 Nothing. No defect in `v0.2.0` was found by this work.
+
+The immutable release record is
+[docs/releases/v0.3.0.md](docs/releases/v0.3.0.md).
 
 ## `v0.2.0` — 2026-08-20
 

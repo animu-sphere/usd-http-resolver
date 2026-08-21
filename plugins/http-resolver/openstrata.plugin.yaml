@@ -8,7 +8,7 @@ manifest:
   schema: openstrata.plugin/v1alpha1
 plugin:
   name: http-resolver
-  version: 0.2.0
+  version: 0.3.0
   kind: usd-asset-resolver
 license: Apache-2.0
 runtime:
