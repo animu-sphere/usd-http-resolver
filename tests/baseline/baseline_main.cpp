@@ -40,6 +40,9 @@
 #include <thread>
 #include <vector>
 
+#include "usdAssetCache/BlockCache.h"
+#include "usdAssetCache/CacheOptions.h"
+#include "usdAssetCache/CachedAssetReader.h"
 #include "usdAssetHttp/HttpAssetReader.h"
 #include "usdAssetIo/Metrics.h"
 #include "usdassetfixture/Corpus.h"
@@ -55,8 +58,12 @@ using usdasset::AssetReader;
 using usdasset::MetricsRegistry;
 using usdasset::MetricsSnapshot;
 using usdasset::ReadResult;
+using usdasset::cache::BlockCache;
+using usdasset::cache::CacheOptions;
+using usdasset::cache::CachedAssetReader;
 using usdasset::http::HttpAssetReader;
 using usdasset::http::HttpOpenResult;
+using usdassetfixture::RequestRecord;
 using usdassetbaseline::RunContext;
 using usdassetbaseline::ScenarioRecord;
 using usdassetfixture::AssetSpec;
@@ -288,6 +295,116 @@ std::unique_ptr<HttpAssetReader> OpenOrReport(const Fixture& fixture) {
     return std::move(opened.reader);
 }
 
+/// One reader, with or without the cache over it.
+///
+/// Every scenario is measured both ways, because METRICS.md section 6 asks a
+/// release that changes I/O behavior to record "the counter values before and
+/// after" -- and `v0.3.0` is the release that changes them on purpose. A record
+/// carrying only the after would leave gate 6 comparing this release's table
+/// against a document rather than against a run.
+struct Stack {
+    std::unique_ptr<BlockCache> store;  ///< Null when uncached, or when shared.
+    std::unique_ptr<HttpAssetReader> http;
+    std::unique_ptr<CachedAssetReader> cached;
+    AssetReader* reader = nullptr;
+
+    MetricsSnapshot Snapshot() const {
+        return cached ? cached->SnapshotMetrics() : http->Metrics().Snapshot();
+    }
+};
+
+/// The cache's shipped defaults, for the reason the transport's are used: a
+/// baseline measured with a block size no caller gets is a baseline about a
+/// configuration that does not ship. What chose them is
+/// docs/reference/BLOCK_POLICY.md.
+CacheOptions BaselineCacheOptions() { return CacheOptions().Normalized(); }
+
+/// Opens into `stack`, sharing `store` when one is given -- which is what the
+/// parallel-readers scenario needs and what every other scenario must not have.
+bool OpenStack(const Fixture& fixture, bool cached, BlockCache* shared, Stack* stack) {
+    std::unique_ptr<HttpAssetReader> http = OpenOrReport(fixture);
+    if (!http) return false;
+
+    if (!cached) {
+        stack->http = std::move(http);
+        stack->reader = stack->http.get();
+        return true;
+    }
+
+    BlockCache* store = shared;
+    if (store == nullptr) {
+        // A store per scenario, so that no scenario is warmed by the one above
+        // it. The process store would make this table a function of the order
+        // the rows happen to be written in.
+        stack->store.reset(new BlockCache(BaselineCacheOptions()));
+        store = stack->store.get();
+    }
+
+    usdasset::ReaderMetrics* innerMetrics = &http->Metrics();
+    usdasset::cache::CachedOpenResult wrapped = usdasset::cache::Wrap(
+        std::unique_ptr<AssetReader>(http.release()), innerMetrics,
+        BaselineCacheOptions(), store);
+    if (!wrapped.reader) {
+        std::fprintf(stderr, "FAIL: wrap: %s\n",
+                     usdasset::ToString(wrapped.status).c_str());
+        ++usdassettest::FailureCount();
+        return false;
+    }
+    stack->cached = std::move(wrapped.reader);
+    stack->reader = stack->cached.get();
+    return true;
+}
+
+/// The content bytes the server was asked for, read off its own log.
+///
+/// The independent witness for a cached run. With no cache, "n bytes requested
+/// is n bytes transferred" was itself the check; with one, the expected
+/// transfer is a function of the block policy, and asserting the backend's
+/// counter against a number this file computed from the same policy would be
+/// asserting the policy against itself. The server logged the ranges it
+/// answered, and that is a different measurement of the same fact.
+std::uint64_t RangeBytesFromLog(const std::vector<RequestRecord>& log) {
+    std::uint64_t total = 0;
+    for (const RequestRecord& record : log) {
+        if (record.range.empty()) continue;  // The HEAD an open costs.
+        const std::size_t equals = record.range.find('=');
+        if (equals == std::string::npos) continue;
+        const std::size_t dash = record.range.find('-', equals + 1);
+        if (dash == std::string::npos) continue;
+        const std::uint64_t first =
+            std::strtoull(record.range.c_str() + equals + 1, nullptr, 10);
+        const std::uint64_t last =
+            std::strtoull(record.range.c_str() + dash + 1, nullptr, 10);
+        if (last < first) continue;
+        total += last - first + 1;
+    }
+    return total;
+}
+
+/// The counter assertions the cached runs share.
+///
+/// Deliberately not the uncached ones with a tolerance added. With a cache the
+/// rule "a read of n bytes moves exactly n bytes" is gone by design, so what is
+/// asserted here is what is still exactly true: the caller's ask, the metadata
+/// cost, that nothing retried or redirected, and that the backend and the
+/// server agree about both the request count and the byte count. The rest of
+/// the release's claim -- fewer requests than the uncached run -- is asserted
+/// per scenario against that scenario's own uncached row, because that
+/// comparison is what the claim is made of.
+void CheckCachedShape(const MetricsSnapshot& metrics,
+                      const std::vector<RequestRecord>& log,
+                      std::uint64_t serverRequests,
+                      std::uint64_t expectedBytes,
+                      std::uint64_t readers) {
+    CHECK_EQ(metrics.bytesRequested, expectedBytes);
+    CHECK_EQ(metrics.metadataRequestCount, readers);
+    CHECK_EQ(metrics.retryCount, std::uint64_t{0});
+    CHECK_EQ(metrics.redirectCount, std::uint64_t{0});
+    CHECK_EQ(serverRequests, metrics.requestCount);
+    CHECK_EQ(metrics.bytesTransferred, RangeBytesFromLog(log));
+    CHECK(metrics.bytesFromCache <= metrics.bytesRequested);
+}
+
 /// Every counter in METRICS.md §2.2, not the two a scenario happens to think
 /// about.
 ///
@@ -346,25 +463,58 @@ std::uint64_t ServerRequests(const Server& server) {
 }
 
 // --- the scenarios -----------------------------------------------------------
+//
+// Each one runs twice: once against the transport alone, and once with the
+// block cache over it. The uncached run keeps the assertions `v0.2.0` recorded
+// -- a read of n bytes is one request that moves exactly n bytes -- and is
+// still the regression gate for the transport. The cached run asserts what is
+// still exactly true with a cache in the stack, and then asserts the release's
+// actual claim against the uncached run beside it: fewer requests, and a worst
+// case that did not move.
+
+/// The name a row carries in the record. The suffix is part of the name rather
+/// than a column, so that a release record's table can be pasted and read
+/// without a legend.
+std::string RowName(const char* base, bool cached) {
+    return cached ? std::string(base) + " (cached)" : std::string(base);
+}
 
 /// METRICS.md §6, row 1: the cost of merely resolving.
-ScenarioRecord MetadataOnlyOpen(const Fixture& fixture, Server& server) {
+ScenarioRecord MetadataOnlyOpen(const Fixture& fixture,
+                                Server& server,
+                                bool cached,
+                                const MetricsSnapshot* uncached) {
     ScenarioRecord record;
-    record.name = "metadata-only open";
+    record.name = RowName("metadata-only open", cached);
+    record.cached = cached;
     record.exercises =
         "`openLatency`, `metadataRequestCount` — the cost of merely resolving";
 
     server.ClearLog();
     const Clock::time_point started = Clock::now();
-    std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
+    Stack stack;
+    if (!OpenStack(fixture, cached, nullptr, &stack)) {
+        record.wallMs = ElapsedMs(started);
+        return record;
+    }
     record.wallMs = ElapsedMs(started);
-    if (!reader) return record;
-
-    record.metrics = reader->Metrics().Snapshot();
+    record.metrics = stack.Snapshot();
 
     CHECK_EQ(record.metrics.assetSize, fixture.size);
-    CHECK(reader->Metadata().supportsRandomAccess);
-    CheckUncachedShape(record.metrics, ServerRequests(server), 0, 0, 1);
+    CHECK(stack.reader->Metadata().supportsRandomAccess);
+    if (cached) {
+        CheckCachedShape(record.metrics, server.Log(), ServerRequests(server), 0, 1);
+        // A cache changes what a read costs and must not change what an open
+        // costs. Wrapping a reader issues no request of its own, and a stack
+        // that bound its store by asking the server something would show up
+        // here as a second request.
+        CHECK_EQ(record.metrics.requestCount, std::uint64_t{1});
+        if (uncached != nullptr) {
+            CHECK_EQ(record.metrics.requestCount, uncached->requestCount);
+        }
+    } else {
+        CheckUncachedShape(record.metrics, ServerRequests(server), 0, 0, 1);
+    }
 
     // The one request, named by the server rather than by the counter that
     // classified it. "No content byte crosses the transport" is a property of
@@ -375,80 +525,119 @@ ScenarioRecord MetadataOnlyOpen(const Fixture& fixture, Server& server) {
         CHECK(log[0].method == "HEAD");
         CHECK(log[0].range.empty());
     }
-    // The one request an open costs is the metadata request, and it moves no
-    // content. A backend that read a byte to discover a size would show up here
-    // and nowhere else.
     CHECK_EQ(record.metrics.openLatency.count, std::uint64_t{1});
 
     record.note =
-        "One `HEAD`. No content byte crosses the transport, and the reader is "
-        "bound to a revision before any read is issued";
+        cached ? "One `HEAD`, unchanged. Binding a store costs no request, which "
+                 "is why this row is the one row the cache does not move"
+               : "One `HEAD`. No content byte crosses the transport, and the "
+                 "reader is bound to a revision before any read is issued";
     return record;
 }
 
 /// METRICS.md §6, row 2: the clustered small-read pattern the block cache exists
 /// for.
-ScenarioRecord HeaderAndIndexRead(const Fixture& fixture, Server& server) {
+ScenarioRecord HeaderAndIndexRead(const Fixture& fixture,
+                                  Server& server,
+                                  bool cached,
+                                  const MetricsSnapshot* uncached) {
     ScenarioRecord record;
-    record.name = "header and index read";
+    record.name = RowName("header and index read", cached);
+    record.cached = cached;
     record.exercises = "The clustered small-read pattern the block cache exists for";
 
     server.ClearLog();
     const Clock::time_point started = Clock::now();
-    std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) {
+    Stack stack;
+    if (!OpenStack(fixture, cached, nullptr, &stack)) {
         record.wallMs = ElapsedMs(started);
         return record;
     }
 
     std::vector<unsigned char> buffer;
-    bool ok = ReadChecked(*reader, 0, kHeaderBytes, &buffer);
+    bool ok = ReadChecked(*stack.reader, 0, kHeaderBytes, &buffer);
     for (int i = 0; ok && i < kIndexReads; ++i) {
         const std::uint64_t offset = fixture.size - kIndexBytes +
                                      kIndexReadBytes * static_cast<std::uint64_t>(i);
-        ok = ReadChecked(*reader, offset, kIndexReadBytes, &buffer);
+        ok = ReadChecked(*stack.reader, offset, kIndexReadBytes, &buffer);
     }
     record.wallMs = ElapsedMs(started);
-    record.metrics = reader->Metrics().Snapshot();
+    record.metrics = stack.Snapshot();
     if (!ok) return record;
+
+    if (cached) {
+        CheckCachedShape(record.metrics, server.Log(), ServerRequests(server),
+                         kHeaderBytes + kIndexBytes, 1);
+        // The release's claim, on the pattern it is made about.
+        if (uncached != nullptr) {
+            CHECK(record.metrics.requestCount < uncached->requestCount);
+        }
+        CHECK(record.metrics.blockHits > 0);
+        record.note =
+            "The same seventeen reads, collapsed onto " +
+            std::to_string(record.metrics.requestCount - 1) +
+            " block fetches. The bytes the alignment moved beyond the reads are "
+            "`bytesOverFetched`, and the reads that never reached the transport "
+            "are `blockHits`";
+        return record;
+    }
 
     CheckUncachedShape(record.metrics, ServerRequests(server),
                        kHeaderBytes + kIndexBytes,
                        1 + static_cast<std::uint64_t>(kIndexReads), 1);
-
     record.note = "One 4 KiB header read and " + std::to_string(kIndexReads) +
-                  " adjacent 4 KiB index reads. Every one of them is its own "
-                  "request today, which is the number `v0.3.0` exists to collapse";
+                  " adjacent 4 KiB index reads, each its own request";
     return record;
 }
 
 /// METRICS.md §6, row 3: `selectivity`, the headline claim.
-ScenarioRecord BoundedSpatialQuery(const Fixture& fixture, Server& server) {
+ScenarioRecord BoundedSpatialQuery(const Fixture& fixture,
+                                   Server& server,
+                                   bool cached,
+                                   const MetricsSnapshot* uncached) {
     ScenarioRecord record;
-    record.name = "bounded spatial query";
+    record.name = RowName("bounded spatial query", cached);
+    record.cached = cached;
     record.exercises = "`selectivity` — the headline claim";
 
     server.ClearLog();
     const Clock::time_point started = Clock::now();
-    std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) {
+    Stack stack;
+    if (!OpenStack(fixture, cached, nullptr, &stack)) {
         record.wallMs = ElapsedMs(started);
         return record;
     }
 
-    const bool ok = ReadBoundedQuery(*reader, fixture);
+    const bool ok = ReadBoundedQuery(*stack.reader, fixture);
     record.wallMs = ElapsedMs(started);
-    record.metrics = reader->Metrics().Snapshot();
+    record.metrics = stack.Snapshot();
     if (!ok) return record;
+
+    if (cached) {
+        CheckCachedShape(record.metrics, server.Log(), ServerRequests(server),
+                         kBoundedQueryBytes, 1);
+        if (uncached != nullptr) {
+            CHECK(record.metrics.requestCount <= uncached->requestCount);
+        }
+        // The bound this row is gated on now that alignment is allowed to move
+        // more than was asked for: one block per read, and no more. A coalescing
+        // window that widened, or a read-ahead nobody asked for, is a byte count
+        // above this.
+        const std::uint64_t blockSize = BaselineCacheOptions().blockSize;
+        CHECK(record.metrics.bytesTransferred <=
+              kBoundedQueryBytes + blockSize * (kBoundedQueryReads + 1));
+        record.note =
+            "The same query, with every read expanded to whole blocks: " +
+            std::to_string(record.metrics.bytesTransferred) +
+            " bytes moved against an asset of " + std::to_string(fixture.size) +
+            ". `selectivity` is worse than the uncached row on purpose -- that is "
+            "what alignment costs, and `bytesOverFetched` is the counter for it";
+        return record;
+    }
 
     CheckUncachedShape(record.metrics, ServerRequests(server), kBoundedQueryBytes,
                        kBoundedQueryReads, 1);
-
-    // The amplification gate, and the reason this file exists. An absolute byte
-    // budget rather than a ratio: the ratio moves with the fixture size, and a
-    // gate that moved with it would stop catching the thing it is for.
     CHECK(record.metrics.bytesTransferred <= kBoundedQueryBytes);
-
     record.note = "A header, a tail index, and " + std::to_string(kChunkReads) +
                   " scattered 16 KiB chunks: " + std::to_string(kBoundedQueryBytes) +
                   " bytes moved to answer a query against an asset of " +
@@ -465,18 +654,25 @@ ScenarioRecord BoundedSpatialQuery(const Fixture& fixture, Server& server) {
 /// comparison mean anything, and it is already in this repository for that
 /// reason. What it is not is a performance-matched client: it reads 4 KiB at a
 /// time, so its wall clock flatters the backend and is recorded rather than
-/// gated. Its *byte* count flatters nobody, and that is what is gated: a ranged
-/// full read must put no more content on the wire than a plain download of the
-/// same asset.
-ScenarioRecord FullSequentialRead(const Fixture& fixture, Server& server) {
+/// gated. Its *byte* count flatters nobody, and that is what is gated.
+///
+/// This is the row a cache is most able to damage, and the one `BASELINE.md`
+/// says must not regress: a cache that turns the worst case into a worse case
+/// has the wrong policy. The bypass rule in CACHE.md §3 is what keeps it, and
+/// the cached run is where that is checked rather than asserted.
+ScenarioRecord FullSequentialRead(const Fixture& fixture,
+                                  Server& server,
+                                  bool cached,
+                                  const MetricsSnapshot* uncached) {
     ScenarioRecord record;
-    record.name = "full sequential read";
+    record.name = RowName("full sequential read", cached);
+    record.cached = cached;
     record.exercises = "The worst case; must not be worse than a plain download";
 
     server.ClearLog();
     const Clock::time_point started = Clock::now();
-    std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-    if (!reader) {
+    Stack stack;
+    if (!OpenStack(fixture, cached, nullptr, &stack)) {
         record.wallMs = ElapsedMs(started);
         return record;
     }
@@ -488,18 +684,33 @@ ScenarioRecord FullSequentialRead(const Fixture& fixture, Server& server) {
     while (ok && offset < fixture.size) {
         const std::uint64_t size =
             std::min(kSequentialChunkBytes, fixture.size - offset);
-        ok = ReadChecked(*reader, offset, size, &buffer);
+        ok = ReadChecked(*stack.reader, offset, size, &buffer);
         offset += size;
         ++reads;
     }
     record.wallMs = ElapsedMs(started);
-    record.metrics = reader->Metrics().Snapshot();
+    record.metrics = stack.Snapshot();
     if (!ok) return record;
 
     // Read before the comparator issues its own request, which the backend did
     // not make.
-    CheckUncachedShape(record.metrics, ServerRequests(server), fixture.size, reads,
-                       1);
+    if (cached) {
+        CheckCachedShape(record.metrics, server.Log(), ServerRequests(server),
+                         fixture.size, 1);
+        if (uncached != nullptr) {
+            // Not "no worse by some margin" -- identical. Every read here is
+            // larger than `bypassThresholdBytes` and never reaches the store, so
+            // a request count or a byte count that differs from the uncached row
+            // at all means the bypass stopped applying.
+            CHECK_EQ(record.metrics.requestCount, uncached->requestCount);
+            CHECK_EQ(record.metrics.bytesTransferred, uncached->bytesTransferred);
+        }
+        CHECK_EQ(record.metrics.bytesOverFetched, std::uint64_t{0});
+        CHECK_EQ(record.metrics.blockMisses, std::uint64_t{0});
+    } else {
+        CheckUncachedShape(record.metrics, ServerRequests(server), fixture.size,
+                           reads, 1);
+    }
 
     // The plain download, over a client that is not the one under test.
     const Clock::time_point downloadStarted = Clock::now();
@@ -509,10 +720,6 @@ ScenarioRecord FullSequentialRead(const Fixture& fixture, Server& server) {
 
     CHECK_EQ(plain.status, 200);
     CHECK_EQ(static_cast<std::uint64_t>(plain.body.size()), fixture.size);
-    // The gate: ranged reading moved no more content than downloading the whole
-    // asset in one request did. Headers are outside both sides of it -- the
-    // counter is a content counter -- and the request count is where the
-    // per-request overhead is visible instead.
     CHECK(record.metrics.bytesTransferred <=
           static_cast<std::uint64_t>(plain.body.size()));
 
@@ -521,21 +728,28 @@ ScenarioRecord FullSequentialRead(const Fixture& fixture, Server& server) {
                   "%llu reads of %llu MiB against one plain `GET` of the whole "
                   "asset over the fixture server's own raw client: identical "
                   "content bytes, %llu requests against 1, %.1f ms against "
-                  "%.1f ms. The comparator reads 4 KiB at a time, so the times "
-                  "are recorded and not gated",
+                  "%.1f ms.%s",
                   static_cast<unsigned long long>(reads),
                   static_cast<unsigned long long>(kSequentialChunkBytes /
                                                   (1024 * 1024)),
                   static_cast<unsigned long long>(record.metrics.requestCount),
-                  record.wallMs, downloadMs);
+                  record.wallMs, downloadMs,
+                  cached ? " Every read bypassed the cache, so this row is the "
+                           "uncached row and is asserted to be"
+                         : " The comparator reads 4 KiB at a time, so the times "
+                           "are recorded and not gated");
     record.note = note;
     return record;
 }
 
 /// METRICS.md §6, row 5: parallel readers on one asset.
-ScenarioRecord ParallelReaders(const Fixture& fixture, Server& server) {
+ScenarioRecord ParallelReaders(const Fixture& fixture,
+                               Server& server,
+                               bool cached,
+                               const MetricsSnapshot* uncached) {
     ScenarioRecord record;
-    record.name = "parallel readers";
+    record.name = RowName("parallel readers", cached);
+    record.cached = cached;
     record.exercises = "`requestsSavedBySingleFlight`, contention";
 
     server.ClearLog();
@@ -546,14 +760,21 @@ ScenarioRecord ParallelReaders(const Fixture& fixture, Server& server) {
     // first, so nothing an earlier scenario folded lands in this row.
     MetricsRegistry::Instance().ResetForTesting();
 
+    // One store between the eight of them, which is the whole question this row
+    // asks. A store per reader would make eight readers of one revision eight
+    // times the traffic, which is the number `v0.2.0` recorded and this release
+    // exists to move.
+    std::unique_ptr<BlockCache> shared;
+    if (cached) shared.reset(new BlockCache(BaselineCacheOptions()));
+
     const Clock::time_point started = Clock::now();
     std::vector<std::thread> threads;
     threads.reserve(kParallelReaders);
     for (int i = 0; i < kParallelReaders; ++i) {
-        threads.emplace_back([&fixture] {
-            std::unique_ptr<HttpAssetReader> reader = OpenOrReport(fixture);
-            if (!reader) return;
-            ReadBoundedQuery(*reader, fixture);
+        threads.emplace_back([&fixture, cached, &shared] {
+            Stack stack;
+            if (!OpenStack(fixture, cached, shared.get(), &stack)) return;
+            ReadBoundedQuery(*stack.reader, fixture);
         });
     }
     for (std::thread& thread : threads) thread.join();
@@ -565,16 +786,42 @@ ScenarioRecord ParallelReaders(const Fixture& fixture, Server& server) {
     // `selectivity` is about it.
     record.metrics.assetSize = fixture.size;
 
+    if (cached) {
+        CheckCachedShape(record.metrics, server.Log(), ServerRequests(server),
+                         kBoundedQueryBytes * kParallelReaders, kParallelReaders);
+        if (uncached != nullptr) {
+            CHECK(record.metrics.requestCount < uncached->requestCount);
+        }
+        // The counter the row is named after. Zero here would mean eight readers
+        // each fetched their own copy and the store's identity did not match --
+        // which is the failure this release's cache key exists to prevent.
+        CHECK(record.metrics.requestsSavedBySingleFlight +
+                  record.metrics.blockHits >
+              0);
+        record.note =
+            std::to_string(kParallelReaders) +
+            " readers running the bounded query at once, each with its own "
+            "revision binding and all of them sharing one store. What they no "
+            "longer share is the traffic: " +
+            std::to_string(record.metrics.requestCount) + " requests against " +
+            (uncached != nullptr ? std::to_string(uncached->requestCount)
+                                 : std::string("the uncached row")) +
+            ". `requestsSavedBySingleFlight` is " +
+            std::to_string(record.metrics.requestsSavedBySingleFlight) +
+            " and `blockHits` is " + std::to_string(record.metrics.blockHits) +
+            ": those count blocks a reader did not have to fetch, not requests, "
+            "so they do not subtract to the difference above and are not meant to";
+        return record;
+    }
+
     CheckUncachedShape(record.metrics, ServerRequests(server),
                        kBoundedQueryBytes * kParallelReaders,
                        kBoundedQueryReads * kParallelReaders, kParallelReaders);
-
     record.note = std::to_string(kParallelReaders) +
                   " readers running the bounded query at once, each with its own "
                   "revision binding. Every request is issued " +
                   std::to_string(kParallelReaders) +
-                  " times, because nothing is shared between readers yet; that is "
-                  "the figure `requestsSavedBySingleFlight` has to move in `v0.3.0`";
+                  " times, because nothing is shared between readers";
     return record;
 }
 
@@ -651,12 +898,25 @@ int main(int argc, char** argv) {
     fixture.url = server->Url(kAssetPath);
     fixture.size = assetBytes;
 
+    // Uncached first, then the same scenario cached, so that each pair sits
+    // together in the table and the cached run has the uncached row to assert
+    // against. That ordering is the record's whole shape: METRICS.md section 6
+    // asks a release that changes I/O behavior for the values before and after,
+    // and this release changes them on purpose.
     std::vector<ScenarioRecord> records;
-    records.push_back(MetadataOnlyOpen(fixture, *server));
-    records.push_back(HeaderAndIndexRead(fixture, *server));
-    records.push_back(BoundedSpatialQuery(fixture, *server));
-    records.push_back(FullSequentialRead(fixture, *server));
-    records.push_back(ParallelReaders(fixture, *server));
+    // Reserved so that the pointer each cached run is given into the row above
+    // it cannot be invalidated by the push that follows.
+    records.reserve(10);
+    records.push_back(MetadataOnlyOpen(fixture, *server, false, nullptr));
+    records.push_back(MetadataOnlyOpen(fixture, *server, true, &records[0].metrics));
+    records.push_back(HeaderAndIndexRead(fixture, *server, false, nullptr));
+    records.push_back(HeaderAndIndexRead(fixture, *server, true, &records[2].metrics));
+    records.push_back(BoundedSpatialQuery(fixture, *server, false, nullptr));
+    records.push_back(BoundedSpatialQuery(fixture, *server, true, &records[4].metrics));
+    records.push_back(FullSequentialRead(fixture, *server, false, nullptr));
+    records.push_back(FullSequentialRead(fixture, *server, true, &records[6].metrics));
+    records.push_back(ParallelReaders(fixture, *server, false, nullptr));
+    records.push_back(ParallelReaders(fixture, *server, true, &records[8].metrics));
 
     RunContext context;
     context.assetBytes = assetBytes;

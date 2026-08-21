@@ -166,6 +166,10 @@ appears in any diagnostic.
 
 The release that makes the architecture perform rather than merely work.
 
+Status: implemented and unreleased. All four exit criteria below are met, the
+sanitizer lanes included. What has not happened is the release gate; see
+[implementation status](implementation-status.md).
+
 Scope: an aligned block cache; read expansion to block boundaries; coalescing
 of adjacent and near-adjacent block fetches into one request; single-flight so
 that N threads missing the same block issue one request; eviction with a

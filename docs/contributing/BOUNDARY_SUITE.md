@@ -9,8 +9,11 @@ Wasm — is admitted by.
 This document fixes what the suite must contain and how a backend is entered
 into it.
 
-Status: implemented in `tests/boundary`, with the local backend entered as its
-first row. The fixed cases in §3, the property cases in §4, the concurrency
+Status: implemented in `tests/boundary`, with three rows entered: the local
+backend, the HTTP backend, and the block cache over the local backend. The third
+is not a fourth transport — the cache is a decorator — and it is what makes
+"byte-for-byte equivalence with the uncached path over the full suite" an
+assertion rather than a claim. The fixed cases in §3, the property cases in §4, the concurrency
 cases, and the sanitizer builds in §5 all pass — the last of these under the
 `sanitizers` job in `.github/workflows/core-ci.yml`, and first recorded locally
 in [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
@@ -77,12 +80,29 @@ Every backend runs all of these, unchanged:
 | Concurrent reads on one reader | No interleaving of one caller's bytes into another's buffer |
 | Short read below EOF | `InvalidResponse` — never a hole, never a silent truncation |
 | Cancellation | `Cancelled` promptly, where the backend admits cancellation |
-| Mid-read revision change | `AssetChanged`, never mixed bytes, for backends that can simulate it |
+| Mid-read revision change | `AssetChanged` on a read that reaches the transport; never the new revision's bytes on one that does not. For backends that can simulate it |
 
 The last two rows are conditional on the backend, and the condition is declared
 by the backend's entry in the suite rather than discovered by a skipped test. A
 backend that cannot simulate a revision change says so; the local backend can
 (rewrite the file underneath an open reader) and does.
+
+The revision row is stated in two halves because a decorator forced the
+distinction, and the distinction was always there. §2.1 of
+[ASSET_READER.md](../architecture/ASSET_READER.md) says a reader that
+*observes* a changed validator fails subsequent reads. A read that reaches the
+transport observes; a read a block cache answers from bytes it captured under
+the same binding observes nothing, and what it hands back is the revision the
+reader is bound to — which is the guarantee rather than an exception to it. So
+the case asserts `AssetChanged` at an offset the reader has not read before, and
+for a range it has already read it asserts the thing that is true of every
+backend: either `AssetChanged`, or byte-for-byte what the first read returned.
+Never revision B.
+
+That is a strengthening and not a relaxation. Before `v0.3.0` the case compared
+a status and nothing else, and a backend that had quietly rebound and returned
+the new revision's bytes *with* an `AssetChanged` code would have passed it. The
+byte comparison is new, and every row passes it unchanged.
 
 Asset sizes are chosen so that these cases are distinct: at minimum an empty
 asset, a one-byte asset, an asset smaller than one block, an asset exactly one

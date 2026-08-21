@@ -10,14 +10,17 @@ the summary is a documentation bug. When a summary disagrees with
 workspace contract wins; structural changes must update that contract first.
 
 This repository is at `v0.2.0`, released 2026-08-20; its
-[record](releases/v0.2.0.md) states what shipped and what did not. The read
-contract, the local backend, the shared boundary suite, the hostile-server
-corpus, the HTTP backend, and the `ArResolver` bundle are implemented, and a
-`UsdStage` opens over HTTP; no cache is. What the tree actually contains is
-stated in [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md), and
-what a bounded query costs is in
-[reference/BASELINE.md](reference/BASELINE.md); everything else here is contract
-and plan.
+[record](releases/v0.2.0.md) states what shipped and what did not. `v0.3.0` is
+in the tree and unreleased: the block cache, its measured constants, and the
+resolver that now decorates every asset it opens. The read contract, the local
+backend, the shared boundary suite, the hostile-server corpus, the HTTP backend,
+the `ArResolver` bundle, and the cache are implemented, and a `UsdStage` opens
+over HTTP. What the tree actually contains is stated in
+[reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md), what a bounded
+query costs is in [reference/BASELINE.md](reference/BASELINE.md), and why the
+cache's constants are what they are is in
+[reference/BLOCK_POLICY.md](reference/BLOCK_POLICY.md); everything else here is
+contract and plan.
 
 | Category | Answers | Start here |
 | --- | --- | --- |
@@ -60,7 +63,11 @@ and plan.
 - [reference/BASELINE.md](reference/BASELINE.md) is the current recorded I/O
   baseline: the five scenarios METRICS.md §6 requires, the fixture they ran
   against, and what is asserted rather than merely reported. A release record
-  copies it at its tag; it is rewritten whenever I/O behavior changes.
+  copies it at its tag; it is rewritten whenever I/O behavior changes. From
+  `v0.3.0` it holds every scenario twice, with the cache and without it.
+- [reference/BLOCK_POLICY.md](reference/BLOCK_POLICY.md) is the measurement that
+  chose the cache's block size and coalescing gap, the reasoning from it, and
+  the two constants it labels as bounds rather than tuned values.
 
 ## The one-sentence contract
 

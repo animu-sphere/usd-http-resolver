@@ -42,6 +42,13 @@ struct ScenarioRecord {
     std::string exercises;  ///< The METRICS.md §6 column, in that table's words.
     usdasset::MetricsSnapshot metrics;
 
+    /// Whether the block cache was in the stack.
+    ///
+    /// Carried as a field rather than read off the end of `name`, so that the
+    /// cache-counter table below is selected by what was measured rather than
+    /// by how it was spelled.
+    bool cached = false;
+
     /// Wall clock for the whole scenario, open included. Reported and never
     /// asserted: it is a loopback number on whatever runner drew the job, and a
     /// gate on it would fail for reasons that are not this repository's.

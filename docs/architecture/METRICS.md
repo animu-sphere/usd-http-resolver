@@ -8,15 +8,28 @@ lifetime and process aggregate in §3, and the environment-keyed dump in §5 are
 implemented in `libs/usd-asset-io` (`usdAssetIo/Metrics.h`) and populated by both
 backends. The HTTP counters populate, including the requests issued by validator
 capture and by conditional range requests, and `retryCount` and `redirectCount`
-are asserted from tests rather than assumed. The cache counters in §2.2 are
-defined and stay at zero until `v0.3.0`.
+are asserted from tests rather than assumed. The cache counters in §2.2 populate
+from `v0.3.0`, out of `libs/usd-asset-cache`.
+
+A note the cache made necessary. Counters are per reader, and a decorated stack
+has one counter set as far as this document is concerned: the outermost
+reader's. The two ends of a stack disagree about what `bytesRequested` means —
+to the cache it is what the caller asked for, to the reader underneath it is
+what the cache asked for expanded to whole blocks — so the outer set keeps the
+caller's ask and the cache's service, and takes from the inner set only what
+crossed the transport. A stack that folded both would compute `amplification`
+over a denominator that is two different measurements added together.
 
 The baselines in §6 are recorded. `v0.2.0` is the first release that *could*
 record one — bytes now cross a network — and the fixture that was missing exists:
 `tests/baseline` serves one synthetic asset of 128 MiB, which is where
 `selectivity` starts meaning something and the kilobyte corpus assets stopped.
 The current record is [BASELINE.md](../reference/BASELINE.md); a release record
-copies it at its tag.
+copies it at its tag. From `v0.3.0` it holds each scenario twice, with the cache
+and without it, because the rule below asks a release that changes I/O behavior
+for the values before *and* after and that release is the first to change them
+on purpose. What chose the cache's constants is a second record,
+[BLOCK_POLICY.md](../reference/BLOCK_POLICY.md).
 
 ## 1. Why this is a contract and not a debug feature
 

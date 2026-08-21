@@ -15,6 +15,9 @@
 #include "Identifier.h"
 #include "Report.h"
 #include "ResolvedAsset.h"
+
+#include "usdAssetCache/BlockCache.h"
+#include "usdAssetCache/CachedAssetReader.h"
 #include "usdAssetIo/Diagnostics.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -38,7 +41,25 @@ usdasset::Status UnsupportedWrite() {
 
 HttpResolver::HttpResolver() {
     std::vector<usdhttpresolver::ConfigurationProblem> problems;
-    _options = usdhttpresolver::OptionsFromEnvironment(&problems);
+    const usdhttpresolver::ResolverConfiguration configuration =
+        usdhttpresolver::ConfigurationFromEnvironment(&problems);
+    _options = configuration.transport;
+    _cacheOptions = configuration.cache.Normalized();
+
+    // The budget belongs to the process store rather than to this resolver, so
+    // it is applied where it lives. Refused only when something is already bound
+    // into that store, which for a resolver constructed by `Plug` before any
+    // stage opens cannot happen -- and if it somehow does, the store keeps the
+    // budget it has and says so rather than being rebuilt underneath a live
+    // reader.
+    if (!usdasset::cache::BlockCache::ConfigureProcess(_cacheOptions)) {
+        problems.push_back(
+            {"USD_HTTP_RESOLVER_CACHE_BUDGET",
+             std::to_string(_cacheOptions.budgetBytes),
+             "the process block store was already in use; its budget and block "
+             "size were left as they were"});
+    }
+
     for (const usdhttpresolver::ConfigurationProblem& problem : problems) {
         // At first use, per CONFIGURATION.md §2, which for a process-global
         // surface is when the resolver is constructed. A typo that silently
@@ -132,9 +153,39 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
     }
 
     // Captured before the reader is moved from, and valid for as long as the
-    // reader is: it is a member of the reader's own implementation.
-    const usdasset::ReaderMetrics* const metrics = &reader->Metrics();
-    return std::make_shared<HttpResolvedAsset>(std::move(reader), metrics);
+    // reader is: it is a member of the reader's own implementation, and the
+    // decorator below owns the reader for the whole life of the asset.
+    //
+    // The *transport's* counter set, deliberately, and not the decorated
+    // stack's. What this pointer is for is `HTTP101`, a retry that succeeded
+    // and cost the latency somebody is investigating, and a retry is a
+    // transport event: the cache neither issues one nor sees one.
+    usdasset::ReaderMetrics* const metrics = &reader->Metrics();
+
+    // The block cache goes on here rather than in `_Resolve`, because
+    // `_Resolve` only has to establish that the asset exists and this is where
+    // bytes start being asked for. The wrap binds into the process store by
+    // identity -- the resolved identifier and the validator the reader captured
+    // at open -- so two `ArAsset`s over one revision share blocks, and two over
+    // two revisions never do (CACHE.md section 6).
+    //
+    // `WrapAsset` and not `Wrap`, which is what this comment used to say while
+    // the line below said otherwise. The difference is the `supportsRandomAccess`
+    // guard: `Wrap` returns a `CachedAssetReader` and therefore cannot decline
+    // to decorate, and a reader that cannot seek would store the one block it
+    // managed to read and miss forever after. ADR-0002 makes range support a
+    // hard error at open, so every reader that reaches this line supports it and
+    // the guard has never fired -- which is exactly how long a missing guard
+    // stays invisible.
+    usdasset::OpenResult opened;
+    opened.reader = std::unique_ptr<usdasset::AssetReader>(reader.release());
+    usdasset::OpenResult cached = usdasset::cache::WrapAsset(
+        std::move(opened), metrics, _cacheOptions, nullptr);
+    if (!cached.reader) {
+        usdhttpresolver::Report(cached.status, identifier);
+        return nullptr;
+    }
+    return std::make_shared<HttpResolvedAsset>(std::move(cached.reader), metrics);
 }
 
 std::shared_ptr<ArWritableAsset> HttpResolver::_OpenAssetForWrite(

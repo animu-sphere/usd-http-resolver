@@ -2,6 +2,7 @@
 
 #include "Configuration.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -14,6 +15,11 @@ constexpr const char* kReadTimeout = "USD_HTTP_RESOLVER_READ_TIMEOUT_MS";
 constexpr const char* kTotalTimeout = "USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS";
 constexpr const char* kMaxRetries = "USD_HTTP_RESOLVER_MAX_RETRIES";
 constexpr const char* kMaxRedirects = "USD_HTTP_RESOLVER_MAX_REDIRECTS";
+
+constexpr const char* kBlockSize = "USD_HTTP_RESOLVER_BLOCK_SIZE";
+constexpr const char* kCacheBudget = "USD_HTTP_RESOLVER_CACHE_BUDGET";
+constexpr const char* kCoalesceGap = "USD_HTTP_RESOLVER_COALESCE_GAP";
+constexpr const char* kMaxRequestBytes = "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES";
 
 /// Parses a non-negative integer with no leading sign, no whitespace, and no
 /// trailing text.
@@ -80,7 +86,98 @@ void ReadInto(const EnvironmentLookup& lookup, const char* name, long long min,
     *target = static_cast<int>(value);
 }
 
+/// The 64-bit form of `ReadInto`, for the variables that are byte counts.
+///
+/// A block size and a budget do not fit in the `int` the transport bounds are,
+/// and a budget that silently wrapped at two gigabytes would be a cache that
+/// held nothing on the machines large enough to want one.
+void ReadBytesInto(const EnvironmentLookup& lookup, const char* name,
+                   long long min, long long max, std::uint64_t* target,
+                   std::vector<ConfigurationProblem>* problemsOut) {
+    std::string text;
+    if (!lookup(name, &text)) return;
+
+    long long value = 0;
+    std::string reason;
+    if (!ParseCount(text, min, max, &value, &reason)) {
+        if (problemsOut) {
+            problemsOut->push_back({name, text, reason});
+        }
+        return;
+    }
+    *target = static_cast<std::uint64_t>(value);
+}
+
 }  // namespace
+
+usdasset::cache::CacheOptions CacheOptionsFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut) {
+    usdasset::cache::CacheOptions options;
+
+    // The bounds are the module's own, so that a value this function accepts is
+    // a value the cache can use. Below the floor the per-block bookkeeping costs
+    // more than the block; above the ceiling one miss transfers more than most
+    // assets are worth.
+    ReadBytesInto(lookup, kBlockSize,
+                  static_cast<long long>(usdasset::cache::kMinBlockSize),
+                  static_cast<long long>(usdasset::cache::kMaxBlockSize),
+                  &options.blockSize, problemsOut);
+
+    // The floor here is the smallest block this module will ever use, not one
+    // block of the size *this* configuration asked for -- the two differ
+    // whenever the block size is raised, and the normalizer then lifts the
+    // budget to one block. That lift is reported below rather than applied
+    // quietly, on the same principle as the rounding: an operator who set a
+    // number and got another one should learn it from a log.
+    ReadBytesInto(lookup, kCacheBudget,
+                  static_cast<long long>(usdasset::cache::kMinBlockSize),
+                  64LL * 1024 * 1024 * 1024, &options.budgetBytes, problemsOut);
+
+    std::uint64_t gap = options.coalesceGapBlocks;
+    ReadBytesInto(lookup, kCoalesceGap, 0, 1024, &gap, problemsOut);
+    options.coalesceGapBlocks = static_cast<std::uint32_t>(gap);
+
+    ReadBytesInto(lookup, kMaxRequestBytes,
+                  static_cast<long long>(usdasset::cache::kMinBlockSize),
+                  4LL * 1024 * 1024 * 1024, &options.maxRequestBytes,
+                  problemsOut);
+
+    // CONFIGURATION.md §2 says the block size is "rounded to a power of two",
+    // and rounding is an adjustment the operator did not ask for. Reported, so
+    // that a deployment that set 100000 and got 65536 can find out from a log
+    // rather than from a byte count.
+    const usdasset::cache::CacheOptions normalized = options.Normalized();
+    if (problemsOut != nullptr && normalized.blockSize != options.blockSize) {
+        problemsOut->push_back({kBlockSize, std::to_string(options.blockSize),
+                                "rounded down to the power of two " +
+                                    std::to_string(normalized.blockSize)});
+    }
+    if (problemsOut != nullptr &&
+        normalized.coalesceGapBlocks != options.coalesceGapBlocks) {
+        problemsOut->push_back(
+            {kCoalesceGap, std::to_string(options.coalesceGapBlocks),
+             "capped at " + std::to_string(normalized.coalesceGapBlocks) +
+                 ", the widest gap that can fit under "
+                 "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES"});
+    }
+    if (problemsOut != nullptr && normalized.budgetBytes != options.budgetBytes) {
+        problemsOut->push_back(
+            {kCacheBudget, std::to_string(options.budgetBytes),
+             "raised to " + std::to_string(normalized.budgetBytes) +
+                 ", one block: a budget that cannot hold a block does not "
+                 "cache nothing, it fetches a block and drops it"});
+    }
+    if (problemsOut != nullptr && normalized.maxRequestBytes != options.maxRequestBytes) {
+        problemsOut->push_back(
+            {kMaxRequestBytes, std::to_string(options.maxRequestBytes),
+             "raised to " + std::to_string(normalized.maxRequestBytes) +
+                 ", one block: a merged request that cannot carry a block "
+                 "cannot carry the block it was merging"});
+    }
+
+    return options;
+}
 
 usdasset::http::HttpOptions OptionsFrom(
     const EnvironmentLookup& lookup,
@@ -124,8 +221,29 @@ usdasset::http::HttpOptions OptionsFromEnvironment(
     return OptionsFrom(lookup, problemsOut);
 }
 
+ResolverConfiguration ConfigurationFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut) {
+    ResolverConfiguration configuration;
+    configuration.transport = OptionsFrom(lookup, problemsOut);
+    configuration.cache = CacheOptionsFrom(lookup, problemsOut);
+    return configuration;
+}
+
+ResolverConfiguration ConfigurationFromEnvironment(
+    std::vector<ConfigurationProblem>* problemsOut) {
+    const EnvironmentLookup lookup = [](const char* name, std::string* valueOut) {
+        const char* value = ReadEnvironment(name);
+        if (value == nullptr) return false;
+        valueOut->assign(value);
+        return true;
+    };
+    return ConfigurationFrom(lookup, problemsOut);
+}
+
 const std::vector<const char*>& ConfiguredVariables() {
     static const std::vector<const char*> variables = {
+        kBlockSize,      kCacheBudget, kCoalesceGap,  kMaxRequestBytes,
         kConnectTimeout, kReadTimeout, kTotalTimeout, kMaxRetries,
         kMaxRedirects};
     return variables;

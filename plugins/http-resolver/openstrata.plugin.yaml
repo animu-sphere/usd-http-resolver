@@ -24,9 +24,18 @@ provides:
   - usd-resolver:https
 requires:
   capabilities: [usd-stage-read]
-  # The only workspace edge this bundle needs. usdAssetHttp carries usdAssetIo
-  # transitively, and libcurl privately -- ADR-0003 keeps it out of every
-  # installed header, so it is not an edge anything above this line can see.
+  # The two workspace edges this bundle needs, and they are siblings rather than
+  # a chain: usdAssetHttp carries usdAssetIo transitively and libcurl privately
+  # -- ADR-0003 keeps libcurl out of every installed header, so it is not an
+  # edge anything above this line can see -- and usdAssetCache is over
+  # usdAssetIo too, not over the backend. The cache is a decorator and knows no
+  # transport concept (WORKSPACE.md §2), so nothing carries it but this line.
+  #
+  # This list is what `ost plugin build` installs into the workspace prefix
+  # before it configures the bundle, which makes it load-bearing rather than
+  # descriptive: a library the bundle links and does not declare here builds
+  # in-tree and fails the bundle cell with a `find_package` that cannot be
+  # satisfied.
   #
   # usdAssetLocal is deliberately absent: this resolver serves `http` and
   # `https`, and a local path is the primary resolver's business (RESOLVER.md
@@ -34,6 +43,8 @@ requires:
   libraries:
     - id: usdAssetHttp
       version: ">=0.2,<0.3"
+    - id: usdAssetCache
+      version: ">=0.3,<0.4"
 usd:
   plug_info: plugin/resources/httpResolver/plugInfo.json
 tests:

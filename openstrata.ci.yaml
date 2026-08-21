@@ -86,7 +86,12 @@ cells:
   # exited PRECONDITION_FAILED with "no plugin bundles found in the workspace
   # member set", which is one of the three reasons this file did not exist yet.
   # plugins/http-resolver is the bundle that fixed it, and the rung now reports
-  # 1 bundle, 3 libraries, 3 library edges, valid.
+  # 1 bundle, 4 libraries, 5 library edges, valid. v0.3.0 added two of those
+  # edges: libs/usd-asset-cache onto usdAssetIo, which is the only one the cache
+  # is allowed, and the bundle onto libs/usd-asset-cache. The second is why this
+  # rung is worth running -- it is declared in openstrata.plugin.yaml, and a
+  # bundle that links a library without declaring it there builds in-tree and
+  # fails the bundle cells with a find_package that cannot be satisfied.
   - name: workspace-graph-pr-linux
     kind: workspace
     lane: pull_request

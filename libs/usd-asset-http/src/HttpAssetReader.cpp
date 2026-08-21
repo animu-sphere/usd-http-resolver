@@ -430,6 +430,8 @@ const AssetMetadata& HttpAssetReader::Metadata() const { return _impl->metadata;
 
 const ReaderMetrics& HttpAssetReader::Metrics() const noexcept { return _impl->metrics; }
 
+ReaderMetrics& HttpAssetReader::Metrics() noexcept { return _impl->metrics; }
+
 ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t size) {
     ScopedLatency readTimer(_impl->metrics.ReadLatency());
     _impl->metrics.AddBytesRequested(size);

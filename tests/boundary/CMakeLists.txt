@@ -56,6 +56,16 @@ if(TARGET usdasset::local)
         backends/boundary_local_main.cpp usdasset::local)
 endif()
 
+# The cache's row: the same local backend with a decorator over it, which is
+# what makes "byte-for-byte equivalence with the uncached path over the full
+# suite" an assertion rather than a claim. Not a fourth backend -- the cache is
+# not a transport -- and it links no transport, which is the property that keeps
+# the local backend a usable oracle for the cached path.
+if(TARGET usdasset::cache AND TARGET usdasset::local)
+    usd_http_resolver_add_boundary_backend(cached_local
+        backends/boundary_cached_local_main.cpp usdasset::cache usdasset::local)
+endif()
+
 # The line v0.2.0 said it would be. The HTTP row additionally links the fixture
 # server, which is the one reverse edge WORKSPACE.md §2 admits for it: a remote
 # backend has to arrange for its bytes to exist somewhere a transport can reach,

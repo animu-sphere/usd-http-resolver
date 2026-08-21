@@ -27,6 +27,7 @@
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
 
+#include "usdAssetCache/CacheOptions.h"
 #include "usdAssetHttp/HttpAssetReader.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -137,6 +138,14 @@ private:
     static constexpr std::size_t kMaxRetainedOpens = 64;
 
     usdasset::http::HttpOptions _options;
+
+    /// The block policy every asset this resolver opens is decorated with.
+    ///
+    /// Resolved once, at construction, from the environment. The blocks
+    /// themselves live in the process-wide store rather than here, because the
+    /// budget is process-wide and shared across assets (CACHE.md section 7) and
+    /// a store per resolver would not be one budget.
+    usdasset::cache::CacheOptions _cacheOptions;
 
     mutable std::mutex _tableMutex;
     mutable std::unordered_map<std::string, std::shared_ptr<_Opened>> _table;

@@ -31,8 +31,11 @@ index, and the chunks actually in view — not 10 GB.
 
 **`v0.2.0` is released: a `UsdStage` opens over HTTP. The read contract, the
 local backend, the shared boundary suite, the hostile-server corpus, the HTTP
-backend, and the `ArResolver` bundle are in the tree and passing. There is no
-cache.**
+backend, and the `ArResolver` bundle are in the tree and passing.**
+
+**`v0.3.0` is in the tree and unreleased: the block cache. A clustered read of a
+remote asset now costs three requests where it cost eighteen, and eight parallel
+readers of one asset move what one reader moves.**
 
 That ordering is the point. `v0.1.0` shipped a local file reader, which is not
 interesting; what was interesting is that it arrived with the harness that makes
@@ -42,12 +45,23 @@ from server behavior. `v0.2.0` cashed that: the HTTP backend passes the `v0.1.0`
 boundary suite **unchanged**, against an independent oracle, and separately
 against 18 hostile-server behaviors on a real socket.
 
-It also makes this project's first performance claim, and it is a counter on a
+It also made this project's first performance claim, and it is a counter on a
 named fixture rather than a sentence: **a bounded query moved 324 KiB of a
 128 MiB asset — 0.0025 of it — and every byte moved was a byte the caller asked
-for.** The record is
-[docs/reference/BASELINE.md](docs/reference/BASELINE.md), and `amplification` is
-exactly 1.000000 because there is nothing yet to over-fetch.
+for.**
+
+`v0.3.0` is the release that changes those numbers on purpose, and it changes
+them in both directions. Seventeen clustered reads of a header and an index went
+from 18 requests to 3; eight parallel readers went from 152 to 25 and now move
+one reader's worth of bytes between them; the full sequential read did not move
+at all. The bounded query's `selectivity` got *worse*, 0.0025 to 0.0112, because
+alignment converts request count into transferred bytes, and 1191936 bytes of
+what it moved are `bytesOverFetched` — reported beside the saving rather than
+instead of it. Both
+records are counters on a named fixture:
+[BASELINE.md](docs/reference/BASELINE.md) for what the shipped configuration
+costs, and [BLOCK_POLICY.md](docs/reference/BLOCK_POLICY.md) for why it is that
+configuration.
 
 What the tree actually does is in
 [docs/reference/CAPABILITY_MATRIX.md](docs/reference/CAPABILITY_MATRIX.md); what

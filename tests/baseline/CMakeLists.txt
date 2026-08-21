@@ -21,8 +21,12 @@ add_executable(usdAssetHttp_baseline
     Report.cpp
     ../fixture-server/tests/RawClient.cpp)
 
+# The cache joins the link line in v0.3.0: every scenario is measured with and
+# without it, because METRICS.md section 6 asks a release that changes I/O
+# behavior for the counter values before and after, and this is the release that
+# changes them on purpose.
 target_link_libraries(usdAssetHttp_baseline
-    PRIVATE usdasset::http usdasset::fixtureserver)
+    PRIVATE usdasset::http usdasset::cache usdasset::fixtureserver)
 target_include_directories(usdAssetHttp_baseline PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../fixture-server/tests"

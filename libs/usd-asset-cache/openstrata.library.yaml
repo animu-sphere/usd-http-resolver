@@ -1,0 +1,20 @@
+# OpenStrata plain-library descriptor.
+#
+# usdAssetCache is a plain static CMake library over usdAssetIo, with no
+# OpenUSD dependency and no transport dependency of any kind
+# (docs/architecture/WORKSPACE.md section 1).
+schema: openstrata.library/v1alpha1
+library:
+  id: usdAssetCache
+  version: 0.3.0
+requires:
+  libraries:
+    # The only edge the cache is allowed. Not a backend -- the cache is a
+    # decorator and holds a reader it did not construct; if it knew about HTTP
+    # it would grow HTTP policy, and the local backend would stop being a usable
+    # oracle for the cached path.
+    - id: usdAssetIo
+      version: ">=0.1,<0.2"
+cmake:
+  package: usdAssetCache
+  target: usdasset::cache
