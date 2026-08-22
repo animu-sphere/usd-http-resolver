@@ -216,6 +216,15 @@ contract expects; a weak or absent validator never produces a persistent entry;
 a persisted entry from revision A never serves a read of revision B; deleting
 the cache directory costs time and never correctness.
 
+Status: the exposure half has landed and persistence has not. `GetAssetInfo`
+publishes the four neutral values and `ArAssetInfo::version` carries a token
+only for a `Stable` identity — a rule that came from reading the consumer's
+side, where a non-empty `version` is by itself sufficient for generated-cache
+reuse and no stability field is consulted. That asymmetry is what the first
+exit criterion turned out to mean. See
+[RESOLVER.md](../architecture/RESOLVER.md) §3 and
+[implementation status](implementation-status.md).
+
 ### `v0.5.0` — first consumer integration
 
 The release that tests whether the abstraction is real.

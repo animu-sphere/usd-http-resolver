@@ -11,6 +11,84 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
+## Unreleased
+
+Identity leaves the process. The first half of `v0.4.0`: what a consumer may
+learn about an asset's identity, and — the part that took the argument — what it
+may not be told.
+
+### Added
+
+- **Asset info and identity stability**, through `ArResolver::GetAssetInfo` and
+  nothing else. `ArAssetInfo::resolverInfo` carries the four neutral values of
+  [RESOLVER.md](docs/architecture/RESOLVER.md) §3 — `resolvedIdentifier`,
+  `size`, `validationToken`, and `stability` — under the names the first
+  consumer's own contract uses. The token is the backend's captured validator,
+  opaque here and opaque all the way out: nothing above the backend parses it,
+  compares it to an `ETag`, or infers a time from it.
+- **The rule that decides what `version` may carry.** `ArAssetInfo::version`
+  gets the token only for a `Stable` identity, because that field travels with
+  nothing beside it — no stability, no qualification — and a consumer that finds
+  a token there treats it as fit to key durable cache reuse on. A weak or absent
+  validator leaves it empty and explains itself in `resolverInfo`, where
+  `stability` is beside the token. The dictionary publishes a weak token anyway,
+  because a weak validator that *changed* is still evidence the asset changed;
+  it is proof of sameness that weak cannot supply.
+- **A contradicted identifier stops publishing a reusable identity.**
+  `ArAssetInfo` is keyed by asset path and this resolver hands out one reader
+  per open, so two `ArAsset`s over one URL may be two revisions and asset info
+  cannot say which one a caller holds. Harmless until the asset moves: once two
+  opens of one identifier have captured two different validators, `Stable`
+  degrades to `Unstable` and `version` goes empty for the rest of the process.
+  Remembered permanently rather than in a bounded table, because a bound that
+  forgot it would start publishing a reusable identity again for an asset that
+  has already proved it does not have one.
+- **Identity answered from the open, not from a new request.** Asset info comes
+  from the open this process already performed for that identifier. That is
+  cheaper and, more to the point, *more correct*: the identity a consumer needs
+  is the identity of the bytes it is holding, and a `HEAD` issued now describes
+  whatever is published now. An identifier nothing has opened is opened and
+  retained, so the request costs what the `OpenAsset` after it would have cost.
+- **`httpResolver_identity`**, offline and linking one translation unit: the
+  publication rules as a table — strong, weak, `Last-Modified`, absent,
+  contradicted, a strength with no kind, and both credential shapes. The defect
+  it exists to catch is silent, and it does not fail in this repository: a token
+  published for a validator that cannot prove a revision fails in a consumer,
+  weeks later, as a generated cache that served the wrong bytes.
+- **Six cases in `httpResolver_stage`**, over a real socket: the four fields for
+  a strong validator, the `version` rule for each stability class, a republish
+  that withdraws reusability, an invalid timestamp, an identity that costs no
+  second metadata request, and one case that asserts nothing in a `CHECK` at all
+  — it resolves an asset it never opens and lets the exit code do the asserting.
+
+### Changed
+
+- **`GetModificationTimestamp` is now overridden to return an invalid
+  timestamp**, which is what the default did, so that the decision is recorded
+  where somebody would otherwise make the tempting mistake. A validator is not a
+  time; reading `Last-Modified` as one parses an HTTP construct above the
+  backend that captured it; and a synthesized number would be picked up by a
+  consumer's fallback and turned into precisely the durable identity a weak or
+  absent validator may not have. An invalid timestamp costs a `SdfLayer::Reload`
+  a request, and never costs a wrong answer.
+
+### Fixed
+
+- **A crash at process exit when a resolved asset was never opened.** The
+  resolver retains the reader `Resolve` opened, for the `OpenAsset` that usually
+  follows (RESOLVER.md §2.3) — and nothing requires one to follow. Such a reader
+  is destroyed with the resolver, during static destruction, and folded its
+  counters into a process metrics aggregate that had been destroyed already: the
+  aggregate is constructed at the *first* reader and so is destroyed before the
+  resolver that was constructed before it. The aggregate is now never destroyed,
+  and the opt-in `USD_HTTP_RESOLVER_METRICS_DUMP` runs from `std::atexit`
+  instead. Reachable since `v0.2.0` by any host that probes for existence and
+  exits; it took a test that left a retained open behind to surface it, and it
+  presented as a segmentation fault *after* the suite printed `ok`.
+- **The bundle README's configuration table**, which still listed five variables
+  after `v0.3.0` added four cache values, and still said the bundle performed no
+  caching.
+
 ## `v0.3.0` - 2026-08-21
 
 The block-cache release. Its definition

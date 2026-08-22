@@ -116,3 +116,12 @@ the architecture was designed to prevent.
    `ArResolver` extension, an `ArResolverContext` hint, or a superseding ADR?
 2. Does identity stability belong in `GetAssetInfo`, or does OpenUSD's
    asset-info surface prove too weak to carry it?
+
+   Answered in `v0.4.0`: it belongs there, and the surface is weak in exactly
+   one way that had to be designed around. `ArAssetInfo` is keyed by asset path
+   rather than by open asset, so it cannot say which of two revisions a caller
+   is holding — and this resolver hands out one reader per open, which makes two
+   revisions at one URL possible. The answer is not a side channel but a
+   narrowing: an identifier whose two opens captured two validators stops
+   publishing a reusable identity for the rest of the process. See
+   [RESOLVER.md](../architecture/RESOLVER.md) §3.2. The ADR stands.
