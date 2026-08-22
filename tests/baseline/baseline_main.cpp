@@ -35,14 +35,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
 #include "usdAssetCache/BlockCache.h"
 #include "usdAssetCache/CacheOptions.h"
 #include "usdAssetCache/CachedAssetReader.h"
+#include "usdAssetCache/DiskBlockStore.h"
 #include "usdAssetHttp/HttpAssetReader.h"
 #include "usdAssetIo/Metrics.h"
 #include "usdassetfixture/Corpus.h"
@@ -321,7 +324,12 @@ CacheOptions BaselineCacheOptions() { return CacheOptions().Normalized(); }
 
 /// Opens into `stack`, sharing `store` when one is given -- which is what the
 /// parallel-readers scenario needs and what every other scenario must not have.
-bool OpenStack(const Fixture& fixture, bool cached, BlockCache* shared, Stack* stack) {
+///
+/// `persistent` is null for every scenario but the reopened one. A baseline in
+/// which some rows quietly read a disk another row wrote would be a table whose
+/// numbers are a function of the order it happens to be written in.
+bool OpenStack(const Fixture& fixture, bool cached, BlockCache* shared, Stack* stack,
+               usdasset::cache::DiskBlockStore* persistent = nullptr) {
     std::unique_ptr<HttpAssetReader> http = OpenOrReport(fixture);
     if (!http) return false;
 
@@ -343,7 +351,7 @@ bool OpenStack(const Fixture& fixture, bool cached, BlockCache* shared, Stack* s
     usdasset::ReaderMetrics* innerMetrics = &http->Metrics();
     usdasset::cache::CachedOpenResult wrapped = usdasset::cache::Wrap(
         std::unique_ptr<AssetReader>(http.release()), innerMetrics,
-        BaselineCacheOptions(), store);
+        BaselineCacheOptions(), store, persistent);
     if (!wrapped.reader) {
         std::fprintf(stderr, "FAIL: wrap: %s\n",
                      usdasset::ToString(wrapped.status).c_str());
@@ -645,6 +653,141 @@ ScenarioRecord BoundedSpatialQuery(const Fixture& fixture,
     return record;
 }
 
+/// The row `v0.4.0` adds: the same bounded query, paid for a second time.
+///
+/// [BASELINE.md](../../docs/reference/BASELINE.md) named this row before the
+/// release that would move it -- "every scenario, on a second open of the same
+/// asset: the whole cost again, a new process starts cold" -- and this is where
+/// it stops being true for a `Stable` identity.
+///
+/// The uncached half is the honest comparator: a second reader with no cache
+/// pays the query again, exactly. The cached half is a *third* reader, over a
+/// block store with nothing in it and a cache directory a previous reader
+/// filled. That first reader's numbers are not recorded, because what is being
+/// measured is what the second one costs, and a row that averaged the two would
+/// be measuring the warm-up.
+///
+/// A fresh `BlockCache` and not a fresh process, for the reason the module test
+/// gives: the property is that nothing in memory carries the answer, and a
+/// store with nothing resident is exactly that condition. What a real process
+/// boundary additionally proves -- that the file survives one -- is proven where
+/// it can be isolated, in `httpResolver_stage`, which re-invokes itself.
+ScenarioRecord ReopenedBoundedQuery(const Fixture& fixture,
+                                    Server& server,
+                                    bool cached,
+                                    const MetricsSnapshot* uncached) {
+    namespace fs = std::filesystem;
+
+    ScenarioRecord record;
+    record.name = RowName("bounded query, reopened", cached);
+    record.cached = cached;
+    record.exercises = "What a second open costs (CACHE.md §8)";
+
+    if (!cached) {
+        server.ClearLog();
+        const Clock::time_point started = Clock::now();
+        Stack stack;
+        if (!OpenStack(fixture, false, nullptr, &stack)) {
+            record.wallMs = ElapsedMs(started);
+            return record;
+        }
+        const bool ok = ReadBoundedQuery(*stack.reader, fixture);
+        record.wallMs = ElapsedMs(started);
+        record.metrics = stack.Snapshot();
+        if (!ok) return record;
+
+        CheckUncachedShape(record.metrics, ServerRequests(server), kBoundedQueryBytes,
+                           kBoundedQueryReads, 1);
+        record.note =
+            "A second reader with no cache pays the query again, exactly: " +
+            std::to_string(record.metrics.bytesTransferred) +
+            " bytes and " + std::to_string(record.metrics.requestCount) +
+            " requests, the same as the first";
+        return record;
+    }
+
+    const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    const fs::path directory =
+        fs::temp_directory_path() /
+        ("usd-http-resolver-baseline-persist-" + std::to_string(now));
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error) {
+        std::fprintf(stderr, "FAIL: no cache directory: %s\n",
+                     error.message().c_str());
+        ++usdassettest::FailureCount();
+        return record;
+    }
+
+    usdasset::cache::DiskCacheOptions persistence;
+    persistence.directory = directory.string();
+    persistence.budgetBytes = 256ull * 1024 * 1024;
+    usdasset::cache::DiskBlockStore disk{persistence};
+    if (!disk.IsEnabled()) {
+        std::fprintf(stderr, "FAIL: the persistent tier did not open %s\n",
+                     persistence.directory.c_str());
+        ++usdassettest::FailureCount();
+        fs::remove_all(directory, error);
+        return record;
+    }
+
+    // The warm-up. Its numbers are the cached bounded-query row's numbers and
+    // are not recorded again here.
+    {
+        BlockCache warming{BaselineCacheOptions()};
+        Stack stack;
+        if (!OpenStack(fixture, true, &warming, &stack, &disk)) {
+            fs::remove_all(directory, error);
+            return record;
+        }
+        if (!ReadBoundedQuery(*stack.reader, fixture)) {
+            fs::remove_all(directory, error);
+            return record;
+        }
+        CHECK(stack.cached->PersistsBlocks());
+        CHECK(stack.Snapshot().persistedWrites > 0);
+    }
+
+    server.ClearLog();
+    const Clock::time_point started = Clock::now();
+    BlockCache cold{BaselineCacheOptions()};
+    Stack stack;
+    if (!OpenStack(fixture, true, &cold, &stack, &disk)) {
+        record.wallMs = ElapsedMs(started);
+        fs::remove_all(directory, error);
+        return record;
+    }
+    const bool ok = ReadBoundedQuery(*stack.reader, fixture);
+    record.wallMs = ElapsedMs(started);
+    record.metrics = stack.Snapshot();
+    fs::remove_all(directory, error);
+    if (!ok) return record;
+
+    CheckCachedShape(record.metrics, server.Log(), ServerRequests(server),
+                     kBoundedQueryBytes, 1);
+    // The claim, in three counters. Nothing crossed the wire for the bytes; the
+    // one request is the metadata request, which is *supposed* to happen again
+    // -- a persistent cache that skipped it would be reusing an identity it had
+    // not revalidated; and every byte the caller asked for came from a cache.
+    CHECK_EQ(record.metrics.bytesTransferred, std::uint64_t{0});
+    CHECK_EQ(record.metrics.requestCount, std::uint64_t{1});
+    CHECK_EQ(record.metrics.bytesFromCache, kBoundedQueryBytes);
+    CHECK(record.metrics.persistedHits > 0);
+    if (uncached != nullptr) {
+        CHECK(record.metrics.requestCount < uncached->requestCount);
+        CHECK(record.metrics.bytesTransferred < uncached->bytesTransferred);
+    }
+    record.note =
+        "A reader with an empty block store over a cache directory an earlier "
+        "reader filled: 0 bytes moved and 1 request, which is the metadata "
+        "request. The row above is what the same query costs without it. "
+        "`persistedWrites` is 0 here because the writing was done by the "
+        "warm-up reader, whose numbers are the cached bounded-query row's. This "
+        "holds for a `Stable` identity only -- a `Weak` or absent one neither "
+        "writes to that directory nor reads from it";
+    return record;
+}
+
 /// METRICS.md §6, row 4: the worst case, which must not be worse than a plain
 /// download.
 ///
@@ -906,17 +1049,19 @@ int main(int argc, char** argv) {
     std::vector<ScenarioRecord> records;
     // Reserved so that the pointer each cached run is given into the row above
     // it cannot be invalidated by the push that follows.
-    records.reserve(10);
+    records.reserve(12);
     records.push_back(MetadataOnlyOpen(fixture, *server, false, nullptr));
     records.push_back(MetadataOnlyOpen(fixture, *server, true, &records[0].metrics));
     records.push_back(HeaderAndIndexRead(fixture, *server, false, nullptr));
     records.push_back(HeaderAndIndexRead(fixture, *server, true, &records[2].metrics));
     records.push_back(BoundedSpatialQuery(fixture, *server, false, nullptr));
     records.push_back(BoundedSpatialQuery(fixture, *server, true, &records[4].metrics));
+    records.push_back(ReopenedBoundedQuery(fixture, *server, false, nullptr));
+    records.push_back(ReopenedBoundedQuery(fixture, *server, true, &records[6].metrics));
     records.push_back(FullSequentialRead(fixture, *server, false, nullptr));
-    records.push_back(FullSequentialRead(fixture, *server, true, &records[6].metrics));
+    records.push_back(FullSequentialRead(fixture, *server, true, &records[8].metrics));
     records.push_back(ParallelReaders(fixture, *server, false, nullptr));
-    records.push_back(ParallelReaders(fixture, *server, true, &records[8].metrics));
+    records.push_back(ParallelReaders(fixture, *server, true, &records[10].metrics));
 
     RunContext context;
     context.assetBytes = assetBytes;
