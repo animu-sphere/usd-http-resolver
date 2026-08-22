@@ -73,6 +73,20 @@ const unsigned char kMagic[8] = {'U', 'S', 'D', 'B', 'L', 'K', '\0', '1'};
 /// block, and a block is bounded by `kMaxBlockSize`.
 constexpr std::uint64_t kMaxEntryPayload = kMaxBlockSize;
 
+/// How many of the largest entry it has written a sweep's budget must admit
+/// before the sweep is allowed to enforce it.
+///
+/// `kMinPersistentBudgetBytes` is a floor in bytes, and a block size is a
+/// runtime choice, so the two can be set against each other: a legal 8 MiB
+/// block under the minimum budget would make every sweep trim away the entry
+/// whose write triggered it -- two I/Os spent to achieve nothing, which is the
+/// outcome that floor was introduced to prevent and cannot prevent on its own,
+/// because `DiskCacheOptions` never learns a block size. Raising the byte floor
+/// to a few of the largest legal block instead would force a quarter of a
+/// gigabyte on a host that asked for a megabyte, so the relation is stated
+/// here, where the size of an entry is a fact rather than a bound.
+constexpr std::uint64_t kMinBudgetEntries = 4;
+
 /// FNV-1a, 64 bit.
 ///
 /// A checksum and nothing more: it catches a truncated or scribbled entry. It
@@ -333,10 +347,27 @@ DiskCacheOptions DiskCacheOptions::Normalized() const {
 }
 
 bool Persistable(const Validator& validator) noexcept {
-    // Deliberately spelled out rather than delegated to `IsShareable`. The two
-    // are the same rule at two lifetimes, and a relaxation of one must be a
-    // decision about the other rather than a side effect of it.
-    return validator.IsUsable() && validator.strength == ValidatorStrength::Strong;
+    // Deliberately spelled out rather than delegated to `IsShareable`, and
+    // stricter than it. The two are the same question at two lifetimes, and the
+    // longer lifetime asks for one thing more.
+    //
+    // `Strong` is necessary. It is not sufficient, because strength is a claim
+    // and a claim has an author. An entity tag was issued by the origin against
+    // the bytes it served, and it means the same thing to whoever reads the
+    // entry next -- in another process, after a restart, tomorrow. A `Derived`
+    // identity was synthesized by a backend out of what it could see while it
+    // held the asset open, and `usdAssetLocal` is the case that shows what that
+    // costs: it renders device, file index, size, and mtime, and declares the
+    // result `Strong` because it holds the handle and re-derives the identity
+    // on every read -- so equal values mean equal bytes *for as long as the
+    // reader lives*, which is what its own comment says. On a filesystem whose
+    // timestamp resolution is coarse enough to hide a same-size rewrite in
+    // place, that claim is already at its limit; writing it to disk would move
+    // the limit from "until this reader closes" to "until the entry is
+    // evicted", and a stale read a restart cannot clear is exactly what an
+    // on-disk cache was not admitted until validators landed in order to avoid.
+    return validator.strength == ValidatorStrength::Strong &&
+           validator.kind == ValidatorKind::EntityTag;
 }
 
 // --- Impl --------------------------------------------------------------------
@@ -355,6 +386,10 @@ public:
         swept = false;
         knownBytes = 0;
         bytesSinceSweep = 0;
+        largestEntryBytes = 0;
+        // Before every early return below, so that a sweep already walking the
+        // old directory cannot publish its count into the new one.
+        ++epoch;
 
         if (options.directory.empty()) {
             return false;
@@ -377,7 +412,6 @@ public:
 
         root = std::move(candidate);
         enabled = true;
-        sweepInterval = (std::max)(options.budgetBytes / 8, kMinPersistentBudgetBytes);
         return true;
     }
 
@@ -385,13 +419,59 @@ public:
         return root / name.substr(0, 2) / (name + kEntrySuffix);
     }
 
-    /// Walks the directory, deletes stale temporaries, and trims to the budget.
-    /// Called with `mutex` held.
-    void SweepLocked() {
-        ++stats.sweeps;
+    /// What a sweep needs out of the lock, and the stamp that says whether its
+    /// answer still describes the directory when it comes back.
+    struct SweepPlan {
+        fs::path root;
+        std::uint64_t budget = 0;
+        std::uint64_t epoch = 0;
+    };
+
+    /// The budget a sweep actually enforces. Called with `mutex` held.
+    ///
+    /// The host's number, unless that number cannot hold `kMinBudgetEntries` of
+    /// the largest entry this store has written -- in which case enforcing it
+    /// would delete the entry whose write triggered the sweep.
+    std::uint64_t EffectiveBudgetLocked() const {
+        return (std::max)(options.budgetBytes, largestEntryBytes * kMinBudgetEntries);
+    }
+
+    /// How many bytes may be published between sweeps, so that the ceiling is
+    /// the budget plus one interval's writes. Called with `mutex` held.
+    std::uint64_t SweepIntervalLocked() const {
+        return (std::max)(EffectiveBudgetLocked() / 8, kMinPersistentBudgetBytes);
+    }
+
+    /// Claims the right to sweep and records that one happened. Called with
+    /// `mutex` held.
+    ///
+    /// Returns false when another thread is already walking the directory:
+    /// there is nothing for this caller to do, and a second concurrent walk
+    /// would race the first one over the same deletes.
+    bool BeginSweepLocked(SweepPlan* plan) {
+        if (sweeping || !enabled) {
+            return false;
+        }
+        sweeping = true;
         swept = true;
         bytesSinceSweep = 0;
+        ++stats.sweeps;
+        plan->root = root;
+        plan->budget = EffectiveBudgetLocked();
+        plan->epoch = epoch;
+        return true;
+    }
 
+    /// Walks the directory, deletes stale temporaries, and trims to the budget.
+    ///
+    /// Called with `mutex` NOT held, and that is the whole reason a sweep is
+    /// three functions rather than one. It is a recursive directory walk, a
+    /// sort, and a run of deletes; under the lock it would make every concurrent
+    /// `Load` wait behind it -- the exact serialization `Load` goes out of its
+    /// way to avoid by reading its file outside the lock. `sweeping` is what
+    /// keeps two of these from running at once, so the walk is unlocked without
+    /// being unguarded.
+    void RunSweep(const SweepPlan& plan) {
         struct Candidate {
             fs::path path;
             std::uintmax_t size = 0;
@@ -399,55 +479,60 @@ public:
         };
         std::vector<Candidate> entries;
         std::uint64_t total = 0;
+        std::uint64_t trimmed = 0;
+        std::uint64_t trimmedBytes = 0;
 
         std::error_code error;
-        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied,
-                                            error);
-        if (error) {
-            knownBytes = 0;
-            return;
-        }
-        const fs::recursive_directory_iterator end;
-        // The error_code increment: a directory another process is deleting
-        // entries out of will make an iteration step fail, and a throw out of
-        // a sweep would turn "the cache is being tidied" into a failed read.
-        for (; it != end; it.increment(error)) {
-            if (error) {
-                break;
-            }
-            std::error_code entryError;
-            if (!it->is_regular_file(entryError) || entryError) {
-                continue;
-            }
-            const std::uintmax_t size = it->file_size(entryError);
-            if (entryError) {
-                continue;
-            }
-            const fs::file_time_type written = it->last_write_time(entryError);
-            if (entryError) {
-                continue;
-            }
-
-            const std::string filename = it->path().filename().string();
-            const bool isTemporary =
-                filename.size() > 4 && filename.compare(filename.size() - 4, 4, kTempSuffix) == 0;
-            if (isTemporary) {
-                // A temporary this old belongs to a process that is not going
-                // to finish it. An hour is far longer than writing one block
-                // takes and far shorter than a cache directory's life.
-                const auto age = fs::file_time_type::clock::now() - written;
-                if (age > std::chrono::hours(1)) {
-                    std::error_code removeError;
-                    fs::remove(it->path(), removeError);
+        fs::recursive_directory_iterator it(plan.root,
+                                            fs::directory_options::skip_permission_denied, error);
+        // A directory that would not open leaves `total` at zero, which is the
+        // right account of a cache somebody deleted: nothing is resident, and
+        // the next write recreates what it needs.
+        if (!error) {
+            const fs::recursive_directory_iterator end;
+            // The error_code increment: a directory another process is deleting
+            // entries out of will make an iteration step fail, and a throw out
+            // of a sweep would turn "the cache is being tidied" into a failed
+            // read.
+            for (; it != end; it.increment(error)) {
+                if (error) {
+                    break;
+                }
+                std::error_code entryError;
+                if (!it->is_regular_file(entryError) || entryError) {
                     continue;
                 }
-            }
+                const std::uintmax_t size = it->file_size(entryError);
+                if (entryError) {
+                    continue;
+                }
+                const fs::file_time_type written = it->last_write_time(entryError);
+                if (entryError) {
+                    continue;
+                }
 
-            total += size;
-            entries.push_back(Candidate{it->path(), size, written});
+                const std::string filename = it->path().filename().string();
+                const bool isTemporary =
+                    filename.size() > 4 &&
+                    filename.compare(filename.size() - 4, 4, kTempSuffix) == 0;
+                if (isTemporary) {
+                    // A temporary this old belongs to a process that is not
+                    // going to finish it. An hour is far longer than writing one
+                    // block takes and far shorter than a cache directory's life.
+                    const auto age = fs::file_time_type::clock::now() - written;
+                    if (age > std::chrono::hours(1)) {
+                        std::error_code removeError;
+                        fs::remove(it->path(), removeError);
+                        continue;
+                    }
+                }
+
+                total += size;
+                entries.push_back(Candidate{it->path(), size, written});
+            }
         }
 
-        if (total > options.budgetBytes) {
+        if (total > plan.budget) {
             // Oldest first, by write time. Not a true LRU: refreshing a
             // timestamp on every hit would turn a read of a cached block into a
             // write, which is the trade this tier exists to avoid. Eviction is
@@ -458,7 +543,7 @@ public:
                       [](const Candidate& lhs, const Candidate& rhs) {
                           return lhs.written < rhs.written;
                       });
-            const std::uint64_t target = options.budgetBytes - options.budgetBytes / 8;
+            const std::uint64_t target = plan.budget - plan.budget / 8;
             for (const Candidate& candidate : entries) {
                 if (total <= target) {
                     break;
@@ -466,15 +551,27 @@ public:
                 std::error_code removeError;
                 if (fs::remove(candidate.path, removeError) && !removeError) {
                     total -= candidate.size;
-                    ++stats.trimmed;
-                    stats.trimmedBytes += candidate.size;
+                    ++trimmed;
+                    trimmedBytes += candidate.size;
                 }
                 // A remove that failed is a file another process has open. It
                 // stays, and the next sweep tries again.
             }
         }
 
-        knownBytes = total;
+        const std::lock_guard<std::mutex> lock(mutex);
+        sweeping = false;
+        stats.trimmed += trimmed;
+        stats.trimmedBytes += trimmedBytes;
+        if (epoch == plan.epoch) {
+            // Only when nothing reconfigured or emptied the store while the walk
+            // was running: a count of a directory that is no longer the one
+            // being written to is worse than no count at all. An entry published
+            // during the walk is counted twice for one interval -- once here and
+            // once in `bytesSinceSweep` -- which errs toward sweeping sooner,
+            // the harmless direction.
+            knownBytes = total;
+        }
     }
 
     mutable std::mutex mutex;
@@ -484,7 +581,13 @@ public:
     bool swept = false;
     std::uint64_t knownBytes = 0;
     std::uint64_t bytesSinceSweep = 0;
-    std::uint64_t sweepInterval = kMinPersistentBudgetBytes;
+    /// The largest entry this store has published, which is what relates a
+    /// budget to a block size nobody told it; see `kMinBudgetEntries`.
+    std::uint64_t largestEntryBytes = 0;
+    /// Bumped whenever the directory this store owns changes identity or is
+    /// emptied, so a sweep in flight can tell that its count is stale.
+    std::uint64_t epoch = 0;
+    bool sweeping = false;
     std::atomic<std::uint64_t> tempCounter{0};
     Stats stats;
 };
@@ -643,21 +746,45 @@ bool DiskBlockStore::Store(const AssetIdentity& identity,
     if (error) {
         // Lost the race, or the destination is held open by a reader on a
         // platform that will not rename over one. Either way the bytes are
-        // already in the caller's hands and an identical entry either exists or
-        // will; the temporary is removed and nothing is reported.
+        // already in the caller's hands, and the temporary goes.
         std::error_code removeError;
         fs::remove(temporary, removeError);
+
+        // Whether that was a *failure* is what the destination says, and asking
+        // is what keeps the header's promise that neither half of a lost race
+        // is reported as one. An entry sitting there is the winner: byte for
+        // byte this entry, because both were built from the same key. Nothing
+        // there is a filesystem that refused the write, and that is the case
+        // `writeFailures` exists to show. On Windows the difference is not
+        // hypothetical -- a concurrent `Load` holding the destination open
+        // fails this rename on a cache that is working exactly as intended.
+        std::error_code existsError;
+        const bool published = fs::exists(path, existsError) && !existsError;
         const std::lock_guard<std::mutex> lock(_impl->mutex);
-        ++_impl->stats.writeFailures;
+        if (!published) {
+            ++_impl->stats.writeFailures;
+        }
         return false;
     }
 
-    const std::lock_guard<std::mutex> lock(_impl->mutex);
-    ++_impl->stats.writes;
-    _impl->stats.bytesWritten += encoded.size();
-    _impl->bytesSinceSweep += encoded.size();
-    if (!_impl->swept || _impl->bytesSinceSweep >= _impl->sweepInterval) {
-        _impl->SweepLocked();
+    Impl::SweepPlan plan;
+    bool sweep = false;
+    {
+        const std::lock_guard<std::mutex> lock(_impl->mutex);
+        ++_impl->stats.writes;
+        _impl->stats.bytesWritten += encoded.size();
+        _impl->bytesSinceSweep += encoded.size();
+        _impl->largestEntryBytes =
+            (std::max)(_impl->largestEntryBytes, static_cast<std::uint64_t>(encoded.size()));
+        if (!_impl->swept || _impl->bytesSinceSweep >= _impl->SweepIntervalLocked()) {
+            sweep = _impl->BeginSweepLocked(&plan);
+        }
+    }
+    // Outside the lock, and after the entry this call was asked for is already
+    // published: a caller waiting on `Store` waits for its own write, never for
+    // somebody else's directory walk.
+    if (sweep) {
+        _impl->RunSweep(plan);
     }
     return true;
 }
@@ -672,7 +799,9 @@ void DiskBlockStore::Clear() {
     fs::create_directories(_impl->root, error);
     _impl->knownBytes = 0;
     _impl->bytesSinceSweep = 0;
+    _impl->largestEntryBytes = 0;
     _impl->swept = false;
+    ++_impl->epoch;
 }
 
 }  // namespace cache

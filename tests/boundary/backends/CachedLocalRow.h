@@ -9,6 +9,12 @@
 // persistence" would be a comparison between two different experiments. So the
 // options, the fault, and the provisioning live here and the difference between
 // the rows is one argument.
+//
+// One thing follows from that argument rather than sitting beside it: the
+// persisted row also relabels the validator's *kind*, because the tier declines
+// to write an entry for an identity a backend synthesized. `OriginValidator`
+// below is that, and says why it is narrow enough to keep the two rows one
+// experiment.
 
 #ifndef USDASSETBOUNDARY_BACKENDS_CACHEDLOCALROW_H
 #define USDASSETBOUNDARY_BACKENDS_CACHEDLOCALROW_H
@@ -23,6 +29,8 @@
 #include "usdAssetCache/CacheOptions.h"
 #include "usdAssetCache/CachedAssetReader.h"
 #include "usdAssetCache/DiskBlockStore.h"
+#include "usdAssetIo/AssetReader.h"
+#include "usdAssetIo/Validator.h"
 #include "usdAssetLocal/LocalAssetReader.h"
 #include "usdAssetLocal/Testing.h"
 #include "usdassetboundary/Backend.h"
@@ -58,6 +66,40 @@ inline usdasset::cache::CacheOptions RowOptions() {
     return options.Normalized();
 }
 
+/// Presents the local backend's identity as one an origin issued.
+///
+/// `Persistable` writes an entry only for a `ValidatorKind::EntityTag`. An
+/// identity a *backend* synthesized is strong for as long as that backend holds
+/// the asset open -- which is what `usdAssetLocal` claims about its own, in as
+/// many words -- and that is a claim about a reader's lifetime rather than a
+/// directory's. The rule is right, and this row is not arguing with it. But a
+/// row about persistence has to put bytes on a disk to be one, and the local
+/// backend is the only one the boundary suite can provision a fixture for.
+///
+/// So the relabel is as narrow as it can be made. The validator's *value* is
+/// untouched -- still device, file index, size, and mtime -- so a republished
+/// fixture is still a different identity and every revision case still fails
+/// exactly the way it is meant to. One field changes, on one row, inside a test
+/// binary that provisions, reads, and removes its own fixtures in one process:
+/// the window the derived claim is valid in anyway.
+class OriginValidator : public usdasset::AssetReader {
+public:
+    explicit OriginValidator(std::unique_ptr<usdasset::AssetReader> inner)
+        : _inner(std::move(inner)), _metadata(_inner->Metadata()) {
+        _metadata.validator.kind = usdasset::ValidatorKind::EntityTag;
+    }
+
+    const usdasset::AssetMetadata& Metadata() const override { return _metadata; }
+
+    usdasset::ReadResult Read(std::uint64_t offset, void* dst, std::size_t size) override {
+        return _inner->Read(offset, dst, size);
+    }
+
+private:
+    std::unique_ptr<usdasset::AssetReader> _inner;
+    usdasset::AssetMetadata _metadata;
+};
+
 /// The same injected fault the `local` row uses: half of the first request, and
 /// then nothing. Through the cache it is a fetch of a whole block that stops
 /// below the end of the asset, which is the same condition the contract names.
@@ -91,10 +133,16 @@ inline usdassetboundary::BackendUnderTest MakeCachedLocalBackend(
             return result;
         }
         // The inner reader's counters, so the stack reports one set of numbers.
+        // Taken before the reader is handed on, and still the local reader's
+        // own however many decorators end up between it and the cache.
         usdasset::ReaderMetrics* innerMetrics = &local.reader->Metrics();
+        std::unique_ptr<usdasset::AssetReader> inner(local.reader.release());
+        if (persistent != nullptr) {
+            usdasset::AssetReader* relabelled = new OriginValidator(std::move(inner));
+            inner.reset(relabelled);
+        }
         usdasset::cache::CachedOpenResult cached = usdasset::cache::Wrap(
-            std::unique_ptr<usdasset::AssetReader>(local.reader.release()), innerMetrics,
-            RowOptions(), &store, persistent);
+            std::move(inner), innerMetrics, RowOptions(), &store, persistent);
         result.reader = std::move(cached.reader);
         result.status = cached.reader ? std::move(local.status) : std::move(cached.status);
         return result;

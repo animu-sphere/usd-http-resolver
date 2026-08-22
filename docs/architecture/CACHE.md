@@ -180,12 +180,13 @@ Implemented in `v0.4.0`, as `DiskBlockStore`.
 An on-disk cache is admitted only after validators land, because a persistent
 cache without a validator is a stale-data generator that survives restarts.
 
-Persistence is admitted per asset, not per deployment, and the test is validator
-strength:
+Persistence is admitted per asset, not per deployment, and the test is the
+validator — its strength, and who claimed it:
 
-| Validator strength | In-memory, for the reader's lifetime | Persistent across opens |
+| Validator | In-memory, for the reader's lifetime | Persistent across opens |
 | --- | --- | --- |
-| `Strong` | yes | yes |
+| `Strong`, issued by the origin | yes | yes |
+| `Strong`, derived by the backend | yes | no |
 | `Weak` | yes | no |
 | `None` | yes | no |
 
@@ -196,12 +197,27 @@ binding in §2.1 of [ASSET_READER.md](ASSET_READER.md) carries the guarantee, so
 in-memory caching is safe regardless. Across opens there is no binding left, and
 a weak match becomes a guess written to disk.
 
+Strength alone is necessary and not sufficient, which is why the table has four
+rows rather than three. Strength is a claim, and a claim has an author. An
+entity tag is the origin's, made against the bytes it served, and it means the
+same thing to whoever reads the entry next. A `ValidatorKind::Derived` identity
+is a backend's account of what it could see while it held the asset open:
+`usdAssetLocal` renders device, file index, size, and modification time, and
+declares the result `Strong` — correctly, and it says exactly how far the claim
+reaches, which is *for as long as the reader lives*. On a filesystem whose
+timestamp resolution is coarse enough to hide a same-size rewrite in place
+([its own known limitation](../../libs/usd-asset-local/README.md)) that claim is
+already at its edge. Writing it to disk would move the edge from "until this
+reader closes" to "until the entry is evicted" — a stale read that survives a
+restart, which is the thing an on-disk cache was held back until validators
+landed in order not to become.
+
 The requirements, and what each one is in the tree:
 
 | Requirement | As implemented |
 | --- | --- |
 | Entries keyed by the same `CacheKey`, validator included | The file name is half a SHA-256 digest of identifier, validator, block size, and block index; the whole digest is written inside the entry and compared before a cached byte is used, so a name collision costs a miss and can never serve one asset's bytes for another's |
-| Written only when the reader's identity is `Stable` | `Persistable`, answered once at open from the validator captured at open. A weak or absent one neither writes nor reads: it is not that the entry would be missing, it is that this tier is not consulted at all |
+| Written only when the reader's identity is `Stable` | `Persistable`, answered once at open from the validator captured at open. A weak or absent one neither writes nor reads: the tier is never consulted for an entry, and the write path is entered only far enough to be refused before it touches the filesystem. Refused rather than skipped, because a refusal nobody counts cannot answer the question a deployment actually asks — `rejected` is why the directory is not filling up |
 | Atomic writes | The entry is built whole in memory, written to a temporary in the destination's own directory, and renamed into place. A rename that loses a race drops the temporary and reports nothing — the loser's bytes were identical to the winner's |
 | A directory the process owns, no attacker-controllable filename component | Every component is hexadecimal. A URL is digested, never spelled; `http://host/../../etc/passwd` is thirty-two hex characters like every other identifier |
 | A corrupt entry discarded, never trusted | Header and body are checksummed separately. A structurally broken entry is deleted on the way out rather than re-read and re-rejected forever; one that is intact but names another identity is left where it is, because it is somebody's valid entry |
@@ -216,7 +232,13 @@ first is a bound, and the other two are the same refusal read twice:
   eviction order is oldest-written first rather than least-recently-used —
   refreshing a timestamp on every hit would turn a read into a write. Eviction
   here is invisible to correctness for the reason §7 gives in memory, so an
-  approximate order costs a re-fetch and nothing else.
+  approximate order costs a re-fetch and nothing else. The budget a sweep
+  enforces is the host's, unless the host's number cannot hold a few of the
+  largest entry the store has written — a budget that would evict the entry
+  whose write triggered the sweep is two I/Os spent to achieve nothing, and a
+  byte floor cannot rule that out on its own because a block size is a separate
+  runtime choice. The walk itself runs outside the store's lock, for the reason
+  the next paragraph gives about `Load`.
 - **Persistence is off unless a directory is named.** There is no default
   location. A resolver that started writing to a disk nobody named would be a
   surprise, and the variables that turn it on are in

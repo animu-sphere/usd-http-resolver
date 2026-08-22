@@ -199,7 +199,15 @@ public:
         // a changed one fails its subsequent reads rather than reclassifying --
         // so asking per read would be the same answer with a lock in front of
         // it.
-        persists = persistent.IsEnabled() && Persistable(inner->Metadata().validator);
+        //
+        // Two answers rather than one, because the tier distinguishes them. A
+        // store nobody configured is not consulted at all; a store that is on
+        // and an asset that may not persist is a *refusal*, and the refusal is
+        // the answer to "why is the cache directory not filling up", which is
+        // only worth anything if somebody counts it.
+        persistable = Persistable(inner->Metadata().validator);
+        persistentEnabled = persistent.IsEnabled();
+        persists = persistentEnabled && persistable;
     }
 
     ~Impl() {
@@ -224,6 +232,12 @@ public:
     CacheOptions options;
     BlockCache& store;
     DiskBlockStore& persistent;
+    /// Whether this asset's validator admits an entry that outlives the process.
+    bool persistable = false;
+    /// Whether a persistent tier exists to admit it to.
+    bool persistentEnabled = false;
+    /// Both, which is what the read path needs: the tier is read only when
+    /// there is something there that this reader is allowed to trust.
     bool persists = false;
     ReaderMetrics metrics;
     std::shared_ptr<BlockCache::Binding> binding;
@@ -401,8 +415,14 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                     // After the in-memory publish and never before it. A write
                     // to disk fails for a dozen reasons a read must not care
                     // about, and the block is correct and resident either way.
-                    if (persists &&
-                        persistent.Store(binding->Identity(), blockIndex, true, bytes,
+                    //
+                    // `persistable` and not a literal `true`: the store enforces
+                    // the strength rule, and it can only report what it turned
+                    // away if it is asked. A weak or absent validator still
+                    // writes nothing -- the call returns before it touches the
+                    // filesystem -- it is now merely counted on the way out.
+                    if (persistentEnabled &&
+                        persistent.Store(binding->Identity(), blockIndex, persistable, bytes,
                                          static_cast<std::size_t>(extent.length))) {
                         metrics.AddPersistedWrite();
                     }

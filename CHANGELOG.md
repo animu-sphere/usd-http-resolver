@@ -30,9 +30,17 @@ told. The second writes blocks to a disk a later process reads back.
   still happen. `bounded query, reopened` in
   [BASELINE.md](docs/reference/BASELINE.md) is that pair.
 
-  A `Weak` or absent identity does not merely skip the write. The tier is not
-  consulted at all, so it cannot read an entry either, and a restart therefore
-  cannot turn a guess into a durable answer.
+  A `Weak` or absent identity does not merely skip the write. The tier is never
+  read for one, so a restart cannot turn a guess into a durable answer, and the
+  write is refused inside the store rather than outside it, so that `rejected`
+  counts what the rule turned away.
+
+  Nor is `Strong` on its own enough. Strength is a claim and a claim has an
+  author: an entity tag is the origin's and means the same thing to whoever
+  reads the entry next, while a `Derived` identity — `usdAssetLocal`'s device,
+  file index, size, and mtime — is strong for as long as that backend holds the
+  file open, which is what it says about itself. Only an identity the origin
+  issued crosses a process boundary.
 
 - **The properties CACHE.md §8 asked for a release in advance**, each with a
   case: entries keyed by the whole key rather than by the URL; the identity
@@ -60,7 +68,12 @@ told. The second writes blocks to a disk a later process reads back.
   enforced per write, evicting oldest-written first. Not least-recently-used:
   refreshing a timestamp on every hit would turn a read of a cached block into a
   write. Eviction there is invisible to correctness for the reason it is in
-  memory, so an approximate order costs a re-fetch and nothing else.
+  memory, so an approximate order costs a re-fetch and nothing else. The budget
+  a sweep enforces is the host's, unless the host's number cannot hold a few of
+  the largest entry the store has written: a byte floor cannot relate itself to
+  a block size nobody told it, and a budget that evicts the entry whose write
+  triggered the sweep is two I/Os spent to achieve nothing. The walk runs
+  outside the store's lock, for the same reason a read of one entry does.
 
 - **Two environment variables**, `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` and
   `USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET`. Naming a directory is the only
@@ -77,8 +90,12 @@ told. The second writes blocks to a disk a later process reads back.
 
 - **`boundary_persisted_local`**, a fourth row in the shared boundary suite: the
   same row definition as `cached-local` with the tier underneath it, so the two
-  are a comparison rather than two experiments. Every case unchanged, green
-  under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer.
+  are a comparison rather than two experiments. The one further difference is
+  the validator's *kind*, relabelled so that the tier writes at all; the value
+  is the local backend's own, so a republished fixture is still a different
+  identity and every revision case still fails where it should. Every case
+  unchanged, green under AddressSanitizer, UndefinedBehaviorSanitizer, and
+  ThreadSanitizer.
 
 - **`usdAssetCache_persistence`**, which asks what the suite cannot, because the
   suite asks only for bytes: whether a second process pays for what the first

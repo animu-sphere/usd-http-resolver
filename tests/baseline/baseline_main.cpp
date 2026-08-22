@@ -429,7 +429,8 @@ bool NoCacheCounterMoved(const MetricsSnapshot& metrics) {
            metrics.requestsSavedByCoalescing == 0 &&
            metrics.requestsSavedBySingleFlight == 0 &&
            metrics.bytesOverFetched == 0 && metrics.evictions == 0 &&
-           metrics.peakResidentBytes == 0;
+           metrics.peakResidentBytes == 0 && metrics.persistedHits == 0 &&
+           metrics.persistedWrites == 0;
 }
 
 /// The counter assertions every scenario shares.

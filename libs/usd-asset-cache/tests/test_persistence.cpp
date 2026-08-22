@@ -224,6 +224,20 @@ void TestStrengthRule() {
     claimed.kind = ValidatorKind::None;
     claimed.strength = ValidatorStrength::Strong;
     CHECK(!Persistable(claimed));
+
+    // And strength on its own is not the rule. `usdAssetLocal` renders device,
+    // file index, size, and mtime into a `Derived` identity and declares it
+    // `Strong` -- correctly, for as long as it holds the file open, which is
+    // what its own comment claims and all it claims. An entry outlives the
+    // reader that wrote it, so this tier asks for a strength the origin issued
+    // and not one a backend synthesized. It is still shareable in memory, and
+    // the two answers differing is the point of the two predicates.
+    Validator derived;
+    derived.value = "01d3f2:00000041:4096:133676160000000000";
+    derived.kind = ValidatorKind::Derived;
+    derived.strength = ValidatorStrength::Strong;
+    CHECK(!Persistable(derived));
+    CHECK(usdasset::cache::IsShareable(derived));
 }
 
 // --- the store on its own ----------------------------------------------------

@@ -25,8 +25,8 @@ it ships with, and the measurement that chose them, are
   and the rest wait.
 - Eviction under a bounded, process-wide memory budget, shared across assets.
 - Bypassing itself entirely for a read large enough to be a streaming pass.
-- Persisting blocks to a directory, for a `Strong` validator only, so that a
-  later process pays nothing for what this one fetched.
+- Persisting blocks to a directory, for a `Strong` validator the origin issued
+  and no other, so that a later process pays nothing for what this one fetched.
 - Populating the cache counters of
   [METRICS.md](../../docs/architecture/METRICS.md) §2.2, including
   `bytesOverFetched`, which is what block alignment costs.
@@ -42,14 +42,19 @@ it ships with, and the measurement that chose them, are
   it. A hit reaches nothing and observes nothing.
 - **No validator interpretation.** The validator's `value` is a byte string
   here and nothing else: never parsed, never compared to an `ETag`, never read
-  for recency. Exactly one other field is read, `strength`, exactly once, to
-  decide whether an entry may be shared with a reader that did not store it.
-- **No persistence for a weak identity.** On-disk entries exist as of `v0.4.0`,
-  and CACHE.md §8's table is the whole rule: `Strong` writes, `Weak` and `None`
-  do not. Within one reader the revision binding carries the guarantee whatever
-  the strength is, which is why those two still cache — privately, in memory,
-  and dropped when the reader closes. Across processes there is no binding left
-  and a weak match becomes a guess written to disk.
+  for recency. Two other fields are read, once each and never per request:
+  `strength`, to decide whether an entry may be shared with a reader that did not
+  store it, and — only for the persistent tier — `kind`, to decide whether it may
+  outlive the process. Neither is interpretation of the value; both are the
+  producer's own summary, read as an enum.
+- **No persistence for a weak identity, nor for a derived one.** On-disk entries
+  exist as of `v0.4.0`, and CACHE.md §8's table is the whole rule: a `Strong`
+  entity tag writes, and `Strong` derived, `Weak`, and `None` do not. Within one
+  reader the revision binding carries the guarantee whatever the validator is,
+  which is why all three still cache — privately, in memory, and dropped when the
+  reader closes. Across processes there is no binding left: a weak match becomes
+  a guess written to disk, and a backend-derived one is a claim about a reader's
+  lifetime being asked to hold for a directory's.
 - **No cache directory of its own choosing.** Persistence is off unless a host
   names a directory. There is no default location.
 - **No read-ahead.** A read is expanded to the blocks it touches and no
@@ -179,7 +184,7 @@ ctest --test-dir build/core -R usdAssetCache
 | `usdAssetCache_singleflight` | Threads. The ThreadSanitizer target for this module |
 | `usdAssetCache_persistence` | The persistent tier: what a second process pays, what a weak validator may never write, what a scribbled entry costs, and what a hostile URL becomes on a filesystem |
 | `boundary_cached_local_*` | The shared boundary suite, unchanged, over `cache over local` |
-| `boundary_persisted_local_*` | The same suite over the same row with the disk tier underneath it |
+| `boundary_persisted_local_*` | The same suite over the same row with the disk tier underneath it, and the validator's kind relabelled so the tier will write — see `CachedLocalRow.h` |
 | `usdAssetCache_block_policy` | The block-policy sweep, over a real socket, at five block sizes and four gaps |
 
 The first four need nothing but a compiler. The last three live outside `libs/`,

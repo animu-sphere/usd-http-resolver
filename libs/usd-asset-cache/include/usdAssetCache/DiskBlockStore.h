@@ -15,14 +15,20 @@
 // What the tier is allowed to do is narrower than what the memory tier is
 // allowed to do, and the difference is one rule:
 //
-//   an entry is written only for a `Strong` validator
+//   an entry is written only for a `Strong` validator the origin issued
 //
 // Within one reader's lifetime the revision binding of ASSET_READER.md §2.1
 // carries the guarantee whatever the validator's strength is, which is why the
 // memory tier caches for a weak or absent one -- privately, and dropped when
 // the reader closes. Across processes there is no binding left, and a weak
-// match becomes a guess written to disk. This store is handed the binding's
-// answer to that question rather than re-deriving it; see `Persistable`.
+// match becomes a guess written to disk.
+//
+// The second half of the rule is why the first half is not enough. Strength is
+// a claim, and a claim has an author: an entity tag is the origin's, and means
+// the same thing to whoever reads the entry next; a `Derived` identity is a
+// backend's account of what it could see while it held the asset open, and is
+// strong for exactly that long. This store is handed the answer rather than
+// re-deriving it; see `Persistable`.
 //
 // Nothing here parses a validator, and nothing here builds a path out of one.
 // A URL never becomes a path: every filename component is hexadecimal, derived
@@ -61,8 +67,15 @@ namespace cache {
 /// nobody bounded is a disk nobody can plan for.
 inline constexpr std::uint64_t kDefaultPersistentBudgetBytes = 1024ull * 1024 * 1024;
 
-/// The floor a budget is raised to. Below a few blocks the store would evict
-/// what it just wrote, which costs two I/Os to achieve nothing.
+/// The floor a budget is raised to, so that a host which named zero gets a
+/// number rather than a directory that trims itself empty.
+///
+/// A floor in bytes, and deliberately not a promise about blocks: a block may
+/// legally be as large as `kMaxBlockSize`, and a floor that admitted a few of
+/// those would force a quarter of a gigabyte on a host that asked for a
+/// megabyte. That a sweep never evicts the entry whose write triggered it is
+/// kept where an entry's size is a fact rather than a bound -- in the store,
+/// against the largest entry it has actually written.
 inline constexpr std::uint64_t kMinPersistentBudgetBytes = 1024ull * 1024;
 
 struct DiskCacheOptions {
@@ -75,7 +88,7 @@ struct DiskCacheOptions {
     /// on every write; see `DiskBlockStore::Stats::sweeps`.
     std::uint64_t budgetBytes = kDefaultPersistentBudgetBytes;
 
-    /// The same options with the budget raised to something a block fits in.
+    /// The same options with the budget raised to `kMinPersistentBudgetBytes`.
     /// Clamps rather than fails, for the reason `CacheOptions::Normalized`
     /// gives: the diagnostic belongs where the value was read.
     DiskCacheOptions Normalized() const;
@@ -83,10 +96,16 @@ struct DiskCacheOptions {
 
 /// Whether the entries of an asset with this validator may be written to disk.
 ///
-/// The same predicate as `IsShareable`, named separately because the two
-/// answers are the same rule applied at two lifetimes and a future relaxation
-/// of one must not silently relax the other. CACHE.md §8's table is this
-/// function: `Strong` yes, `Weak` no, `None` no.
+/// Stricter than `IsShareable`, and the difference is what the second lifetime
+/// costs. Sharing an entry between two readers of one process asks only that
+/// the strength be `Strong`; keeping one after the process is gone asks in
+/// addition that the strength was claimed by the origin rather than synthesized
+/// by a backend out of what it could see while it held the asset open. CACHE.md
+/// §8's table is this function: a `Strong` entity tag yes, a `Strong` derived
+/// identity no, `Weak` no, `None` no.
+///
+/// Named separately from `IsShareable` rather than delegating to it, because a
+/// future relaxation of either must be a decision about that one.
 bool Persistable(const Validator& validator) noexcept;
 
 /// A content-addressed directory of blocks.
@@ -115,7 +134,7 @@ public:
         std::uint64_t collisions = 0;   ///< Valid entries that named another key.
         std::uint64_t bytesRead = 0;
         std::uint64_t bytesWritten = 0;
-        std::uint64_t sweeps = 0;
+        std::uint64_t sweeps = 0;       ///< Directory walks, each outside the lock.
         std::uint64_t trimmed = 0;      ///< Entries deleted under the budget.
         std::uint64_t trimmedBytes = 0;
         std::uint64_t residentBytes = 0;///< As of the last sweep, plus writes since.
