@@ -39,6 +39,7 @@
 #include "usdAssetIo/Metrics.h"
 #include "usdAssetCache/BlockCache.h"
 #include "usdAssetCache/CacheOptions.h"
+#include "usdAssetCache/DiskBlockStore.h"
 
 namespace usdasset {
 namespace cache {
@@ -88,6 +89,14 @@ public:
     /// than infer it from a request count.
     const BlockCache::Binding& Binding() const noexcept;
 
+    /// Whether blocks this reader fetches are written to the persistent tier.
+    ///
+    /// False whenever persistence is off, and false for a `Weak` or absent
+    /// validator whatever the configuration says -- which is CACHE.md §8's
+    /// table, and the reason this is worth asking a reader rather than asking
+    /// the store.
+    bool PersistsBlocks() const noexcept;
+
 private:
     class Impl;
     explicit CachedAssetReader(std::unique_ptr<Impl> impl);
@@ -116,6 +125,12 @@ struct CachedOpenResult {
 /// is the normal case: the budget is process-wide and shared across assets
 /// (CACHE.md section 7), so a store per reader would not be one budget.
 ///
+/// `persistent` is the on-disk tier consulted on a miss and written on a fetch.
+/// Null takes the process store, which is disabled until a host configures it,
+/// so a caller that says nothing gets exactly the behavior it had before this
+/// tier existed. Whether anything is actually written is decided per asset by
+/// the validator's strength and not by this argument (CACHE.md section 8).
+///
 /// Fails with `InvalidArgument` when `inner` is null.
 ///
 /// It does **not** check `supportsRandomAccess`, and cannot: it returns a
@@ -126,7 +141,8 @@ struct CachedOpenResult {
 CachedOpenResult Wrap(std::unique_ptr<AssetReader> inner,
                       ReaderMetrics* innerMetrics,
                       const CacheOptions& options,
-                      BlockCache* store);
+                      BlockCache* store,
+                      DiskBlockStore* persistent = nullptr);
 
 /// The same wrap, in the shape every backend's open returns, so that a caller
 /// that has an `OpenResult` can decorate it in one line and hand the result
@@ -138,7 +154,8 @@ CachedOpenResult Wrap(std::unique_ptr<AssetReader> inner,
 OpenResult WrapAsset(OpenResult inner,
                      ReaderMetrics* innerMetrics,
                      const CacheOptions& options,
-                     BlockCache* store);
+                     BlockCache* store,
+                     DiskBlockStore* persistent = nullptr);
 
 }  // namespace cache
 }  // namespace usdasset

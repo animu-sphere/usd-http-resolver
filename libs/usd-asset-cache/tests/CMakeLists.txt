@@ -16,7 +16,8 @@
 set(_usd_asset_cache_tests
     plan
     cache
-    singleflight)
+    singleflight
+    persistence)
 
 foreach(_test ${_usd_asset_cache_tests})
     add_executable(usdAssetCache_test_${_test} test_${_test}.cpp)

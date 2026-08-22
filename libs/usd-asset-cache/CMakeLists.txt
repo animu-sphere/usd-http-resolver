@@ -50,7 +50,8 @@ add_library(usdAssetCache STATIC
     src/BlockPlan.cpp
     src/CacheKey.cpp
     src/CacheOptions.cpp
-    src/CachedAssetReader.cpp)
+    src/CachedAssetReader.cpp
+    src/DiskBlockStore.cpp)
 add_library(usdasset::cache ALIAS usdAssetCache)
 set_target_properties(usdAssetCache PROPERTIES
     EXPORT_NAME cache
@@ -67,6 +68,13 @@ target_link_libraries(usdAssetCache PUBLIC usdasset::io)
 
 find_package(Threads REQUIRED)
 target_link_libraries(usdAssetCache PUBLIC Threads::Threads)
+
+# The persistent tier is std::filesystem. GCC before 9 keeps it in a separate
+# library rather than in libstdc++, and the failure without this is a link error
+# naming symbols nobody wrote.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    target_link_libraries(usdAssetCache PUBLIC stdc++fs)
+endif()
 
 if(MSVC)
     target_compile_options(usdAssetCache PRIVATE /utf-8 /W4)
