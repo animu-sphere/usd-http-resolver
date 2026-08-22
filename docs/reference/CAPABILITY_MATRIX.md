@@ -60,8 +60,12 @@ The resolver takes it. Every asset the bundle opens is decorated and bound into
 the process store, and the four cache variables in
 [CONFIGURATION.md](CONFIGURATION.md) are read at construction.
 
-What is still missing is persistence: nothing outlives the process, which is
-`v0.4.0`, and so does exposing identity to consumers. The release's I/O baseline
+Identity now leaves the process. `GetAssetInfo` publishes the resolved
+identifier, the size, an opaque validation token, and a stability class, and
+`ArAssetInfo::version` carries the token only when the identity is one a
+consumer may key durable reuse on. What is still missing is persistence:
+nothing this repository caches outlives the process, which is the other half of
+`v0.4.0`. The release's I/O baseline
 is recorded twice over, with the cache and without it, in
 [BASELINE.md](BASELINE.md); what chose the cache's constants is
 [BLOCK_POLICY.md](BLOCK_POLICY.md). A clustered header-and-index read went from
@@ -126,7 +130,11 @@ not planned                   explicitly out of scope
 | Absence distinguished from failure | implemented | A `404` is an empty path and no diagnostic; a transport fault is an empty path *and* an `HTTPxxx` error |
 | `GetBuffer()` whole-asset materialization | not planned, ever | Returns null by contract; see §4.1 of [RESOLVER.md](../architecture/RESOLVER.md) |
 | Interoperability with whole-buffer FileFormat Plugins | not planned, ever | Incompatible with the remote random-access path by construction |
-| Asset info and identity stability | planned (`v0.4.0`) | `Stable` / `Unstable` / `Unavailable` exposed to consumers |
+| Asset info and identity stability | implemented | `resolvedIdentifier`, `size`, `validationToken`, and `stability` in `ArAssetInfo::resolverInfo`; `Stable` / `Unstable` / `Unavailable`. See [RESOLVER.md](../architecture/RESOLVER.md) §3 |
+| Reusable identity in `ArAssetInfo::version` | implemented | Populated only for a strong validator that this process has not seen contradicted. That field travels with no stability beside it, and the first consumer treats any token in it as sufficient for generated-cache reuse |
+| Identity of a republished asset | implemented | Two opens of one identifier that capture two validators stop publishing a reusable identity for the rest of the process: asset info is keyed by path and cannot say which revision a caller holds. The validator a later open is compared against is kept for the life of the process; only the metadata that saves a request is bounded |
+| Asset info against a failing origin | implemented | No open for an identifier with no resolved path, and no diagnostic of its own: `Resolve` has already paid for that round trip and posted that fault |
+| `GetModificationTimestamp` | not planned, ever | Invalid, permanently. A validator is not a time, and a fabricated one would be read by a consumer's fallback as a durable identity. RESOLVER.md §3.4 |
 | Environment-variable configuration | implemented | All nine variables in [CONFIGURATION.md](CONFIGURATION.md) — five transport bounds and four cache values. A bad value warns and takes the default; an adjusted one warns and takes the adjustment |
 | Block cache under every opened asset | implemented | The bundle decorates every `ArAsset` it hands out and binds it into the process store by identifier and validator |
 | `ArResolverContext` configuration | planned (`v0.6.0`) | Per stage; the environment form is a process-wide bootstrap |
@@ -163,7 +171,8 @@ not planned                   explicitly out of scope
 | Per-asset I/O counters | implemented | Defined in `usdAssetIo`, populated by both backends, folded into a process aggregate. The HTTP backend populates `requestCount`, `metadataRequestCount`, `retryCount`, `redirectCount`, `bytesRequested`, `bytesTransferred`, and all three latency histograms |
 | Cache counters | implemented | Populated by `libs/usd-asset-cache`, including `bytesOverFetched`, and recorded in [BASELINE.md](BASELINE.md). A decorated stack reports one counter set, the outermost reader's |
 | Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
-| Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr |
+| Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr, from an `atexit` handler armed at first use |
+| Counters folded by a reader destroyed during static teardown | implemented | The process aggregate is never destroyed. A resolver holding a retained open destroys its reader arbitrarily late, and a destroyed aggregate would be a crash at exit rather than a lost counter |
 | Recorded baselines | implemented | `tests/baseline`, the five scenarios in METRICS.md §6 against a 128 MiB loopback fixture. The record is [BASELINE.md](BASELINE.md); byte and request counts are asserted, ratios and durations are reported |
 
 ## Testing and build
@@ -185,7 +194,10 @@ not planned                   explicitly out of scope
 | Corpus projection onto the typed vocabulary | implemented | `tests/corpus`; every behavior maps to a `StatusCode`, and coverage against `AllBehaviors()` is asserted at runtime rather than claimed |
 | Boundary suite against the HTTP backend | implemented | `tests/boundary/backends/boundary_http_main.cpp`, one row, running the suite unchanged over a real server and a real socket |
 | Remote stage opened end to end | implemented | `httpResolver_test_stage`: a `UsdStage` over loopback HTTP, a relative reference followed to a second remote layer, and the `Range` header the server actually received |
-| Resolver logic tested without a USD runtime | implemented | Normalization, configuration, and the `HTTPxxx` projection each link one translation unit and nothing else |
+| Resolver logic tested without a USD runtime | implemented | Normalization, configuration, the `HTTPxxx` projection, and what identity may be published each link one translation unit and nothing else |
+| Identity publication rules asserted as a table | implemented | `httpResolver_identity`: strong, weak, absent, contradicted, and the two credential shapes. The failure this catches is silent — a token published for a validator that cannot prove a revision fails in a consumer, weeks later |
+| Asset info asserted end to end | implemented | `httpResolver_stage`: the four fields over a real socket, the `version` rule for each stability class, a republish that withdraws reusability, an invalid timestamp, and an identity answered without a second metadata request |
+| A retained open surviving to process exit | implemented | `httpResolver_stage` resolves an asset it never opens, so the reader is destroyed during static teardown. It asserts nothing in a `CHECK`; what it asserts is the exit code |
 | Redirect scheme-downgrade rejection | implemented | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. Tested in `usdAssetHttp` against a scripted `Location` |
 | Mid-read revision-change tests, HTTP | implemented | Both halves: `ValidatorChangeMidRead` in the corpus projection, and the boundary suite's own republish-underneath-an-open-reader case |
 | No credential in a message, asserted | implemented | The corpus projection opens a failing URL carrying userinfo and a query token and checks the rendered status for both |

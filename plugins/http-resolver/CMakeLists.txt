@@ -74,6 +74,7 @@ add_library(${PLUGIN_NAME} SHARED
     src/Diagnostics.cpp
     src/HttpResolver.cpp
     src/Identifier.cpp
+    src/Identity.cpp
     src/Report.cpp
     src/ResolvedAsset.cpp)
 

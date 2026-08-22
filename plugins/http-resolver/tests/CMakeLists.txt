@@ -2,13 +2,13 @@
 #
 # The bundle's tests, in two groups that differ in what they need.
 #
-# The first three link one translation unit out of src/ and nothing else: no
-# OpenUSD, no sockets. Identifier normalization, the configuration surface, and
-# the HTTPxxx projection are arithmetic, and keeping them testable that way is
-# why they are separate translation units rather than lambdas inside the
-# resolver.
+# The first four link one translation unit out of src/ and nothing else: no
+# OpenUSD, no sockets. Identifier normalization, the configuration surface, the
+# HTTPxxx projection, and what may be published about an asset's identity are
+# arithmetic, and keeping them testable that way is why they are separate
+# translation units rather than lambdas inside the resolver.
 #
-# The fourth is the release's headline claim -- a remote stage, over a socket,
+# The fifth is the release's headline claim -- a remote stage, over a socket,
 # through the registered plugin -- and it needs a runtime and an origin. It is
 # also the one place in this repository that links OpenUSD and the hostile
 # fixture corpus at once, which WORKSPACE.md §2 admits by name.
@@ -37,12 +37,14 @@ endfunction()
 http_resolver_offline_test(configuration Configuration)
 http_resolver_offline_test(diagnostics Diagnostics)
 http_resolver_offline_test(identifier Identifier)
+http_resolver_offline_test(identity Identity)
 
-# `Identifier.cpp` needs nothing at all; the other two need the contracts they
-# are expressed in. Neither needs a transport, and neither opens a socket.
+# `Identifier.cpp` needs nothing at all; the other three need the contracts they
+# are expressed in. None needs a transport, and none opens a socket.
 target_link_libraries(httpResolver_test_configuration
                       PRIVATE usdasset::http usdasset::cache)
 target_link_libraries(httpResolver_test_diagnostics PRIVATE usdasset::io)
+target_link_libraries(httpResolver_test_identity PRIVATE usdasset::io)
 
 # The end-to-end test needs the fixture corpus, which exists only in a build
 # that includes tests/ -- a standalone `ost plugin build` of this bundle has no

@@ -124,9 +124,49 @@ here that reads a whole asset: a host that turns detached layers on has asked
 for the layer's bytes to be independent of the asset, and there is no way to
 provide that remotely except by transferring them. It is off by default.
 
+## Asset info and identity
+
+`GetAssetInfo` publishes what a consumer needs in order to decide whether *its
+own* generated-cache reuse is safe, in `ArAssetInfo::resolverInfo` as a
+`VtDictionary`:
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `resolvedIdentifier` | `string` | the normalized absolute URI, after redirects, with credentials elided |
+| `size` | `uint64` | byte size at open |
+| `validationToken` | `string` | the backend's captured validator value, opaque; empty when there is none |
+| `stability` | `string` | `Stable`, `Unstable`, or `Unavailable` |
+
+`ArAssetInfo::version` carries the same token, and **only** when the identity is
+`Stable`. That field travels with nothing beside it — no stability, no
+qualification — so a token found there is treated as fit to key durable reuse
+on, and a token that is not fit for that must not appear in it. A weak or absent
+validator leaves it empty and explains itself in the dictionary, where
+`stability` is right beside the token.
+
+Two rules follow, and both are in
+[RESOLVER.md §3](../../docs/architecture/RESOLVER.md):
+
+- **The identity is the open's**, not a fresh request's. Asset info is answered
+  from the open this process already performed for that identifier, because the
+  identity a consumer needs is the identity of the bytes it is holding, and a
+  `HEAD` issued now describes whatever is published now.
+- **A contradicted identifier stops being reusable.** Two opens of one
+  identifier that captured two different validators — a republish underneath a
+  running process — mean asset info can no longer say which revision a caller
+  holds, so `Stable` degrades to `Unstable` and `version` goes empty for the
+  rest of the process. The current token stays visible, because a consumer that
+  filed something under the old one needs to see that it changed.
+
+`GetModificationTimestamp` is invalid, permanently. A validator is not a time,
+reading `Last-Modified` as one would parse an HTTP construct above the backend
+that captured it, and a fabricated number would be read by a consumer's fallback
+as exactly the durable identity a weak validator is not allowed to have. An
+invalid timestamp costs a reload, never a wrong answer.
+
 ## Configuration
 
-The five transport bounds in
+The five transport bounds and the four cache values in
 [CONFIGURATION.md](../../docs/reference/CONFIGURATION.md), read once when the
 resolver is constructed:
 
@@ -137,12 +177,17 @@ resolver is constructed:
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | whole-transfer deadline | 300000 |
 | `USD_HTTP_RESOLVER_MAX_RETRIES` | attempts, minus one | 2 |
 | `USD_HTTP_RESOLVER_MAX_REDIRECTS` | redirect hops | 5 |
+| `USD_HTTP_RESOLVER_BLOCK_SIZE` | cache block size, in bytes | 65536 |
+| `USD_HTTP_RESOLVER_CACHE_BUDGET` | process-wide cache budget, in bytes | 134217728 |
+| `USD_HTTP_RESOLVER_COALESCE_GAP` | blocks of gap merged into one request | 1 |
+| `USD_HTTP_RESOLVER_MAX_REQUEST_BYTES` | ceiling on one merged request | 8388608 |
 
 A value that does not parse is a warning at construction and then the default;
-one bad value does not discard the other four. `0` is legal for the two counters
-and means "do not", and is rejected for the three deadlines, because to most
-transports a zero deadline means *no* deadline — the one value §10 of the design
-policy exists to forbid.
+one bad value does not discard the others, and a value that is adjusted rather
+than refused — a block size rounded down to a power of two — warns and takes the
+adjustment. `0` is legal for the two counters and means "do not", and is
+rejected for the three deadlines, because to most transports a zero deadline
+means *no* deadline — the one value §10 of the design policy exists to forbid.
 
 Per-stage configuration through `ArResolverContext` is `v0.6.0`. A host that
 opens two stages against two servers cannot be served by a process-global, and
@@ -218,24 +263,31 @@ On Windows outside a developer command prompt, use the `plugin-msvc` preset:
 the Ninja presets need `cl.exe` already on `PATH`, and the Visual Studio
 generator finds the toolchain itself.
 
-Four tests. Three of them link one translation unit and nothing else — no
+Five tests. Four of them link one translation unit and nothing else — no
 OpenUSD, no sockets — because identifier normalization, the configuration
-surface, and the diagnostic projection are arithmetic, and a mistake in the
-first is invisible from the outside:
+surface, the diagnostic projection, and what identity may be published are
+arithmetic, and a mistake in any of them is invisible from the outside:
 
 | Test | Asserts |
 | --- | --- |
 | `httpResolver_identifier` | normalization, anchoring, what is not claimed, idempotence |
 | `httpResolver_configuration` | the five variables, and what a bad value does |
 | `httpResolver_diagnostics` | the `HTTPxxx` table, the message form, and that no secret survives |
+| `httpResolver_identity` | what asset info may publish for a strong, weak, absent, or contradicted validator, and that no credential reaches it |
 | `httpResolver_stage` | a remote stage over a real socket, against the hostile fixture corpus |
 
-The fourth is the release's claim: it stands up an origin on loopback, opens a
+The fifth is the release's claim: it stands up an origin on loopback, opens a
 `UsdStage` over it, follows a relative reference to a second remote layer, reads
 a 4 KiB window out of a 1 MiB asset and checks the `Range` header the server
 actually received, and confirms that a `404` is silent, that a failure is not,
-that range-unsupported is terminal, and that a local stage still opens exactly
-as it did.
+that range-unsupported is terminal, that asset info reports the identity of the
+open rather than of a new request, and that a local stage still opens exactly as
+it did.
+
+One of its cases asserts nothing at all in a `CHECK`: it resolves an asset it
+never opens, leaving a retained reader to be destroyed during static teardown,
+and what it asserts is the exit code. That is the only place the failure it
+exists for can appear.
 
 ## Runtime dependencies
 
@@ -256,13 +308,12 @@ recorded in [NOTICE](../../NOTICE); nothing in this bundle adds one.
 
 ## Known limitations
 
-- **No caching.** Every read is a request, deliberately, so that the request
-  pattern is visible before it is optimized. The block cache is `v0.3.0`, and it
-  will key on the validator this release already captures.
-- **Identity is not exposed.** `GetAssetInfo` and `GetModificationTimestamp` are
-  the defaults. Validators are captured and used, but exposing them to a
-  consumer turns a wrong validator into a durable wrong answer, so the surface
-  opens in `v0.4.0` after capture has been correct for a release.
+- **Nothing cached outlives the process.** The block cache is in front of every
+  asset this bundle opens (`v0.3.0`), and it is in memory only: on-disk
+  persistence is `v0.4.0`, admitted for a strong validator alone.
+- **Identity is exposed through `GetAssetInfo` and nowhere else.** There is no
+  side-channel API, and `GetModificationTimestamp` is invalid by design rather
+  than by omission. See *Asset info and identity* above.
 - **No authentication.** Public HTTP is the target. A URL carrying credentials
   has them removed from its identifier, and the request then fails at the origin
   rather than succeeding with a secret in the logs.

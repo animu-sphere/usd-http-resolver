@@ -13,6 +13,9 @@ Status: implemented in `v0.2.0`, except §3, which is `v0.4.0`, and §6, which i
 `v0.6.0` apart from the environment variables named in
 [CONFIGURATION.md](../reference/CONFIGURATION.md).
 
+§3 has landed: asset info and identity stability are implemented, and what that
+surface may and may not publish is stated there rather than left to the code.
+
 ## 1. Registration
 
 The bundle registers a URI-scheme resolver, not the primary resolver:
@@ -151,23 +154,27 @@ and an unbounded table would hold one reader per asset the process ever asked
 about. Dropping the oldest costs a later metadata request and never costs
 correctness.
 
-## 3. Asset info and identity — Planned (`v0.4.0`)
+## 3. Asset info and identity
 
 Validators are captured in `v0.2.0`, because a range backend cannot be correct
-without them (§2.1 of [ASSET_READER.md](ASSET_READER.md)). What waits for
-`v0.4.0` is *exposing* identity outward, which is a different commitment: a
+without them (§2.1 of [ASSET_READER.md](ASSET_READER.md)). What waited for
+`v0.4.0` was *exposing* identity outward, which is a different commitment: a
 consumer that keys its own generated cache on this surface turns a wrong
-validator into a durable wrong answer, so the surface opens only after capture
-has been correct for a release.
+validator into a durable wrong answer, so the surface opened only after capture
+had been correct for a release.
 
-`GetModificationTimestamp` and `GetAssetInfo` then expose what a consumer needs
-to decide whether *its own* generated-cache reuse is safe:
+`GetAssetInfo` exposes what a consumer needs in order to decide whether *its
+own* generated-cache reuse is safe. Four values, under the neutral names the
+first consumer's contract uses, in `ArAssetInfo::resolverInfo` as a
+`VtDictionary`:
 
 ```text
-resolved identifier      the normalized absolute URI, after redirects
-size                     byte size at open
-validation token         opaque; the backend's captured validator value
-stability                Stable | Unstable | Unavailable
+resolvedIdentifier   string    the normalized absolute URI, after redirects,
+                               with credentials elided
+size                 uint64    byte size at open
+validationToken      string    opaque; the backend's captured validator value,
+                               empty when there is no usable validator
+stability            string    "Stable" | "Unstable" | "Unavailable"
 ```
 
 The token is opaque by contract. A consumer must not parse it, compare it to an
@@ -185,8 +192,104 @@ this layer. A consumer reading `Unstable` knows not to persist a derived
 artifact against this asset; it does not know, and must not need to know, that
 the reason was a one-second `Last-Modified` granularity.
 
+### 3.1 `version` carries a token only when the token may be reused
+
+`ArAssetInfo::version` carries the same token, and only when the identity is
+`Stable`. That asymmetry with the dictionary is deliberate, and it is the rule
+this whole surface turns on.
+
+`version` travels alone. Nothing accompanies it — no stability, no
+qualification — and a consumer that finds a token there has been handed an
+identity with no way to ask what it is worth. The first consumer does exactly
+that: it reads `assetInfo.version`, and treats a non-empty value as sufficient
+for generated-cache reuse. So a token that may not key durable reuse must not
+appear in that field, and a weak or absent validator leaves it empty and
+explains itself in `resolverInfo` instead.
+
+The dictionary is annotated, so it can afford to say more. `validationToken` is
+published there for a weak validator too, because a weak validator that
+*changed* is still positive evidence that the asset changed (§7.2 of
+[ASSET_READER.md](ASSET_READER.md)) — it is only proof of *sameness* that weak
+cannot supply. Beside it, `stability` says which of those two uses is admitted.
+
+### 3.2 An identifier that contradicted itself stops being reusable
+
+`ArAssetInfo` is keyed by asset path, and this resolver hands out one reader per
+open (§2.3): two `ArAsset`s over one URL may be reading two revisions. Asset
+info has no way to say which of them a caller is holding.
+
+That ambiguity is harmless until the asset actually moves. When two opens of one
+identifier capture two different validators — a republish underneath a running
+process — a consumer holding the earlier revision could be handed the later
+revision's token, and would file bytes from revision A under the identity of
+revision B. Nothing downstream could detect it: the entry would validate, and it
+would be wrong.
+
+So a contradicted identifier stops publishing a reusable identity for the rest
+of the process: `Stable` degrades to `Unstable`, and `version` goes empty. The
+current token stays visible in the dictionary, because a consumer that filed
+something under the old one needs to see that it changed.
+
+Two things are remembered per identifier, and only one of them may be forgotten.
+The *answer* — the metadata that lets asset info be returned without a request —
+is held in a bounded table, because dropping it costs a request and nothing
+else. The *validator a later open is compared against* is held for the life of
+the process, because dropping it is not a cost, it is a wrong answer: an asset
+that has already moved would look like an asset being opened for the first time,
+and would publish a reusable token for a revision some consumer is not holding.
+A bound on that second record is a bound on how far back a republish can be
+noticed, and there is no such bound.
+
+### 3.3 The identity is the open's, not a fresh request's
+
+Asset info is answered from the open this process already performed for that
+identifier, and never from a metadata request issued to answer the question.
+Those are different answers, and the difference is not a matter of cost: the
+identity a consumer needs is the identity of the bytes it is *holding*, and a
+`HEAD` issued now describes whatever is published now.
+
+An identifier nothing has opened is opened here, and the reader is retained
+exactly as §2.3 describes, so the request it costs is the one the `OpenAsset`
+that follows would have made rather than an extra one.
+
+Two limits on that, and both are about an origin that is failing. Asset info
+does not open an identifier whose resolved path is empty: an empty resolved path
+is a resolution that failed or never happened, and asset info must not be the
+call that discovers a `503` — for a layer being reloaded against a dead origin
+that is a second identical round trip behind the one `Resolve` has just paid
+for. And it posts no diagnostic of its own: this is a question about identity
+rather than an operation on the asset, the operation that follows reports the
+same fault with the same code, and one fault rendered twice is the noise
+[DIAGNOSTICS.md](DIAGNOSTICS.md) §3 exists to avoid.
+
+### 3.4 `GetModificationTimestamp` is invalid, permanently
+
+A validator is not a time. `Last-Modified` sometimes is, but reading it as one
+means parsing an HTTP construct above the backend that captured it, which §7.1
+of the reader contract places below this layer — and a strong `ETag`, the
+validator this resolver most wants to publish, carries no time at all.
+
+Synthesizing one anyway would be worse than not answering. A consumer that finds
+no token in asset info falls back to the timestamp and builds an identity out of
+it, so a fabricated number would manufacture precisely the durable identity that
+a weak or absent validator is not allowed to have. `GetAssetInfo` is the whole
+identity surface, and an invalid timestamp is how this resolver says so.
+
+What an invalid timestamp costs is a reload: `SdfLayer::Reload` re-reads a layer
+whose timestamp is invalid rather than comparing it. That is a request, and
+never a wrong answer.
+
+### 3.5 Credentials
+
 Credentials, `Authorization` values, and signed-URL query strings never appear
-in asset info, in a timestamp, or in any string a consumer can read.
+in asset info, in a timestamp, or in any string a consumer can read. The
+identifier is published through the same elision every diagnostic goes through.
+
+Elision costs a distinction, and the cost is stated rather than hidden: two
+assets that differ only in their query strings elide to one `resolvedIdentifier`.
+That field is therefore not, on its own, a cache key. The token is what
+distinguishes revisions, and a consumer that wants the URL it asked about
+already holds it — it passed it in.
 
 ## 4. The `ArAsset` surface
 

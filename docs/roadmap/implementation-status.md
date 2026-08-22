@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-20.
+Last updated: 2026-08-22.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -39,11 +39,18 @@ byte and request counts exactly, and reports the ratios; the record is
 bounded query: 0.0025 of a 128 MiB asset moved to answer it, with `amplification`
 at exactly 1.0 because there is no cache to over-fetch.
 
-Phase 3 is implemented and unreleased. `libs/usd-asset-cache` is in the tree,
-entered into the shared boundary suite as its own row, wired into the resolver,
-and measured: the constants come from a sweep rather than from a decimal point,
-and the release's before-and-after is one run of one harness. What it has not
-had is a release gate walked over it.
+Phase 3 is complete and **`v0.3.0` is released**. `libs/usd-asset-cache` is in
+the tree, entered into the shared boundary suite as its own row, wired into the
+resolver, and measured: the constants come from a sweep rather than from a
+decimal point, and the release's before-and-after is one run of one harness. The
+gate is walked and [its record](../releases/v0.3.0.md) is written.
+
+Phase 4 is under way, and its two halves are in different states. Identity now
+leaves the process: `GetAssetInfo` publishes the four neutral values of
+RESOLVER.md §3, and `ArAssetInfo::version` carries a token only for an identity
+a consumer may key durable reuse on. Persistence has not started. The rule that
+divides them — a persistent entry needs a strong validator — is the same rule in
+both halves, and it is implemented for the exposed identity today.
 
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
@@ -158,10 +165,13 @@ therefore ship unexercised.
 
 | Task | Status |
 | --- | --- |
-| Identity stability exposed through `GetAssetInfo` | Outstanding |
-| Strong-validator-only rule for persistent reuse | Outstanding |
+| Identity stability exposed through `GetAssetInfo` | Done — `resolvedIdentifier`, `size`, `validationToken`, and `stability` in `ArAssetInfo::resolverInfo`, answered from the open this process performed rather than from a fresh metadata request. [RESOLVER.md](../architecture/RESOLVER.md) §3 |
+| Strong-validator-only rule for the *exposed* identity | Done — `ArAssetInfo::version` carries a token only for a `Stable` identity, because that field travels with no stability beside it and the first consumer treats any token in it as sufficient for reuse. A weak token is published in the annotated dictionary instead, where it is evidence of change rather than a licence to reuse |
+| The identity of a republished asset | Done — two opens of one identifier that captured two validators withdraw reusability for the rest of the process. Asset info is keyed by path and cannot say which revision a caller holds, and the contradiction is remembered permanently rather than in a table that could forget it |
+| `GetModificationTimestamp` | Done, by deciding not to answer — invalid, permanently, and now overridden so that the decision is recorded where the tempting mistake would be made. A fabricated time is picked up by the consumer's fallback and becomes a durable identity for an asset that has none |
+| Strong-validator-only rule for persistent *entries* | Outstanding — the rule is written ([CACHE.md](../architecture/CACHE.md) §8) and there is nothing yet to apply it to |
 | On-disk persistence, or a recorded decision to defer | Outstanding |
-| Cross-stage reuse rules for consumers | Outstanding |
+| Cross-stage reuse rules for consumers | Partly — what a consumer may reuse across opens is stated and implemented; what a *persisted* entry may serve is not, and waits on the row above. [consumer integration](consumer-integration.md) §4.1 |
 
 ## Phase 5 — first consumer (`v0.5.0`)
 
@@ -243,17 +253,43 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. The `v0.3.0` release gate, and its record. Everything the release is defined
-   by is in the tree and green; what has not happened is walking
-   [the gate](../releases/README.md) over it and writing down what that found.
-   Gate 6 is the interesting one this time, because it is the first release in
-   which the byte counts moved on purpose and the gate has to be satisfied by a
-   *recorded* change rather than by an unchanged table.
-2. Phase 4, whose scope is what a persistent entry has to prove before it is
-   written: identity exposed through `GetAssetInfo`, and the strong-validator
-   rule for reuse across opens. The rows it is measured against are
-   [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
+1. On-disk persistence, or a recorded decision to defer it — the other half of
+   `v0.4.0`, and the half with the requirements list: entries keyed by the same
+   `CacheKey`, written only for a `Stable` identity, published by rename so an
+   interrupted process cannot publish a partial block, a directory this process
+   owns in which no filename component is attacker-controllable, a corrupt entry
+   discarded rather than trusted, and a cache that is deletable at any time
+   ([CACHE.md](../architecture/CACHE.md) §8). The rows it is measured against
+   are [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
    move*.
+2. The `v0.4.0` release gate, once both halves are in. Gate 6 binds again: a
+   persistent cache moves byte counts across *processes*, which is a shape the
+   baseline harness measures within one process today.
+
+Done, and no longer next: identity exposure. What it surfaced was not in this
+repository at all, and it is why the surface has the shape it does. The
+consumer builds its source identity from `ArAssetInfo::version`, falls back to
+`GetModificationTimestamp`, and classifies the result *itself* — a non-blank
+identifier and a non-blank token is `Stable` — reading no stability field. So
+the fail-safe cannot be carried by a stability value next to the token: in the
+field a consumer actually reads there is nothing next to it. That is why
+`version` is strong-only, why the annotated dictionary is where a weak token is
+published, and why the timestamp stays invalid rather than becoming a
+`resolver-mtime:` identity. Written down in
+[consumer integration](consumer-integration.md) §4.1, because a rule whose
+reason lives in another repository is a rule somebody will relax.
+
+The work also surfaced a defect of a shape no test had been able to see: a crash
+*after* the suite printed `ok`. A resolver that retains the reader `Resolve`
+opened — legal and normal, per RESOLVER.md §2.3, for an identifier nobody
+subsequently opens — destroys that reader during static destruction, and
+`~ReaderMetrics` folded its counters into a process aggregate that had been
+destroyed first, because the aggregate is constructed at the first reader and so
+is destroyed before the resolver constructed before it. Reachable since
+`v0.2.0`; invisible until a test left a retained open behind at exit. The
+aggregate is now never destroyed and the opt-in dump runs from `std::atexit`.
+The regression test asserts nothing in a `CHECK`: it resolves an asset it never
+opens, and what it asserts is the exit code.
 
 Done, and no longer next: the sanitizer lanes over the cache. Both are green
 over the whole core tree — 25 of 25 under `address,undefined` and 25 of 25 under

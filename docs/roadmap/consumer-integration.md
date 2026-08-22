@@ -86,6 +86,35 @@ consumer enables its generated-cache reuse only for `Stable`. It never sees an
 That single value is the entire coupling, and keeping it to one value is the
 design's success condition.
 
+### 4.1 How the consumer actually reads it
+
+Written down because it decided the shape of this repository's surface, and
+because it is not what reading the two contracts side by side would suggest.
+
+The consumer builds its source identity from `ArAssetInfo::version`, falling
+back to `GetModificationTimestamp` when that is empty, and classifies the result
+itself: a non-blank identifier plus a non-blank token is `Stable`. It reads no
+stability field. So the resolver cannot publish a weak token in `version` and
+rely on a stability value beside it to hold the fail-safe — there is nothing
+beside it, and the consumer would enable reuse against a validator that cannot
+prove two responses are the same bytes.
+
+Two rules follow, and both are now contract in
+[RESOLVER.md](../architecture/RESOLVER.md) §3:
+
+- `version` carries a token only for a `Stable` identity. `resolverInfo`
+  carries the token, the size, the identifier, and the stability class, and it
+  is the annotated surface where a weak token is safe to publish.
+- `GetModificationTimestamp` is invalid, permanently. A valid one would be
+  turned into a `resolver-mtime:` token by that same fallback, which would
+  manufacture a `Stable` identity for an asset that has no durable identity at
+  all.
+
+The consumer needs no change for either. That is the point: criterion 1 of §7 is
+that the consumer opens a remote asset with no change that mentions HTTP, and a
+resolver that required a consumer-side rule change in order to be safe would
+have failed it in a quieter way.
+
 ## 5. Composition
 
 Runtime only. No CMake edge, no submodule, no vendored source:
