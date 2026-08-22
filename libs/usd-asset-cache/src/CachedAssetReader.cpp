@@ -79,35 +79,93 @@ public:
     OwnedBlocks(const OwnedBlocks&) = delete;
     OwnedBlocks& operator=(const OwnedBlocks&) = delete;
 
-    void Add(std::uint64_t blockIndex) { _blocks.push_back(blockIndex); }
+    void Add(std::uint64_t blockIndex) {
+        _blocks.push_back(Entry{blockIndex, false});
+        ++_outstanding;
+    }
 
-    std::size_t Size() const noexcept { return _blocks.size(); }
-    bool Empty() const noexcept { return _blocks.empty(); }
-    const std::vector<std::uint64_t>& Blocks() const noexcept { return _blocks; }
+    std::size_t Size() const noexcept { return _outstanding; }
+    bool Empty() const noexcept { return _outstanding == 0; }
+    bool AllSettled() const noexcept { return _outstanding == 0; }
 
-    /// The next block still owned, in fetch order.
-    std::uint64_t Next() const noexcept { return _blocks[_settled]; }
-    bool AllSettled() const noexcept { return _settled >= _blocks.size(); }
+    /// The blocks still owned, in the order they were acquired -- which is
+    /// ascending, because the acquisition loop walks the covering span in
+    /// order, and `PlanRuns` requires it.
+    std::vector<std::uint64_t> Outstanding() const {
+        std::vector<std::uint64_t> blocks;
+        blocks.reserve(_outstanding);
+        for (const Entry& entry : _blocks) {
+            if (!entry.settled) {
+                blocks.push_back(entry.index);
+            }
+        }
+        return blocks;
+    }
 
-    /// Records that `Publish` took the next block. `Publish` allocates before it
-    /// touches the store, so a throw from it leaves the block still owned and
-    /// the destructor still correct.
-    void MarkPublished() noexcept { ++_settled; }
+    /// The next block still owned, in fetch order. Undefined when everything is
+    /// settled, which is why every call site tests `AllSettled` first.
+    std::uint64_t Next() noexcept {
+        SkipSettled();
+        return _blocks[_cursor].index;
+    }
+
+    /// Records that `Publish` took the block `Next` just named. `Publish`
+    /// allocates before it touches the store, so a throw from it leaves the
+    /// block still owned and the destructor still correct.
+    void MarkPublished() noexcept {
+        SkipSettled();
+        _blocks[_cursor].settled = true;
+        --_outstanding;
+    }
+
+    /// Records that one particular block left this read's hands, wherever it
+    /// sits in the list.
+    ///
+    /// The persistent tier settles blocks out of order -- a disk hit on the
+    /// middle block of three leaves the two around it to be fetched -- which is
+    /// why settling is by value and the cursor skips settled entries, rather
+    /// than the settled set being a prefix. The transport pass below still
+    /// settles strictly in order and gets the same answer either way.
+    void Settle(std::uint64_t blockIndex) noexcept {
+        for (Entry& entry : _blocks) {
+            if (entry.index == blockIndex && !entry.settled) {
+                entry.settled = true;
+                --_outstanding;
+                return;
+            }
+        }
+    }
 
     /// Hands back every block still owned. Idempotent, so the destructor
     /// running after an explicit call costs nothing.
     void AbandonAll() noexcept {
-        while (_settled < _blocks.size()) {
-            _binding->Abandon(_blocks[_settled++]);
+        for (Entry& entry : _blocks) {
+            if (!entry.settled) {
+                entry.settled = true;
+                _binding->Abandon(entry.index);
+            }
         }
         _blocks.clear();
-        _settled = 0;
+        _outstanding = 0;
+        _cursor = 0;
     }
 
 private:
+    struct Entry {
+        std::uint64_t index = 0;
+        bool settled = false;
+    };
+
+    void SkipSettled() noexcept {
+        while (_cursor < _blocks.size() && _blocks[_cursor].settled) {
+            ++_cursor;
+        }
+    }
+
     BlockCache::Binding* _binding;
-    std::vector<std::uint64_t> _blocks;
-    std::size_t _settled = 0;
+    std::vector<Entry> _blocks;
+    std::size_t _outstanding = 0;
+    std::size_t _cursor = 0;
 };
 
 }  // namespace
@@ -119,11 +177,13 @@ public:
     Impl(std::unique_ptr<AssetReader> reader,
          ReaderMetrics* readerMetrics,
          const CacheOptions& requested,
-         BlockCache& blockStore)
+         BlockCache& blockStore,
+         DiskBlockStore& diskStore)
         : inner(std::move(reader)),
           innerMetrics(readerMetrics),
           options(requested.Normalized()),
           store(blockStore),
+          persistent(diskStore),
           metrics(inner->Metadata().resolvedIdentifier) {
         metrics.SetAssetSize(inner->Metadata().size);
         if (innerMetrics != nullptr) {
@@ -134,6 +194,20 @@ public:
         }
         binding = store.Bind(inner->Metadata().resolvedIdentifier,
                              inner->Metadata().validator, options.blockSize);
+        // Answered once, at open, from the validator captured at open. A
+        // reader's validator does not change under it -- a reader that observes
+        // a changed one fails its subsequent reads rather than reclassifying --
+        // so asking per read would be the same answer with a lock in front of
+        // it.
+        //
+        // Two answers rather than one, because the tier distinguishes them. A
+        // store nobody configured is not consulted at all; a store that is on
+        // and an asset that may not persist is a *refusal*, and the refusal is
+        // the answer to "why is the cache directory not filling up", which is
+        // only worth anything if somebody counts it.
+        persistable = Persistable(inner->Metadata().validator);
+        persistentEnabled = persistent.IsEnabled();
+        persists = persistentEnabled && persistable;
     }
 
     ~Impl() {
@@ -157,6 +231,14 @@ public:
     ReaderMetrics* innerMetrics = nullptr;
     CacheOptions options;
     BlockCache& store;
+    DiskBlockStore& persistent;
+    /// Whether this asset's validator admits an entry that outlives the process.
+    bool persistable = false;
+    /// Whether a persistent tier exists to admit it to.
+    bool persistentEnabled = false;
+    /// Both, which is what the read path needs: the tier is read only when
+    /// there is something there that this reader is allowed to trust.
+    bool persists = false;
     ReaderMetrics metrics;
     std::shared_ptr<BlockCache::Binding> binding;
 };
@@ -186,6 +268,7 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
 
     std::vector<bool> resolved(blockCount, false);
     std::vector<unsigned char> transfer;
+    std::vector<unsigned char> persisted;
 
     /// Blocks this read got without fetching them: resident on arrival, or
     /// published by whoever owned them while this read waited. Both are bytes
@@ -247,13 +330,46 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
             }
         }
 
+        // --- what an earlier process already fetched -------------------------
+        //
+        // Between owning a block and paying a round trip for it. Single-flight
+        // has already made this reader the only one asking for these blocks, so
+        // the disk is read once per block, and every reader waiting on one gets
+        // it published exactly as a transport fetch would have published it.
+        //
+        // A block the disk answers is not a `blockMiss`: that counter is blocks
+        // this reader pulled over the transport, and this one crossed no
+        // transport. Its bytes are counted where they went, in `bytesFromCache`,
+        // and the block is named separately in `persistedHits`.
+        if (persists && !owned.Empty()) {
+            for (const std::uint64_t blockIndex : owned.Outstanding()) {
+                const BlockExtent extent = ExtentOf(blockIndex, blockSize, assetSize);
+                if (!persistent.Load(binding->Identity(), blockIndex, extent.length,
+                                     &persisted)) {
+                    continue;
+                }
+                metrics.AddEviction(
+                    binding->Publish(blockIndex, persisted.data(), persisted.size()));
+                owned.Settle(blockIndex);
+                metrics.AddPersistedHit();
+
+                const std::size_t copied =
+                    CopyOverlap(dst, range.offset, range.length, extent.offset,
+                                persisted.data(), extent.length);
+                metrics.AddBytesFromCache(copied);
+                served += copied;
+                ++cacheServed;
+                resolved[static_cast<std::size_t>(blockIndex - span.first)] = true;
+            }
+        }
+
         if (owned.Empty() && busy.empty()) {
             break;
         }
 
         // --- fetch what this reader owns ------------------------------------
         if (!owned.Empty()) {
-            const std::vector<FetchRun> runs = PlanRuns(owned.Blocks(), blockSize, assetSize,
+            const std::vector<FetchRun> runs = PlanRuns(owned.Outstanding(), blockSize, assetSize,
                                                         options.coalesceGapBlocks,
                                                         options.maxRequestBytes);
             // Every owned block would have been its own request without the
@@ -295,6 +411,21 @@ ReadResult CachedAssetReader::Impl::ReadCached(const ReadRange& range, unsigned 
                         blockIndex, bytes, static_cast<std::size_t>(extent.length)));
                     owned.MarkPublished();
                     metrics.AddBlockMiss();
+
+                    // After the in-memory publish and never before it. A write
+                    // to disk fails for a dozen reasons a read must not care
+                    // about, and the block is correct and resident either way.
+                    //
+                    // `persistable` and not a literal `true`: the store enforces
+                    // the strength rule, and it can only report what it turned
+                    // away if it is asked. A weak or absent validator still
+                    // writes nothing -- the call returns before it touches the
+                    // filesystem -- it is now merely counted on the way out.
+                    if (persistentEnabled &&
+                        persistent.Store(binding->Identity(), blockIndex, persistable, bytes,
+                                         static_cast<std::size_t>(extent.length))) {
+                        metrics.AddPersistedWrite();
+                    }
 
                     const std::size_t copied =
                         CopyOverlap(dst, range.offset, range.length, extent.offset,
@@ -403,6 +534,8 @@ const BlockCache::Binding& CachedAssetReader::Binding() const noexcept {
     return *_impl->binding;
 }
 
+bool CachedAssetReader::PersistsBlocks() const noexcept { return _impl->persists; }
+
 MetricsSnapshot CachedAssetReader::SnapshotMetrics() const {
     MetricsSnapshot snapshot = _impl->metrics.Snapshot();
     if (_impl->innerMetrics != nullptr) {
@@ -449,9 +582,10 @@ struct CachedReaderFactory {
     static std::unique_ptr<CachedAssetReader> Make(std::unique_ptr<AssetReader> inner,
                                                    ReaderMetrics* innerMetrics,
                                                    const CacheOptions& options,
-                                                   BlockCache& store) {
+                                                   BlockCache& store,
+                                                   DiskBlockStore& persistent) {
         std::unique_ptr<CachedAssetReader::Impl> impl(new CachedAssetReader::Impl(
-            std::move(inner), innerMetrics, options, store));
+            std::move(inner), innerMetrics, options, store, persistent));
         return std::unique_ptr<CachedAssetReader>(new CachedAssetReader(std::move(impl)));
     }
 };
@@ -459,7 +593,8 @@ struct CachedReaderFactory {
 CachedOpenResult Wrap(std::unique_ptr<AssetReader> inner,
                       ReaderMetrics* innerMetrics,
                       const CacheOptions& options,
-                      BlockCache* store) {
+                      BlockCache* store,
+                      DiskBlockStore* persistent) {
     CachedOpenResult result;
     if (!inner) {
         result.status = Status::Error(StatusCode::InvalidArgument,
@@ -468,15 +603,18 @@ CachedOpenResult Wrap(std::unique_ptr<AssetReader> inner,
     }
 
     BlockCache& blockStore = store != nullptr ? *store : BlockCache::Process();
-    result.reader =
-        CachedReaderFactory::Make(std::move(inner), innerMetrics, options, blockStore);
+    DiskBlockStore& diskStore =
+        persistent != nullptr ? *persistent : DiskBlockStore::Process();
+    result.reader = CachedReaderFactory::Make(std::move(inner), innerMetrics, options,
+                                              blockStore, diskStore);
     return result;
 }
 
 OpenResult WrapAsset(OpenResult inner,
                      ReaderMetrics* innerMetrics,
                      const CacheOptions& options,
-                     BlockCache* store) {
+                     BlockCache* store,
+                     DiskBlockStore* persistent) {
     OpenResult result;
     if (!inner.reader) {
         // Nothing to decorate. The backend's status is the useful thing the
@@ -495,7 +633,7 @@ OpenResult WrapAsset(OpenResult inner,
     }
 
     CachedOpenResult wrapped =
-        Wrap(std::move(inner.reader), innerMetrics, options, store);
+        Wrap(std::move(inner.reader), innerMetrics, options, store, persistent);
     result.reader = std::move(wrapped.reader);
     result.status = std::move(wrapped.status);
     return result;

@@ -60,12 +60,15 @@ The resolver takes it. Every asset the bundle opens is decorated and bound into
 the process store, and the four cache variables in
 [CONFIGURATION.md](CONFIGURATION.md) are read at construction.
 
-Identity now leaves the process. `GetAssetInfo` publishes the resolved
-identifier, the size, an opaque validation token, and a stability class, and
-`ArAssetInfo::version` carries the token only when the identity is one a
-consumer may key durable reuse on. What is still missing is persistence:
-nothing this repository caches outlives the process, which is the other half of
-`v0.4.0`. The release's I/O baseline
+Identity now leaves the process, and so do the bytes. `GetAssetInfo` publishes
+the resolved identifier, the size, an opaque validation token, and a stability
+class, and `ArAssetInfo::version` carries the token only when the identity is
+one a consumer may key durable reuse on. Under that same rule, blocks fetched
+for a `Stable` identity are written to a cache directory a later process reads
+back: `httpResolver_stage` runs itself again as a child and the second process
+moves no bytes for a window the first one fetched. A `Weak` or `Unavailable`
+identity neither writes nor reads there, which is what keeps a restart from
+turning a guess into a durable answer. The release's I/O baseline
 is recorded twice over, with the cache and without it, in
 [BASELINE.md](BASELINE.md); what chose the cache's constants is
 [BLOCK_POLICY.md](BLOCK_POLICY.md). A clustered header-and-index read went from
@@ -157,7 +160,7 @@ not planned                   explicitly out of scope
 | Bounded eviction | implemented | LRU under a process-wide budget shared across assets. Striped, so the order is LRU within a stripe — a global order would need a global lock, which §7 of the design policy forbids, and eviction is invisible to correctness |
 | Cache identity shared between readers | implemented | Only for a strong validator. A weak or absent one caches privately for the reader's lifetime and drops on close |
 | Large-read bypass | implemented | A read at least as large as the bypass threshold goes straight to the transport and stores nothing, which is what keeps the full sequential read from regressing |
-| On-disk persistence | planned (`v0.4.0`), may defer | Strong validator only |
+| On-disk persistence | implemented | `Strong` validator only, off unless a directory is named. Entries are hash-named and self-describing, published by rename, checksummed, and bounded by a swept 1 GiB budget; a corrupt one is discarded and re-fetched. Entered into the boundary suite as its own row, `persisted-local` |
 | Content-addressed identity | not planned in v0.x | Revisited only for cross-stage sharing |
 | Generated USD caching | not planned, ever | Owned by the consuming plugin repository |
 
@@ -173,7 +176,7 @@ not planned                   explicitly out of scope
 | Latency distributions | implemented | p50 / p90 / p99 / max, as power-of-two bucket estimates |
 | Metrics dump on `USD_HTTP_RESOLVER_METRICS_DUMP` | implemented | Aggregate plus top assets, at process exit, to stderr, from an `atexit` handler armed at first use |
 | Counters folded by a reader destroyed during static teardown | implemented | The process aggregate is never destroyed. A resolver holding a retained open destroys its reader arbitrarily late, and a destroyed aggregate would be a crash at exit rather than a lost counter |
-| Recorded baselines | implemented | `tests/baseline`, the five scenarios in METRICS.md §6 against a 128 MiB loopback fixture. The record is [BASELINE.md](BASELINE.md); byte and request counts are asserted, ratios and durations are reported |
+| Recorded baselines | implemented | `tests/baseline`, the six scenarios in METRICS.md §6 against a 128 MiB loopback fixture. The record is [BASELINE.md](BASELINE.md); byte and request counts are asserted, ratios and durations are reported |
 
 ## Testing and build
 

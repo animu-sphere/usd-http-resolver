@@ -216,13 +216,19 @@ contract expects; a weak or absent validator never produces a persistent entry;
 a persisted entry from revision A never serves a read of revision B; deleting
 the cache directory costs time and never correctness.
 
-Status: the exposure half has landed and persistence has not. `GetAssetInfo`
-publishes the four neutral values and `ArAssetInfo::version` carries a token
-only for a `Stable` identity — a rule that came from reading the consumer's
-side, where a non-empty `version` is by itself sufficient for generated-cache
-reuse and no stability field is consulted. That asymmetry is what the first
-exit criterion turned out to mean. See
-[RESOLVER.md](../architecture/RESOLVER.md) §3 and
+Status: both halves have landed. `GetAssetInfo` publishes the four neutral
+values and `ArAssetInfo::version` carries a token only for a `Stable` identity —
+a rule that came from reading the consumer's side, where a non-empty `version`
+is by itself sufficient for generated-cache reuse and no stability field is
+consulted. That asymmetry is what the first exit criterion turned out to mean.
+`DiskBlockStore` is the second half: blocks fetched for a `Stable` identity are
+written to a directory a host names, and a later process reads them back — one
+request and no bytes for a bounded query a previous process paid nineteen
+requests for, recorded in [BASELINE.md](../reference/BASELINE.md) as
+`bounded query, reopened`. The same rule divides both halves, and it is the only
+rule either of them has: `Strong` yes, `Weak` no, `None` no. See
+[RESOLVER.md](../architecture/RESOLVER.md) §3,
+[CACHE.md](../architecture/CACHE.md) §8, and
 [implementation status](implementation-status.md).
 
 ### `v0.5.0` — first consumer integration
@@ -268,8 +274,8 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | 0 | Project scaffolding, boundary documentation, and contracts | Complete | CI landed as `core-ci.yml`; `openstrata.ci.yaml` moves to phase 2, which brings the first bundle a cell can name |
 | 1 | Read contract, diagnostics, metrics, local backend, shared boundary suite | Complete | The suite is in `tests/boundary`, the local backend passes it, and the core and sanitizer lanes run in CI |
 | 2 | HTTP backend, resolver bundle, validator capture and revision binding | Complete for `v0.2.0` | The backend, the bundle, the support matrix, and the recorded I/O baseline have all landed; a stage opens over HTTP on all three platforms, and a bounded query moves 0.0025 of a 128 MiB asset. What remains is the release gate, and one deliberate omission: a metadata fallback for a server that refuses `HEAD`, which no corpus row exercises |
-| 3 | Block cache, coalescing, single-flight | Planned for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
-| 4 | Identity exposure, persistent cache, stability metadata | Planned for `v0.4.0` | Everything that makes identity outlive a reader |
+| 3 | Block cache, coalescing, single-flight | Complete for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
+| 4 | Identity exposure, persistent cache, stability metadata | Complete for `v0.4.0` | Everything that makes identity outlive a reader — and, with the disk tier, outlive the process |
 | 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
 | 6 | Configuration, auth seam, formation composition, packaging | Planned for `v0.6.0` | Seams only, no providers |
 | 7 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
@@ -287,8 +293,8 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | W5 | Hostile-server fixture corpus | 2 | Done — and consumed, by `tests/corpus` |
 | W6 | Validator capture, `If-Range`, `AssetChanged`, revision binding | 2 | Done — shipped with W3, not after it |
 | W6a | The recorded I/O baseline and the fixture it needed | 2 | Done — `tests/baseline`, the five scenarios of METRICS.md §6; [the record](../reference/BASELINE.md) |
-| W7 | Block cache, coalescing, single-flight, eviction | 3 | Planned |
-| W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Planned |
+| W7 | Block cache, coalescing, single-flight, eviction | 3 | Done |
+| W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Done — `GetAssetInfo`, `DiskBlockStore`, and the one rule that governs both |
 | W9 | Consumer integration and amplification baselines | 5 | Planned |
 | W10 | Configuration, auth seam, packaging, formation composition | 6 | Planned |
 | W11 | Async, prefetch, Wasm research | Parallel | No release gate |

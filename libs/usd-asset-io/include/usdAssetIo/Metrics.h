@@ -93,6 +93,8 @@ struct MetricsSnapshot {
     std::uint64_t bytesOverFetched = 0;
     std::uint64_t evictions = 0;
     std::uint64_t peakResidentBytes = 0;
+    std::uint64_t persistedHits = 0;
+    std::uint64_t persistedWrites = 0;
 
     // Latency (METRICS.md §2.3).
     LatencyHistogram::Summary openLatency;
@@ -179,6 +181,14 @@ public:
     void AddBytesOverFetched(std::uint64_t bytes) noexcept;
     void AddEviction(std::uint64_t count = 1) noexcept;
 
+    // The persistent tier of METRICS.md §2.2, populated from v0.4.0. Both are
+    // block counts and neither is a byte count: the bytes a persisted hit saved
+    // are already in `bytesFromCache`, which is where a ratio has to find them,
+    // and a second byte counter for the same bytes would be double counted by
+    // anything that summed the section.
+    void AddPersistedHit(std::uint64_t count = 1) noexcept;
+    void AddPersistedWrite(std::uint64_t count = 1) noexcept;
+
     /// Raises the resident high-water mark to `bytes` if it is higher.
     ///
     /// A high-water mark is a maximum and not a sum, which is why it is
@@ -236,6 +246,8 @@ private:
     std::atomic<std::uint64_t> _bytesOverFetched{0};
     std::atomic<std::uint64_t> _evictions{0};
     std::atomic<std::uint64_t> _peakResidentBytes{0};
+    std::atomic<std::uint64_t> _persistedHits{0};
+    std::atomic<std::uint64_t> _persistedWrites{0};
 
     std::atomic<bool> _detached{false};
 

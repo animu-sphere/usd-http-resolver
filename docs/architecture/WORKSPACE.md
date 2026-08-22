@@ -105,7 +105,7 @@ behavior onto the typed vocabulary, which is the one assertion neither side can
 make alone.
 
 The third is the recorded I/O baseline that gate 6 of
-[the release gate](../releases/README.md) binds a release to: the five scenarios
+[the release gate](../releases/README.md) binds a release to: the six scenarios
 in [METRICS.md](METRICS.md) §6, measured against an asset large enough for
 `selectivity` to mean something. It needs a server for the reason the counters
 do — nothing crosses a transport without one — and it compiles the fixture
@@ -280,7 +280,7 @@ tests/boundary/src/**
     its oracle on purpose.
 
 tests/baseline/**
-    The recorded I/O baseline: the five scenarios METRICS.md §6 requires,
+    The recorded I/O baseline: the six scenarios METRICS.md §6 requires,
     each measured with the cache and without it, the fixture they run against,
     and the shape a release record pastes. It asserts byte counts, which are
     exact, and reports ratios and wall clock, which are about the fixture and

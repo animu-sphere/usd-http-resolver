@@ -64,6 +64,13 @@ endif()
 if(TARGET usdasset::cache AND TARGET usdasset::local)
     usd_http_resolver_add_boundary_backend(cached_local
         backends/boundary_cached_local_main.cpp usdasset::cache usdasset::local)
+
+    # The same row with the persistent tier of CACHE.md section 8 underneath it.
+    # A second executable rather than a flag on the first, because the claim is
+    # a comparison -- the same cases produce the same bytes with the tier and
+    # without it -- and a comparison needs both halves to run.
+    usd_http_resolver_add_boundary_backend(persisted_local
+        backends/boundary_persisted_local_main.cpp usdasset::cache usdasset::local)
 endif()
 
 # The line v0.2.0 said it would be. The HTTP row additionally links the fixture

@@ -21,6 +21,9 @@ constexpr const char* kCacheBudget = "USD_HTTP_RESOLVER_CACHE_BUDGET";
 constexpr const char* kCoalesceGap = "USD_HTTP_RESOLVER_COALESCE_GAP";
 constexpr const char* kMaxRequestBytes = "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES";
 
+constexpr const char* kPersistentDirectory = "USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR";
+constexpr const char* kPersistentBudget = "USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET";
+
 /// Parses a non-negative integer with no leading sign, no whitespace, and no
 /// trailing text.
 ///
@@ -109,6 +112,41 @@ void ReadBytesInto(const EnvironmentLookup& lookup, const char* name,
 }
 
 }  // namespace
+
+usdasset::cache::DiskCacheOptions PersistenceOptionsFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut) {
+    usdasset::cache::DiskCacheOptions options;
+
+    std::string directory;
+    if (lookup(kPersistentDirectory, &directory)) {
+        if (directory.empty()) {
+            // A set-but-empty variable is a problem and not an absence. An
+            // operator who wrote `export ...CACHE_DIR=` meant to turn something
+            // on, and leaving persistence off without saying so would make the
+            // typo indistinguishable from the feature not existing.
+            //
+            // The default this falls back to is no persistent cache, which is
+            // what makes the reporter's "using the default" true here: unset is
+            // off, and there is no location to fall back to.
+            if (problemsOut != nullptr) {
+                problemsOut->push_back({kPersistentDirectory, directory, "empty"});
+            }
+        } else {
+            options.directory = directory;
+        }
+    }
+
+    // The floor is one block of the smallest size this cache will ever use;
+    // below that the tier would evict what it just wrote. The ceiling is a
+    // terabyte, which is not a recommendation -- it is the point past which the
+    // value is more likely a unit error than a disk.
+    ReadBytesInto(lookup, kPersistentBudget,
+                  static_cast<long long>(usdasset::cache::kMinPersistentBudgetBytes),
+                  1024LL * 1024 * 1024 * 1024, &options.budgetBytes, problemsOut);
+
+    return options;
+}
 
 usdasset::cache::CacheOptions CacheOptionsFrom(
     const EnvironmentLookup& lookup,
@@ -227,6 +265,7 @@ ResolverConfiguration ConfigurationFrom(
     ResolverConfiguration configuration;
     configuration.transport = OptionsFrom(lookup, problemsOut);
     configuration.cache = CacheOptionsFrom(lookup, problemsOut);
+    configuration.persistence = PersistenceOptionsFrom(lookup, problemsOut);
     return configuration;
 }
 
@@ -243,8 +282,16 @@ ResolverConfiguration ConfigurationFromEnvironment(
 
 const std::vector<const char*>& ConfiguredVariables() {
     static const std::vector<const char*> variables = {
-        kBlockSize,      kCacheBudget, kCoalesceGap,  kMaxRequestBytes,
-        kConnectTimeout, kReadTimeout, kTotalTimeout, kMaxRetries,
+        kBlockSize,
+        kCacheBudget,
+        kCoalesceGap,
+        kMaxRequestBytes,
+        kPersistentDirectory,
+        kPersistentBudget,
+        kConnectTimeout,
+        kReadTimeout,
+        kTotalTimeout,
+        kMaxRetries,
         kMaxRedirects};
     return variables;
 }

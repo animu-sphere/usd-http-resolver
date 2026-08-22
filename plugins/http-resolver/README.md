@@ -181,6 +181,20 @@ resolver is constructed:
 | `USD_HTTP_RESOLVER_CACHE_BUDGET` | process-wide cache budget, in bytes | 134217728 |
 | `USD_HTTP_RESOLVER_COALESCE_GAP` | blocks of gap merged into one request | 1 |
 | `USD_HTTP_RESOLVER_MAX_REQUEST_BYTES` | ceiling on one merged request | 8388608 |
+| `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` | directory for the on-disk block cache | unset |
+| `USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET` | ceiling on that directory, in bytes | 1073741824 |
+
+The last two are the only pair in this table where the *absence* of a value is
+the policy. There is no default cache directory: naming one turns persistence on
+and nothing else does, because where a cache belongs on a given machine is a
+deployment's decision about a disk this project cannot see. A directory that
+cannot be created is reported and persistence stays off; the resolver still
+works, and every read is served from the process cache and the transport.
+
+Only a `Stable` identity is written there
+([CACHE.md](../../docs/architecture/CACHE.md) §8), and nothing under the
+directory is reversible to a URL — an entry's identity is a SHA-256 digest,
+because a resolved identifier can be a signed one.
 
 A value that does not parse is a warning at construction and then the default;
 one bad value does not discard the others, and a value that is adjusted rather

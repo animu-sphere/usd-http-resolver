@@ -30,6 +30,8 @@ that the defaults are wrong.
 | `USD_HTTP_RESOLVER_CACHE_BUDGET` | `134217728` | Process-wide cache budget in bytes, shared across assets |
 | `USD_HTTP_RESOLVER_COALESCE_GAP` | `1` | Maximum gap, in blocks, merged into one request |
 | `USD_HTTP_RESOLVER_MAX_REQUEST_BYTES` | `8388608` | Upper bound on a single merged request |
+| `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` | unset | Directory for the on-disk block cache. Unset means no persistence; there is no default location |
+| `USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET` | `1073741824` | Ceiling on the cache directory in bytes, enforced by a sweep |
 | `USD_HTTP_RESOLVER_CONNECT_TIMEOUT_MS` | `10000` | Connection deadline |
 | `USD_HTTP_RESOLVER_READ_TIMEOUT_MS` | `30000` | Deadline from connection established to status line received |
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | `300000` | Total per-request deadline, headers and body |
@@ -94,6 +96,17 @@ turn a correctness property into a deployment mistake:
   correctness-of-policy rule and not a tuning knob; a deployment that could set
   it to zero could turn the full sequential read into the regression
   [BASELINE.md](BASELINE.md) gates against.
+- **The location of the persistent cache.** There is no default directory, and
+  the absence is the policy: a resolver that wrote to a disk nobody named would
+  be a surprise, and choosing a home for it — `%LOCALAPPDATA%`, `$XDG_CACHE_HOME`,
+  `/var/tmp` — is a deployment's decision about a disk this project cannot see.
+  Naming one turns persistence on; that is the only switch, because a separate
+  enable flag would be a second way to say the same thing and a second thing to
+  get wrong.
+- **Which validators may persist.** Never a variable. `Strong` only, per
+  [CACHE.md](../architecture/CACHE.md) §8. A switch that admitted a weak
+  validator to disk is a switch for writing a guess down and reading it back
+  after a restart, which is precisely what the rule exists to prevent.
 - **Credentials.** Never read from a variable in this list. When authentication
   arrives it arrives through a credential provider resolved from the
   environment or the context, and no credential is ever named in a variable

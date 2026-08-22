@@ -221,6 +221,8 @@ void MetricsSnapshot::Add(const MetricsSnapshot& other) {
     bytesOverFetched += other.bytesOverFetched;
     evictions += other.evictions;
     peakResidentBytes = (std::max)(peakResidentBytes, other.peakResidentBytes);
+    persistedHits += other.persistedHits;
+    persistedWrites += other.persistedWrites;
 
     const auto mergeLatency = [](LatencyHistogram::Summary& into,
                                  const LatencyHistogram::Summary& from) {
@@ -320,6 +322,14 @@ void ReaderMetrics::AddEviction(std::uint64_t count) noexcept {
     AddRelaxed(_evictions, count);
 }
 
+void ReaderMetrics::AddPersistedHit(std::uint64_t count) noexcept {
+    AddRelaxed(_persistedHits, count);
+}
+
+void ReaderMetrics::AddPersistedWrite(std::uint64_t count) noexcept {
+    AddRelaxed(_persistedWrites, count);
+}
+
 void ReaderMetrics::ObserveResidentBytes(std::uint64_t bytes) noexcept {
     MaxRelaxed(_peakResidentBytes, bytes);
 }
@@ -364,6 +374,8 @@ MetricsSnapshot ReaderMetrics::Snapshot() const {
     snapshot.bytesOverFetched = _bytesOverFetched.load(kRelaxed);
     snapshot.evictions = _evictions.load(kRelaxed);
     snapshot.peakResidentBytes = _peakResidentBytes.load(kRelaxed);
+    snapshot.persistedHits = _persistedHits.load(kRelaxed);
+    snapshot.persistedWrites = _persistedWrites.load(kRelaxed);
     snapshot.openLatency = _openLatency.Snapshot();
     snapshot.requestLatency = _requestLatency.Snapshot();
     snapshot.readLatency = _readLatency.Snapshot();

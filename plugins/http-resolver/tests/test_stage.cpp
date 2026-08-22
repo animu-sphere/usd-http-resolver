@@ -17,12 +17,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -261,6 +264,211 @@ void TestRangeRead() {
 }
 
 /// §2.3: one metadata request per identifier, reused by the open that follows.
+/// The window the persistence case reads, in both the parent and the child.
+/// Named constants because the two halves have to agree and they are compiled
+/// into one binary that plays both parts.
+constexpr std::size_t kPersistOffset = 500000;
+constexpr std::size_t kPersistCount = 4096;
+
+/// FNV-1a over a window, so that a child can report what it read across a pipe
+/// as one number.
+std::uint64_t Checksum(const unsigned char* bytes, std::size_t length) {
+    std::uint64_t hash = 0xCBF29CE484222325ull;
+    for (std::size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 0x00000100000001B3ull;
+    }
+    return hash;
+}
+
+std::uint64_t WindowChecksum(const std::vector<unsigned char>& content,
+                             std::size_t offset, std::size_t count) {
+    return Checksum(content.data() + offset, count);
+}
+
+/// `setenv`, and the one MSVC has instead. An empty value removes the variable
+/// on both, which is what turns persistence back off for anything spawned
+/// afterwards.
+void SetEnvironment(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    if (value.empty()) {
+        unsetenv(name);
+    } else {
+        setenv(name, value.c_str(), 1);
+    }
+#endif
+}
+
+/// Runs this executable again in its child mode and reads back the checksum it
+/// printed.
+///
+/// The child inherits the environment, which is how it finds the bundle, the
+/// OpenUSD runtime, and the cache directory. It is given a URL and nothing
+/// else, because everything else about it has to come from the same place a
+/// consumer's would.
+bool RunChildRead(const std::string& executable, const std::string& url,
+                  std::uint64_t* checksumOut) {
+    namespace fs = std::filesystem;
+    const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    const fs::path reportPath =
+        fs::temp_directory_path() / ("usd-http-resolver-child-" + std::to_string(now));
+
+    // Quoted twice on Windows: `cmd /c` strips the outer pair, and without it a
+    // command that begins with a quote loses its first argument.
+    std::string command = "\"" + executable + "\" --read-window \"" + url +
+                          "\" \"" + reportPath.string() + "\"";
+#if defined(_WIN32)
+    command = "\"" + command + "\"";
+#endif
+
+    const int status = std::system(command.c_str());
+    std::error_code error;
+    if (status != 0) {
+        std::fprintf(stderr, "child exited %d: %s\n", status, command.c_str());
+        fs::remove(reportPath, error);
+        return false;
+    }
+
+    std::ifstream report(reportPath);
+    std::uint64_t checksum = 0;
+    const bool read = static_cast<bool>(report >> checksum);
+    report.close();
+    fs::remove(reportPath, error);
+    if (!read) {
+        std::fprintf(stderr, "child wrote no checksum\n");
+        return false;
+    }
+    *checksumOut = checksum;
+    return true;
+}
+
+/// The child: open one URL through Ar, read one window, write its checksum.
+///
+/// Deliberately tiny, and deliberately not a test. Everything it could assert
+/// is asserted by the parent from the server's log, and a child that reported
+/// its own success would be reporting on the one thing it cannot see -- what
+/// crossed the socket.
+int RunChildMode(const std::string& url, const std::string& reportPath) {
+    const std::shared_ptr<ArAsset> asset =
+        ArGetResolver().OpenAsset(ArResolvedPath(url));
+    if (!asset) {
+        std::fprintf(stderr, "child: OpenAsset returned null for %s\n", url.c_str());
+        return 1;
+    }
+    std::vector<unsigned char> window(kPersistCount, 0);
+    if (asset->Read(window.data(), kPersistCount, kPersistOffset) != kPersistCount) {
+        std::fprintf(stderr, "child: short read\n");
+        return 1;
+    }
+    std::ofstream report(reportPath);
+    report << Checksum(window.data(), window.size()) << "\n";
+    return report ? 0 : 1;
+}
+
+/// The persistent tier, end to end and across a real process boundary.
+///
+/// This is `v0.4.0`'s claim in the only place it can be made against a real
+/// origin, and it is made by running this executable again rather than by
+/// reaching into a store. Two reasons, and the second is the one that decided
+/// it:
+///
+///   - the claim *is* about a second process. A cache that outlives a reader
+///     is `v0.3.0`; what this release adds is one that outlives the process,
+///     and simulating the process is measuring something adjacent to it.
+///   - the resolver's stores are not reachable from here anyway. The bundle is
+///     a shared library that links `usdAssetCache` statically, so its
+///     `BlockCache::Process()` and `DiskBlockStore::Process()` are not the ones
+///     this executable would see. A test that called `ConfigureProcess` here
+///     would configure a second, unused pair of stores and then pass by
+///     reading the resolver's untouched memory cache -- which is exactly what
+///     the first draft of this case did.
+///
+/// The origin stays in this process and the children connect to it, so what is
+/// counted is the server's own log: requests that crossed a socket, from a
+/// process that started cold.
+void TestPersistentCacheAcrossProcesses(const char* executable) {
+    namespace fs = std::filesystem;
+
+    if (executable == nullptr || *executable == '\0') {
+        std::fprintf(stderr, "FAIL %s:%d: no path to re-invoke\n", __FILE__, __LINE__);
+        ++::usdassettest::FailureCount();
+        return;
+    }
+
+    const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    const fs::path directory =
+        fs::temp_directory_path() /
+        ("usd-http-resolver-stage-persist-" + std::to_string(now));
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error) {
+        std::fprintf(stderr, "FAIL %s:%d: no cache directory: %s\n", __FILE__,
+                     __LINE__, error.message().c_str());
+        ++::usdassettest::FailureCount();
+        return;
+    }
+
+    const std::string path = "/data/persisted.bin";
+    const std::size_t size = 1u << 20;  // 1 MiB
+    const std::vector<unsigned char> content = Pattern(size);
+    Serve(path, content, "\"persisted-1\"");
+    const std::string url = g_server->Url(path);
+
+    // Set for the children, which inherit it; this process's own resolver was
+    // constructed before this line and is unaffected, which is what keeps the
+    // rest of this file running the configuration it was written against.
+    SetEnvironment("USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", directory.string());
+
+    // Counts GETs rather than requests. The metadata request is a `HEAD` and it
+    // is *supposed* to happen again: a persistent cache that skipped it would
+    // be reusing an identity it had not revalidated, which is the row
+    // BASELINE.md refuses to let this release move.
+    const auto getsFor = [&path] {
+        std::size_t gets = 0;
+        for (const usdassetfixture::RequestRecord& record : g_server->Log()) {
+            if (record.method == "GET" &&
+                record.target.find(path) != std::string::npos) {
+                ++gets;
+            }
+        }
+        return gets;
+    };
+
+    const std::uint64_t expected = WindowChecksum(content, kPersistOffset, kPersistCount);
+
+    // --- a cold process -----------------------------------------------------
+    g_server->ClearLog();
+    std::uint64_t coldChecksum = 0;
+    CHECK(RunChildRead(executable, url, &coldChecksum));
+    CHECK_EQ(coldChecksum, expected);
+    const std::size_t coldGets = getsFor();
+    CHECK(coldGets > 0);
+
+    // --- a second process, over the cache the first one left ----------------
+    g_server->ClearLog();
+    std::uint64_t warmChecksum = 0;
+    CHECK(RunChildRead(executable, url, &warmChecksum));
+    CHECK_EQ(warmChecksum, expected);
+    // Nothing over the wire for the bytes. A process that had never run before
+    // read the window off a disk another process wrote, and only the metadata
+    // request remains.
+    CHECK_EQ(getsFor(), std::size_t{0});
+    CHECK(RequestsFor(path) > 0);
+
+    // --- and deleting the cache costs time, never correctness ---------------
+    fs::remove_all(directory, error);
+    g_server->ClearLog();
+    std::uint64_t afterDelete = 0;
+    CHECK(RunChildRead(executable, url, &afterDelete));
+    CHECK_EQ(afterDelete, expected);
+    CHECK(getsFor() > 0);
+
+    SetEnvironment("USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", std::string());
+    fs::remove_all(directory, error);
+}
+
 void TestResolveIsNotRepeated() {
     const std::string path = "/data/blob.bin";
     const std::string url = g_server->Url(path);
@@ -717,7 +925,14 @@ std::string WriteLocalLayer() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // The child mode, before anything else: it starts no server, runs no case,
+    // and exists only so that "a second process pays nothing" can be measured
+    // against a second process.
+    if (argc >= 4 && std::string(argv[1]) == "--read-window") {
+        return RunChildMode(argv[2], argv[3]);
+    }
+
     std::string error;
     const std::unique_ptr<usdassetfixture::Server> server =
         usdassetfixture::Server::Start(&error);
@@ -737,6 +952,7 @@ int main() {
         ServeScene();
         TestStageOpens();
         TestRangeRead();
+        TestPersistentCacheAcrossProcesses(argv[0]);
         TestResolveIsNotRepeated();
         TestNormalizationThroughAr();
         TestAbsenceIsNotAFailure();

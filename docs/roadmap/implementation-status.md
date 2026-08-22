@@ -45,12 +45,15 @@ resolver, and measured: the constants come from a sweep rather than from a
 decimal point, and the release's before-and-after is one run of one harness. The
 gate is walked and [its record](../releases/v0.3.0.md) is written.
 
-Phase 4 is under way, and its two halves are in different states. Identity now
+Phase 4 is complete, and both of its halves are governed by one rule. Identity
 leaves the process: `GetAssetInfo` publishes the four neutral values of
 RESOLVER.md §3, and `ArAssetInfo::version` carries a token only for an identity
-a consumer may key durable reuse on. Persistence has not started. The rule that
-divides them — a persistent entry needs a strong validator — is the same rule in
-both halves, and it is implemented for the exposed identity today.
+a consumer may key durable reuse on. Bytes leave it too: `DiskBlockStore` writes
+blocks fetched under a `Stable` identity into a directory a host names, and a
+later process reads them back. The rule that divides both halves is the same
+one — `Strong` yes, `Weak` no, `None` no — and it is the only rule either of them
+has. The release gate is walked and [its record](../releases/v0.4.0.md) is
+written.
 
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
@@ -169,9 +172,12 @@ therefore ship unexercised.
 | Strong-validator-only rule for the *exposed* identity | Done — `ArAssetInfo::version` carries a token only for a `Stable` identity, because that field travels with no stability beside it and the first consumer treats any token in it as sufficient for reuse. A weak token is published in the annotated dictionary instead, where it is evidence of change rather than a licence to reuse |
 | The identity of a republished asset | Done — two opens of one identifier that captured two validators withdraw reusability for the rest of the process. Asset info is keyed by path and cannot say which revision a caller holds, and the contradiction is remembered permanently rather than in a table that could forget it |
 | `GetModificationTimestamp` | Done, by deciding not to answer — invalid, permanently, and now overridden so that the decision is recorded where the tempting mistake would be made. A fabricated time is picked up by the consumer's fallback and becomes a durable identity for an asset that has none |
-| Strong-validator-only rule for persistent *entries* | Outstanding — the rule is written ([CACHE.md](../architecture/CACHE.md) §8) and there is nothing yet to apply it to |
-| On-disk persistence, or a recorded decision to defer | Outstanding |
-| Cross-stage reuse rules for consumers | Partly — what a consumer may reuse across opens is stated and implemented; what a *persisted* entry may serve is not, and waits on the row above. [consumer integration](consumer-integration.md) §4.1 |
+| Strong-validator-only rule for persistent *entries* | Done — `Persistable`, answered once at open, and stricter than the in-memory rule beside it: a `Strong` identity the *origin* issued, not one a backend synthesized out of what it could see while it held the asset open. A `Weak` or absent identity does not merely skip the write — the tier is never read, so it cannot serve an entry either, and the write is refused inside the store rather than outside it, so that `rejected` counts what the rule turned away. `usdAssetCache_persistence` opens the same identifier under all three strengths and asserts that only the first leaves a file behind, and reads the predicate out against a backend-derived identity beside them |
+| On-disk persistence | Done — `libs/usd-asset-cache/src/DiskBlockStore.cpp`. Hash-named, self-describing entries under a directory the host names; published by rename; header and body separately checksummed; a corrupt entry discarded on the way out and an intact one belonging to another identity left alone. Bounded by a swept budget, 1 GiB by default. Off unless a directory is named, per CONFIGURATION.md §3 |
+| Entered into the boundary suite | Done — `boundary_persisted_local`, the same row definition as `cached-local` with the tier underneath, so the pair is a comparison rather than two experiments. The one further difference is the validator's *kind*, relabelled so the tier will write at all; the value is the local backend's own, so every revision case still fails where it should. Green under ASan, UBSan, and TSan |
+| Measured | Done — a sixth baseline scenario, `bounded query, reopened`: 19 requests and 331776 bytes without the tier, 1 request and 0 bytes with it. [BASELINE.md](../reference/BASELINE.md) |
+| Proven across a real process boundary | Done — `httpResolver_stage` re-invokes itself with the cache directory in its environment and counts the fixture server's log. The second process issues no `GET`; the metadata `HEAD` still happens, deliberately |
+| Cross-stage reuse rules for consumers | Done — what a consumer may reuse across opens is stated and implemented, and what a *persisted* entry may serve is the same rule read at the byte layer. [consumer integration](consumer-integration.md) §4.1 |
 
 ## Phase 5 — first consumer (`v0.5.0`)
 
@@ -253,20 +259,38 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. On-disk persistence, or a recorded decision to defer it — the other half of
-   `v0.4.0`, and the half with the requirements list: entries keyed by the same
-   `CacheKey`, written only for a `Stable` identity, published by rename so an
-   interrupted process cannot publish a partial block, a directory this process
-   owns in which no filename component is attacker-controllable, a corrupt entry
-   discarded rather than trusted, and a cache that is deletable at any time
-   ([CACHE.md](../architecture/CACHE.md) §8). The rows it is measured against
-   are [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
-   move*.
-2. The `v0.4.0` release gate, once both halves are in. Gate 6 binds again: a
-   persistent cache moves byte counts across *processes*, which is a shape the
-   baseline harness measures within one process today.
+1. Phase 5, and the first release with an external claim:
+   `usd-pointcloud-plugins` opening a remote COPC asset through this resolver
+   with no HTTP code of its own, and the recorded amplification baseline that
+   goes with it. It needs a fixture of at least a gigabyte and somewhere to host
+   it. See [consumer integration](consumer-integration.md).
+2. The measurement this repository still cannot make. Every number in
+   [BASELINE.md](../reference/BASELINE.md) is a loopback number, so the trade
+   this architecture makes — bytes for round trips — is one whose numerator is
+   measured exactly and whose denominator is zero. `v0.5.0` is where distance
+   arrives.
 
-Done, and no longer next: identity exposure. What it surfaced was not in this
+Done, and no longer next: on-disk persistence. The requirements list CACHE.md §8
+wrote a release in advance survived contact with an implementation intact, and
+the one thing it did not say is what the implementation had to decide anyway —
+what bounds the directory. It is a budget, swept rather than enforced per write,
+evicting oldest-written first rather than least-recently-used, because
+refreshing a timestamp on every hit would turn a read of a cached block into a
+write. Eviction there is invisible to correctness for the same reason it is in
+memory, so an approximate order costs a re-fetch and nothing else.
+
+The work also surfaced a shape of defect a single-process test cannot see, and
+this time before it shipped rather than after. The first draft of the
+stage-level case configured the process stores directly and asserted that a
+second open cost nothing. It passed, and it was measuring the wrong thing: the
+bundle is a shared library that links `usdAssetCache` statically, so its process
+stores are not the test executable's, and what the case had actually done was
+configure a second unused pair of stores and then read the resolver's untouched
+*memory* cache. The persistent tier had never run. What the case does now is
+re-invoke the test executable as a child process, which is both the honest
+measurement and the one the claim was about.
+
+Also done, and no longer next: identity exposure. What it surfaced was not in this
 repository at all, and it is why the surface has the shape it does. The
 consumer builds its source identity from `ArAssetInfo::version`, falls back to
 `GetModificationTimestamp`, and classifies the result *itself* — a non-blank

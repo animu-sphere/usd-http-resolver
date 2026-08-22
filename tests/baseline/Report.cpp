@@ -104,9 +104,10 @@ std::string FormatBaseline(const RunContext& context,
                " omitted.\n\n";
         out += "| Scenario | blockHits | blockMisses | partialHits |"
                " savedByCoalescing | savedBySingleFlight | bytesFromCache |"
-               " bytesOverFetched | evictions | peakResidentBytes |\n";
+               " bytesOverFetched | evictions | peakResidentBytes |"
+               " persistedHits | persistedWrites |\n";
         out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
-               " ---: |\n";
+               " ---: | ---: | ---: |\n";
         for (const ScenarioRecord& record : records) {
             if (!record.cached) continue;
             const usdasset::MetricsSnapshot& m = record.metrics;
@@ -120,6 +121,8 @@ std::string FormatBaseline(const RunContext& context,
             out += " | " + Unsigned(m.bytesOverFetched);
             out += " | " + Unsigned(m.evictions);
             out += " | " + Unsigned(m.peakResidentBytes);
+            out += " | " + Unsigned(m.persistedHits);
+            out += " | " + Unsigned(m.persistedWrites);
             out += " |\n";
         }
     }
@@ -155,7 +158,9 @@ std::string FormatBaseline(const RunContext& context,
             everyCacheCounterIsZero && m.bytesFromCache == 0 && m.blockHits == 0 &&
             m.blockMisses == 0 && m.partialHits == 0 &&
             m.requestsSavedByCoalescing == 0 && m.requestsSavedBySingleFlight == 0 &&
-            m.bytesOverFetched == 0 && m.evictions == 0 && m.peakResidentBytes == 0;
+            m.bytesOverFetched == 0 && m.evictions == 0 &&
+            m.peakResidentBytes == 0 && m.persistedHits == 0 &&
+            m.persistedWrites == 0;
     }
 
     if (everyCacheCounterIsZero) {

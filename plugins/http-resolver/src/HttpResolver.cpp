@@ -21,6 +21,7 @@
 
 #include "usdAssetCache/BlockCache.h"
 #include "usdAssetCache/CachedAssetReader.h"
+#include "usdAssetCache/DiskBlockStore.h"
 #include "usdAssetIo/Diagnostics.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -61,6 +62,20 @@ HttpResolver::HttpResolver() {
              std::to_string(_cacheOptions.budgetBytes),
              "the process block store was already in use; its budget and block "
              "size were left as they were"});
+    }
+
+    // The persistent tier, second, because it is the one that can fail for a
+    // reason outside this process: a directory that cannot be created, or one
+    // this user may not write to. Off unless a directory was named, and off
+    // again if the one that was named could not be prepared -- reported either
+    // way, because a cache that silently did not turn on is a cache somebody
+    // spends an afternoon looking for.
+    if (!configuration.persistence.directory.empty() &&
+        !usdasset::cache::DiskBlockStore::ConfigureProcess(configuration.persistence)) {
+        problems.push_back(
+            {"USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR",
+             configuration.persistence.directory,
+             "not a directory this process can create and write"});
     }
 
     for (const usdhttpresolver::ConfigurationProblem& problem : problems) {

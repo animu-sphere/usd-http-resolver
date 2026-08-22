@@ -127,15 +127,23 @@ void TestIndependence() {
 void TestVariableSet() {
     const std::vector<const char*>& variables =
         usdhttpresolver::ConfiguredVariables();
-    // Five transport bounds from `v0.2.0` and four cache variables from
-    // `v0.3.0`, which is the whole of CONFIGURATION.md §2 except the metrics
-    // dump -- that one is read by usdAssetIo and not by this resolver.
-    CHECK_EQ(variables.size(), std::size_t{9});
+    // Five transport bounds from `v0.2.0`, four cache variables from `v0.3.0`,
+    // and two persistence variables from `v0.4.0`, which is the whole of
+    // CONFIGURATION.md §2 except the metrics dump -- that one is read by
+    // usdAssetIo and not by this resolver.
+    CHECK_EQ(variables.size(), std::size_t{11});
     for (const char* name : variables) {
         CHECK(std::string(name).rfind("USD_HTTP_RESOLVER_", 0) == 0);
+        // Every variable is a byte count or a bound except the cache directory,
+        // whose values are paths and for which the unusable value is the empty
+        // one. Asserting `not a number` against it would assert that a path
+        // cannot contain a space.
+        const bool isPath =
+            std::string(name) == "USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR";
         std::vector<ConfigurationProblem> problems;
-        usdhttpresolver::ConfigurationFrom(From({{name, "not a number"}}),
-                                           &problems);
+        usdhttpresolver::ConfigurationFrom(
+            From({{name, isPath ? std::string() : std::string("not a number")}}),
+            &problems);
         // Every variable this version claims to read is actually read.
         CHECK_EQ(problems.size(), std::size_t{1});
     }
@@ -199,6 +207,56 @@ void TestCacheVariables() {
     CHECK_EQ(mixed.transport.maxRedirects, 1);
 }
 
+/// The persistence variables of CACHE.md §8, which are the only two in this
+/// surface whose default is "off" rather than a number.
+void TestPersistenceVariables() {
+    std::vector<ConfigurationProblem> problems;
+    const usdasset::cache::DiskCacheOptions unset =
+        usdhttpresolver::PersistenceOptionsFrom(From({}), &problems);
+    CHECK(problems.empty());
+    // Off, and off is an empty directory rather than a flag: a second way to
+    // say the same thing is a second thing to get wrong.
+    CHECK(unset.directory.empty());
+    CHECK_EQ(unset.budgetBytes, usdasset::cache::kDefaultPersistentBudgetBytes);
+
+    problems.clear();
+    const usdasset::cache::DiskCacheOptions set =
+        usdhttpresolver::PersistenceOptionsFrom(
+            From({{"USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", "/var/tmp/usd cache"},
+                  {"USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET", "2097152"}}),
+            &problems);
+    CHECK(problems.empty());
+    CHECK_EQ(set.directory, std::string("/var/tmp/usd cache"));
+    CHECK_EQ(set.budgetBytes, std::uint64_t{2097152});
+
+    // Set and empty is a typo, not an absence, and it is reported.
+    problems.clear();
+    const usdasset::cache::DiskCacheOptions blank =
+        usdhttpresolver::PersistenceOptionsFrom(
+            From({{"USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", ""}}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+    CHECK(blank.directory.empty());
+
+    // A budget below the floor is refused rather than clamped, like every other
+    // out-of-range value in this surface.
+    problems.clear();
+    usdhttpresolver::PersistenceOptionsFrom(
+        From({{"USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET", "4096"}}), &problems);
+    CHECK_EQ(problems.size(), std::size_t{1});
+
+    // A budget with no directory is read, reported if bad, and then unused.
+    // Persistence stays off because nothing named a directory, which is the
+    // rule that keeps "on" a single decision.
+    problems.clear();
+    const usdhttpresolver::ResolverConfiguration budgetOnly =
+        usdhttpresolver::ConfigurationFrom(
+            From({{"USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET", "8388608"}}),
+            &problems);
+    CHECK(problems.empty());
+    CHECK(budgetOnly.persistence.directory.empty());
+    CHECK_EQ(budgetOnly.persistence.budgetBytes, std::uint64_t{8388608});
+}
+
 }  // namespace
 
 int main() {
@@ -208,5 +266,6 @@ int main() {
     TestIndependence();
     TestVariableSet();
     TestCacheVariables();
+    TestPersistenceVariables();
     return usdassettest::Report("httpResolver configuration");
 }

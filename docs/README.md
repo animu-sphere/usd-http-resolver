@@ -61,7 +61,7 @@ contract and plan.
 - [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md) describes
   what the current tree implements, not what it intends to implement later.
 - [reference/BASELINE.md](reference/BASELINE.md) is the current recorded I/O
-  baseline: the five scenarios METRICS.md §6 requires, the fixture they ran
+  baseline: the six scenarios METRICS.md §6 requires, the fixture they ran
   against, and what is asserted rather than merely reported. A release record
   copies it at its tag; it is rewritten whenever I/O behavior changes. From
   `v0.3.0` it holds every scenario twice, with the cache and without it.

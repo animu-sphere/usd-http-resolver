@@ -139,6 +139,13 @@ runs **after** the copy, not before -- an identity captured before a copy proves
 nothing about the bytes copied after it, and the later check catches everything
 an earlier one would have plus the race between them.
 
+The closing clause of that paragraph's first sentence -- *for as long as the
+reader lives* -- is the limit of the claim rather than a flourish, and
+`usdAssetCache` reads it as one: its in-memory tier shares these blocks between
+readers of this process, and its persistent tier declines to write them, because
+an entry on a disk outlives every reader that could re-derive anything
+(CACHE.md §8).
+
 When the identity has moved, the read reports `AssetChanged` with `bytesRead`
 of zero. Zero rather than what was copied: those bytes may span two revisions,
 and reporting them as read invites exactly the composition the guarantee exists
@@ -231,7 +238,9 @@ API. Project code is Apache-2.0.
   deliberately restores an mtime -- can hide a revision change that preserves
   the size. On NTFS, ext4, and APFS the timestamp resolution makes this
   practically unreachable, which is why the validator is declared strong; on a
-  filesystem where it is not, the claim is weaker than the label.
+  filesystem where it is not, the claim is weaker than the label. Nothing writes
+  this identity to a disk, which is what holds the exposure to one reader's
+  lifetime rather than one cache directory's.
 - **Revalidation costs one stat per read that transfers bytes.** Correctness
   before speed: this module is the oracle, and an oracle that is fast and
   occasionally wrong is worse than useless.

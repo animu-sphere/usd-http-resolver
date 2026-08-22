@@ -189,6 +189,13 @@ struct LocalReaderFactory {
         // values mean the same bytes for as long as the reader lives. The
         // limit of that claim -- a filesystem whose timestamp resolution is
         // coarse enough to hide a same-size rewrite -- is in the module README.
+        //
+        // "For as long as the reader lives" is load-bearing, and the cache
+        // reads it that way. `Derived` is what says the strength was
+        // synthesized here rather than issued by an origin, and it is why
+        // `usdasset::cache::Persistable` refuses to write these blocks to a
+        // disk that would outlive this reader, while the memory tier -- whose
+        // entries cannot -- still shares them.
         metadata.validator.strength = ValidatorStrength::Strong;
         metadata.stability = ClassifyStability(metadata.validator);
 
