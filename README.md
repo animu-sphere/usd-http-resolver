@@ -29,13 +29,12 @@ index, and the chunks actually in view — not 10 GB.
 
 ## Status
 
-**`v0.2.0` is released: a `UsdStage` opens over HTTP. The read contract, the
-local backend, the shared boundary suite, the hostile-server corpus, the HTTP
-backend, and the `ArResolver` bundle are in the tree and passing.**
-
-**`v0.3.0` is in the tree and unreleased: the block cache. A clustered read of a
-remote asset now costs three requests where it cost eighteen, and eight parallel
-readers of one asset move what one reader moves.**
+**`v0.4.0` is released: a `UsdStage` opens over HTTP, a clustered read of a
+remote asset costs three requests where it cost eighteen, and a process that
+starts cold pays nothing for a window an earlier one fetched. The read contract,
+the local backend, the shared boundary suite, the hostile-server corpus, the
+HTTP backend, the `ArResolver` bundle, the block cache, identity exposure, and
+the on-disk cache tier are in the tree and passing.**
 
 That ordering is the point. `v0.1.0` shipped a local file reader, which is not
 interesting; what was interesting is that it arrived with the harness that makes
@@ -57,11 +56,24 @@ one reader's worth of bytes between them; the full sequential read did not move
 at all. The bounded query's `selectivity` got *worse*, 0.0025 to 0.0112, because
 alignment converts request count into transferred bytes, and 1191936 bytes of
 what it moved are `bytesOverFetched` — reported beside the saving rather than
-instead of it. Both
-records are counters on a named fixture:
+instead of it. Both records are counters on a named fixture:
 [BASELINE.md](docs/reference/BASELINE.md) for what the shipped configuration
 costs, and [BLOCK_POLICY.md](docs/reference/BLOCK_POLICY.md) for why it is that
 configuration.
+
+`v0.4.0` lets both of those outlive the thing that produced them, under one
+rule: a `Strong` validator issued by the origin, and nothing weaker, may be
+reused after the reader that captured it is gone. `GetAssetInfo` publishes an
+asset's identity — a resolved identifier, a size, an opaque validation token,
+and a stability class — so a consumer can decide whether *its own* generated
+cache may be reused, and `ArAssetInfo::version` carries the token only when that
+answer is yes. Under the same rule, blocks reach a disk: the bounded query that
+costs 19 requests and 331776 bytes on a first open costs 1 request and 0 bytes
+on a second, in a second process, and the one request is the metadata `HEAD`
+that revalidates the identity the entries are keyed on. A weak or absent
+validator is never written and never read back, because a guess that survives a
+restart is exactly what an on-disk cache was held back until validators landed
+in order not to become.
 
 What the tree actually does is in
 [docs/reference/CAPABILITY_MATRIX.md](docs/reference/CAPABILITY_MATRIX.md); what
@@ -123,7 +135,7 @@ it needs one, the abstraction leaked and the fix belongs here.
 
 The build graph is libs-first: everything under `libs/` and `tests/` builds and
 tests with no OpenUSD installation present, and OpenUSD is resolved only for the
-plugin bundle. This is the path both releases so far are defined by, and it is
+plugin bundle. This is the path every release so far is defined by, and it is
 the normal way to work on the read contract, the backends, and the boundary
 suite. Since `v0.2.0` it needs libcurl, which is the only third-party dependency
 this project has.

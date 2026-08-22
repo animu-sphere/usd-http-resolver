@@ -21,7 +21,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION")
          LIMIT_COUNT 1)
     string(STRIP "${_http_resolver_version}" _http_resolver_version)
 else()
-    set(_http_resolver_version "0.3.0")  # mirrors openstrata.plugin.yaml
+    set(_http_resolver_version "0.4.0")  # mirrors openstrata.plugin.yaml
 endif()
 
 project(HttpResolverPlugin

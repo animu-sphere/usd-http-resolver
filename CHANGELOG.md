@@ -11,13 +11,13 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
-## Unreleased
+## `v0.4.0` - 2026-08-22
 
-Identity leaves the process, and so do the bytes. `v0.4.0` is two halves of one
-rule — a `Strong` validator, and nothing weaker, may be reused after the reader
-that captured it is gone. The first half decides what a consumer may learn about
-an asset's identity and, the part that took the argument, what it may not be
-told. The second writes blocks to a disk a later process reads back.
+Identity leaves the process, and so do the bytes. The release is two halves of
+one rule — a `Strong` validator, and nothing weaker, may be reused after the
+reader that captured it is gone. The first half decides what a consumer may
+learn about an asset's identity and, the part that took the argument, what it
+may not be told. The second writes blocks to a disk a later process reads back.
 
 ### Added
 
@@ -196,6 +196,9 @@ told. The second writes blocks to a disk a later process reads back.
 - **The bundle README's configuration table**, which still listed five variables
   after `v0.3.0` added four cache values, and still said the bundle performed no
   caching.
+
+The immutable release record is
+[docs/releases/v0.4.0.md](docs/releases/v0.4.0.md).
 
 ## `v0.3.0` - 2026-08-21
 
