@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // The environment-variable configuration surface of CONFIGURATION.md §2: the
-// five transport bounds, which arrived in `v0.2.0`, and the four cache
-// variables, which arrive here in `v0.3.0` with the cache they configure. The
-// `ArResolverContext` form arrives in `v0.6.0`.
+// five transport bounds, which arrived in `v0.2.0`, the four cache variables,
+// which arrived in `v0.3.0` with the cache they configure, and the two
+// persistence variables, which arrive in `v0.4.0` with the tier they turn on.
+// The `ArResolverContext` form arrives in `v0.6.0`.
 //
 // Parsing is separated from reading the environment, and from reporting, on
 // purpose. An `ArResolver` is constructed once per process by `Plug`, so the
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "usdAssetCache/CacheOptions.h"
+#include "usdAssetCache/DiskBlockStore.h"
 #include "usdAssetHttp/HttpAssetReader.h"
 
 namespace usdhttpresolver {
@@ -71,10 +73,22 @@ usdasset::cache::CacheOptions CacheOptionsFrom(
     const EnvironmentLookup& lookup,
     std::vector<ConfigurationProblem>* problemsOut);
 
+/// The persistent cache policy `lookup` describes.
+///
+/// Persistence is off unless a directory is named, which is why the interesting
+/// return value is `directory`: an unset variable is not a problem, and an empty
+/// one is. A budget without a directory is read and reported like any other
+/// variable and then goes unused, because a variable that is silently ignored
+/// depending on another variable is a variable nobody can debug.
+usdasset::cache::DiskCacheOptions PersistenceOptionsFrom(
+    const EnvironmentLookup& lookup,
+    std::vector<ConfigurationProblem>* problemsOut);
+
 /// Everything one resolver is configured by, read in one pass.
 struct ResolverConfiguration {
     usdasset::http::HttpOptions transport;
     usdasset::cache::CacheOptions cache;
+    usdasset::cache::DiskCacheOptions persistence;
 };
 
 ResolverConfiguration ConfigurationFrom(
