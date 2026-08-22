@@ -21,7 +21,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "pxr/pxr.h"
@@ -98,8 +97,18 @@ protected:
     /// different answers: the identity a consumer needs is the identity of the
     /// bytes it is holding, and a `HEAD` issued now can describe a revision
     /// published after the asset it is asking about was opened. An identifier
-    /// nothing has opened is opened here, and retained, so that the request it
-    /// costs is the one the `_OpenAsset` that follows would have made.
+    /// with a resolved path that nothing has opened is opened here, and
+    /// retained, so that the request it costs is the one the `_OpenAsset` that
+    /// follows would have made.
+    ///
+    /// Two things it will not do, and both are about a failing origin. It does
+    /// not open an identifier whose `resolvedPath` is empty: an empty resolved
+    /// path is a resolution that failed or never happened, and asset info must
+    /// not be the call that discovers a `503` -- that discovery costs a round
+    /// trip, and `_Resolve` has just paid for it. And it posts no diagnostic of
+    /// its own: this is a question about identity rather than an operation on
+    /// the asset, the operation that follows reports its own failure, and one
+    /// failure rendered twice is the noise DIAGNOSTICS.md §3 exists to avoid.
     ArAssetInfo _GetAssetInfo(const std::string& assetPath,
                               const ArResolvedPath& resolvedPath) const override;
 
@@ -145,6 +154,17 @@ private:
                            ///< then finds the first thread's answer.
         bool opened = false;
         usdasset::http::HttpOpenResult result;
+
+        /// Whether the open succeeded, and what it found.
+        ///
+        /// Separate from `result.reader` because the reader leaves: a
+        /// concurrent `_OpenAsset` takes it, and an entry with a null reader
+        /// and an `Ok` status is then indistinguishable from a failed open by
+        /// anything that looks at `result` alone. It is not the same answer --
+        /// the asset exists, and its identity is known -- so the answer is kept
+        /// here, where handing the reader out cannot erase it.
+        bool succeeded = false;
+        usdasset::AssetMetadata metadata;
     };
 
     /// Finds or creates the entry for `identifier`. The table lock is held for
@@ -178,14 +198,32 @@ private:
         usdasset::AssetMetadata metadata;
     };
 
+    /// The validator one identifier has been seen with, and whether it has ever
+    /// been seen with two.
+    ///
+    /// This is the record a contradiction is detected against, and it is why it
+    /// is not the same structure as `_identities`. The two have different
+    /// jobs and therefore different lifetimes: `_identities` caches an *answer*
+    /// and may be dropped, because dropping it costs a metadata request; this
+    /// caches the *question* -- has this identifier changed underneath us -- and
+    /// may never be dropped, because dropping it makes the next open of an
+    /// asset that has already moved look like the first one, and publish a
+    /// reusable identity for a revision a live consumer is not holding.
+    struct _Fingerprint {
+        usdasset::Validator validator;
+        bool seen = false;  ///< An absent validator is a legal value, so
+                            ///< presence needs its own bit.
+        bool contradicted = false;
+    };
+
     /// Records `metadata` as the identity of `identifier`, and reports whether
     /// this identifier has ever contradicted itself in this process.
     ///
     /// A contradiction is a republish underneath a running process: two opens
     /// of one identifier that captured two different validators. It is
-    /// remembered permanently, in `_contradicted`, because the consequence is
-    /// permanent -- see `PublishIdentity` -- and because it can only be entered
-    /// by an asset that actually changed.
+    /// remembered permanently, in `_fingerprints`, because the consequence is
+    /// permanent -- see `PublishIdentity` -- and because forgetting it is
+    /// indistinguishable, from the inside, from the asset never having moved.
     bool _RememberIdentity(const std::string& identifier,
                            const usdasset::AssetMetadata& metadata) const;
 
@@ -196,10 +234,16 @@ private:
 
     /// The remembered identity, or a fresh open's, or nothing.
     ///
-    /// The open it may perform is the retained kind: it goes through the same
-    /// table `_Resolve` fills, so a following `_OpenAsset` finds the reader
-    /// rather than issuing a second metadata request.
+    /// `mayOpen` decides whether an identifier nothing has opened is worth a
+    /// round trip. The open it then performs is the retained kind: it goes
+    /// through the same table `_Resolve` fills, so a following `_OpenAsset`
+    /// finds the reader rather than issuing a second metadata request.
+    ///
+    /// A failure is silent here. It is still not retained -- the entry is
+    /// forgotten exactly as `_Resolve` forgets one -- but nothing is posted:
+    /// see `_GetAssetInfo`.
     bool _IdentityFor(const std::string& identifier,
+                      bool mayOpen,
                       usdasset::AssetMetadata* metadata,
                       bool* contradicted) const;
 
@@ -227,10 +271,9 @@ private:
     /// Larger than `kMaxRetainedOpens`, and for a different reason: an entry
     /// here holds no reader and no connection, only a metadata struct, and what
     /// is lost when one is dropped is the ability to answer `GetAssetInfo`
-    /// without a request. Dropping one costs a metadata request, which then
-    /// describes whatever revision is published *now* -- correct for an asset
-    /// that has not moved, and the reason `_contradicted` is remembered
-    /// separately and permanently for one that has.
+    /// without a request. Dropping one costs that request and nothing else,
+    /// because the record a change is detected against is `_fingerprints`,
+    /// which is not this table and is never dropped.
     static constexpr std::size_t kMaxRememberedIdentities = 512;
 
     mutable std::mutex _tableMutex;
@@ -241,12 +284,23 @@ private:
     mutable std::unordered_map<std::string, _Identity> _identities;
     mutable std::deque<std::string> _identityOrder;
 
-    /// Identifiers observed at two different validators. Never dropped: a
-    /// bounded set would forget a contradiction and start publishing a reusable
-    /// identity for an asset that has already proved it does not have one, and
-    /// this grows by one string per asset that is republished underneath a live
-    /// process, which is not a rate.
-    mutable std::unordered_set<std::string> _contradicted;
+    /// One fingerprint per identifier this process has opened, kept for the
+    /// life of the process.
+    ///
+    /// Unbounded, deliberately, and it is the one structure here that is. A
+    /// bound on this table is a bound on how far back a republish can be
+    /// noticed: past it, an asset that has already moved looks like an asset
+    /// being opened for the first time, and asset info publishes a reusable
+    /// token for a revision that some consumer is not the holder of. That is
+    /// the failure this whole surface exists to prevent, and it is not worth
+    /// trading for a table of validators -- an `ETag` and a URL per asset the
+    /// process has actually opened, which is the same order as the identifiers
+    /// a host is holding anyway.
+    ///
+    /// The bounded table above it is what keeps that affordable: the expensive
+    /// part of an identity is the metadata and the answer, and those are the
+    /// part that may be dropped.
+    mutable std::unordered_map<std::string, _Fingerprint> _fingerprints;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

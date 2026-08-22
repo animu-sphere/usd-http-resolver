@@ -16,12 +16,14 @@
 // hosted anywhere, and no port anybody has to reserve.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pxr/base/tf/errorMark.h"
@@ -72,6 +74,22 @@ void Serve(const std::string& path, std::vector<unsigned char> content,
     spec.etag = etag;
     spec.behavior = behavior;
     g_server->Serve(spec);
+}
+
+/// Requests the server logged for one asset, by target.
+///
+/// Scoped to a path rather than taken from `RequestCount()`, because a count of
+/// *every* request is a count of other tests' connections too: a case that
+/// abandons a response mid-body leaves the server writing to a socket nobody is
+/// reading, and its log entry can land inside a later case's window. What each
+/// of these cases is asking is how many requests *this asset* cost, which is
+/// the question the log can answer exactly.
+std::size_t RequestsFor(const std::string& path) {
+    std::size_t count = 0;
+    for (const usdassetfixture::RequestRecord& record : g_server->Log()) {
+        if (record.target.find(path) != std::string::npos) ++count;
+    }
+    return count;
 }
 
 /// A remote scene that references a sibling *relatively*, which is how a layer
@@ -244,18 +262,19 @@ void TestRangeRead() {
 
 /// §2.3: one metadata request per identifier, reused by the open that follows.
 void TestResolveIsNotRepeated() {
-    const std::string url = g_server->Url("/data/blob.bin");
+    const std::string path = "/data/blob.bin";
+    const std::string url = g_server->Url(path);
     g_server->ClearLog();
 
     const ArResolvedPath resolved = ArGetResolver().Resolve(url);
     CHECK(!resolved.empty());
-    const std::size_t afterResolve = g_server->RequestCount();
+    const std::size_t afterResolve = RequestsFor(path);
     CHECK(afterResolve >= 1);
 
     const std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(resolved);
     CHECK(asset != nullptr);
     // Opening a resolved asset does not repeat the round trip.
-    CHECK_EQ(g_server->RequestCount(), afterResolve);
+    CHECK_EQ(RequestsFor(path), afterResolve);
 }
 
 /// §2.1 end to end: two spellings of one asset are one identifier, and
@@ -363,15 +382,16 @@ std::uint64_t InfoSize(const ArAssetInfo& info) {
 /// that has the validator that admits it.
 void TestAssetInfoIsPublished() {
     const std::size_t size = 4096;
-    Serve("/identity/strong.bin", Pattern(size), "\"strong-1\"");
-    const std::string url = g_server->Url("/identity/strong.bin");
+    const std::string path = "/identity/strong.bin";
+    Serve(path, Pattern(size), "\"strong-1\"");
+    const std::string url = g_server->Url(path);
 
     const ArResolvedPath resolved = ArGetResolver().Resolve(url);
     CHECK(!resolved.empty());
 
     // Asked after the resolve, which is where a consumer asks it -- and after
     // the open, below, which is where the reader that knows the answer is gone.
-    const std::size_t afterResolve = g_server->RequestCount();
+    const std::size_t afterResolve = RequestsFor(path);
     const std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(resolved);
     CHECK(asset != nullptr);
 
@@ -392,7 +412,7 @@ void TestAssetInfoIsPublished() {
     // performed, which is both cheaper and *more correct* than a fresh `HEAD`:
     // a `HEAD` issued now would describe whatever is published now, which is
     // not necessarily what the asset above is reading.
-    CHECK_EQ(g_server->RequestCount(), afterResolve);
+    CHECK_EQ(RequestsFor(path), afterResolve);
 }
 
 /// The two identities that must not be reusable, end to end: a weak validator
@@ -504,20 +524,134 @@ void TestModificationTimestampIsInvalid() {
 /// Asking for an identity that nothing has opened costs one metadata request,
 /// and the open that follows reuses it rather than issuing a second.
 void TestAssetInfoRetainsItsOpen() {
-    Serve("/identity/cold.bin", Pattern(64), "\"cold-1\"");
-    const std::string url = g_server->Url("/identity/cold.bin");
+    const std::string path = "/identity/cold.bin";
+    Serve(path, Pattern(64), "\"cold-1\"");
+    const std::string url = g_server->Url(path);
     g_server->ClearLog();
 
     const ArAssetInfo info = ArGetResolver().GetAssetInfo(url,
                                                           ArResolvedPath(url));
     CHECK(info.version == "\"cold-1\"");
-    const std::size_t afterInfo = g_server->RequestCount();
+    const std::size_t afterInfo = RequestsFor(path);
     CHECK(afterInfo >= 1);
 
     const std::shared_ptr<ArAsset> asset =
         ArGetResolver().OpenAsset(ArResolvedPath(url));
     CHECK(asset != nullptr);
-    CHECK_EQ(g_server->RequestCount(), afterInfo);
+    CHECK_EQ(RequestsFor(path), afterInfo);
+}
+
+/// A contradiction survives the answer being forgotten.
+///
+/// The table that answers asset info without a request is bounded, and the
+/// record a republish is detected against is not. That separation is the whole
+/// point of there being two structures: if aging an answer out also aged out
+/// the validator it would have been compared against, the next open of an asset
+/// that has already moved would look like a first open and would publish a
+/// reusable token for a revision some consumer is not holding.
+void TestAgedOutIdentityStillDetectsARepublish() {
+    Serve("/identity/aged.bin", Pattern(128), "\"aged-1\"");
+    const std::string url = g_server->Url("/identity/aged.bin");
+
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(!resolved.empty());
+    const std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(resolved);
+    CHECK(asset != nullptr);
+    CHECK(ArGetResolver().GetAssetInfo(url, resolved).version == "\"aged-1\"");
+
+    // Past `kMaxRememberedIdentities`, which is 512. Stated here rather than
+    // imported, because a test that knew the bound would agree with the code by
+    // construction; what is being asserted is that exceeding it costs a request
+    // and never an answer.
+    for (int i = 0; i < 520; ++i) {
+        const std::string path = "/identity/filler/" + std::to_string(i);
+        Serve(path, Bytes("filler"), "\"filler-" + std::to_string(i) + "\"");
+        CHECK(!ArGetResolver().Resolve(g_server->Url(path)).empty());
+    }
+
+    CHECK(g_server->Republish("/identity/aged.bin", Pattern(160),
+                              "\"aged-2\""));
+
+    const ArResolvedPath again = ArGetResolver().Resolve(url);
+    CHECK(!again.empty());
+
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, again);
+    CHECK(info.version.empty());
+    CHECK(InfoField(info, "stability") == "Unstable");
+    CHECK(InfoField(info, "validationToken") == "\"aged-2\"");
+}
+
+/// Asset info while other threads are opening the same asset.
+///
+/// The reader an entry holds is handed out exactly once, and it leaves without
+/// warning: a thread asking for identity can be holding the same entry another
+/// thread has just taken the reader out of. An entry with a null reader and an
+/// `Ok` status is not a failed open, and reporting it as one hands a consumer
+/// an empty `ArAssetInfo` for an asset it is about to read successfully.
+void TestAssetInfoUnderConcurrentOpen() {
+    Serve("/identity/racy.bin", Pattern(4096), "\"racy-1\"");
+    const std::string url = g_server->Url("/identity/racy.bin");
+
+    std::atomic<int> withoutIdentity{0};
+    std::atomic<int> withoutAsset{0};
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 8; ++t) {
+        threads.emplace_back([&url, &withoutIdentity, &withoutAsset] {
+            for (int i = 0; i < 8; ++i) {
+                const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+                const ArAssetInfo info =
+                    ArGetResolver().GetAssetInfo(url, resolved);
+                if (InfoField(info, "stability").empty()) ++withoutIdentity;
+                if (!ArGetResolver().OpenAsset(resolved)) ++withoutAsset;
+            }
+        });
+    }
+    for (std::thread& thread : threads) thread.join();
+
+    CHECK_EQ(withoutIdentity.load(), 0);
+    CHECK_EQ(withoutAsset.load(), 0);
+}
+
+/// A failing origin costs one round trip and one diagnostic, not two of each.
+///
+/// Asset info is a question about identity rather than an operation on the
+/// asset. `_Resolve` has already reported this fault and paid for the request
+/// that found it, and a layer being reloaded against a dead origin should not
+/// pay for both again.
+void TestAssetInfoDoesNotRediscoverAFailure() {
+    const std::string path = "/identity/denied.bin";
+    Serve(path, Bytes("secret"), "\"denied-1\"",
+          usdassetfixture::Behavior::AccessDenied);
+    const std::string url = g_server->Url(path);
+
+    TfErrorMark mark;
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(resolved.empty());
+    CHECK(!mark.IsClean());  // reported once, by the resolve
+    mark.Clear();
+
+    // With no resolved path, asset info does not go looking. An empty resolved
+    // path is a resolution that failed or never happened, and rediscovering
+    // that costs exactly the round trip the resolve just spent.
+    g_server->ClearLog();
+    TfErrorMark second;
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, resolved);
+    CHECK(info.version.empty());
+    CHECK(!info.resolverInfo.IsHolding<VtDictionary>());
+    CHECK_EQ(RequestsFor(path), std::size_t{0});
+    CHECK(second.IsClean());
+    second.Clear();
+
+    // And asked with a path, it may pay for the request -- there is no other
+    // way to answer -- but it still posts nothing: the open that follows
+    // reports the same fault with the same code.
+    TfErrorMark third;
+    const ArAssetInfo forced =
+        ArGetResolver().GetAssetInfo(url, ArResolvedPath(url));
+    CHECK(forced.version.empty());
+    CHECK(third.IsClean());
+    third.Clear();
 }
 
 /// A reader retained past the end of the test, deliberately.
@@ -614,6 +748,9 @@ int main() {
         TestAssetInfoElidesCredentials();
         TestModificationTimestampIsInvalid();
         TestAssetInfoRetainsItsOpen();
+        TestAssetInfoUnderConcurrentOpen();
+        TestAssetInfoDoesNotRediscoverAFailure();
+        TestAgedOutIdentityStillDetectsARepublish();
         TestRetainedOpenSurvivesProcessExit();
         TestWritingIsRefused();
         TestLocalResolutionIsUnchanged(WriteLocalLayer());

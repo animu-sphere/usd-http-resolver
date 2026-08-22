@@ -228,10 +228,17 @@ would be wrong.
 So a contradicted identifier stops publishing a reusable identity for the rest
 of the process: `Stable` degrades to `Unstable`, and `version` goes empty. The
 current token stays visible in the dictionary, because a consumer that filed
-something under the old one needs to see that it changed. The contradiction is
-remembered permanently rather than in a bounded table — a bound that forgot it
-would start publishing a reusable identity again for an asset that has already
-proved it does not have one.
+something under the old one needs to see that it changed.
+
+Two things are remembered per identifier, and only one of them may be forgotten.
+The *answer* — the metadata that lets asset info be returned without a request —
+is held in a bounded table, because dropping it costs a request and nothing
+else. The *validator a later open is compared against* is held for the life of
+the process, because dropping it is not a cost, it is a wrong answer: an asset
+that has already moved would look like an asset being opened for the first time,
+and would publish a reusable token for a revision some consumer is not holding.
+A bound on that second record is a bound on how far back a republish can be
+noticed, and there is no such bound.
 
 ### 3.3 The identity is the open's, not a fresh request's
 
@@ -244,6 +251,16 @@ identity a consumer needs is the identity of the bytes it is *holding*, and a
 An identifier nothing has opened is opened here, and the reader is retained
 exactly as §2.3 describes, so the request it costs is the one the `OpenAsset`
 that follows would have made rather than an extra one.
+
+Two limits on that, and both are about an origin that is failing. Asset info
+does not open an identifier whose resolved path is empty: an empty resolved path
+is a resolution that failed or never happened, and asset info must not be the
+call that discovers a `503` — for a layer being reloaded against a dead origin
+that is a second identical round trip behind the one `Resolve` has just paid
+for. And it posts no diagnostic of its own: this is a question about identity
+rather than an operation on the asset, the operation that follows reports the
+same fault with the same code, and one fault rendered twice is the noise
+[DIAGNOSTICS.md](DIAGNOSTICS.md) §3 exists to avoid.
 
 ### 3.4 `GetModificationTimestamp` is invalid, permanently
 

@@ -40,26 +40,43 @@ may not be told.
   cannot say which one a caller holds. Harmless until the asset moves: once two
   opens of one identifier have captured two different validators, `Stable`
   degrades to `Unstable` and `version` goes empty for the rest of the process.
-  Remembered permanently rather than in a bounded table, because a bound that
-  forgot it would start publishing a reusable identity again for an asset that
-  has already proved it does not have one.
+  Two records exist per identifier and only one of them is bounded: the metadata
+  that answers asset info without a request may be dropped, because dropping it
+  costs a request, and the validator a later open is compared against may not,
+  because dropping that makes an asset which has already moved look like one
+  being opened for the first time.
 - **Identity answered from the open, not from a new request.** Asset info comes
   from the open this process already performed for that identifier. That is
   cheaper and, more to the point, *more correct*: the identity a consumer needs
   is the identity of the bytes it is holding, and a `HEAD` issued now describes
-  whatever is published now. An identifier nothing has opened is opened and
-  retained, so the request costs what the `OpenAsset` after it would have cost.
+  whatever is published now. An identifier with a resolved path that nothing has
+  opened is opened and retained, so the request costs what the `OpenAsset` after
+  it would have cost.
+- **Asset info never rediscovers a failure.** It does not open an identifier
+  whose resolved path is empty — an empty resolved path is a resolution that
+  already failed, and rediscovering that costs the round trip `Resolve` has just
+  spent — and it posts no diagnostic of its own, because the operation that
+  follows reports the same fault with the same code.
 - **`httpResolver_identity`**, offline and linking one translation unit: the
   publication rules as a table — strong, weak, `Last-Modified`, absent,
   contradicted, a strength with no kind, and both credential shapes. The defect
   it exists to catch is silent, and it does not fail in this repository: a token
   published for a validator that cannot prove a revision fails in a consumer,
   weeks later, as a generated cache that served the wrong bytes.
-- **Six cases in `httpResolver_stage`**, over a real socket: the four fields for
+- **Ten cases in `httpResolver_stage`**, over a real socket: the four fields for
   a strong validator, the `version` rule for each stability class, a republish
-  that withdraws reusability, an invalid timestamp, an identity that costs no
-  second metadata request, and one case that asserts nothing in a `CHECK` at all
-  — it resolves an asset it never opens and lets the exit code do the asserting.
+  that withdraws reusability, a signed URL whose credential reaches no published
+  field, an invalid timestamp, an identity that costs no second metadata
+  request, a republish detected after that identifier's metadata has aged out of
+  the bounded table, eight threads resolving and opening one asset while asking
+  for its identity, a failing origin that is neither reopened nor reported
+  twice, and one case that asserts nothing in a `CHECK` at all — it resolves an
+  asset it never opens and lets the exit code do the asserting.
+
+  Those cases count requests per asset out of the fixture server's log rather
+  than from its total, which is what makes them stable: a case that abandons a
+  response mid-body leaves the server writing to a socket nobody is reading, and
+  that request can be logged inside a later case's window.
 
 ### Changed
 

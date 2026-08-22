@@ -102,13 +102,25 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
     if (!entry->opened) {
         entry->result = usdasset::http::Open(identifier, _options);
         entry->opened = true;
+        if (entry->result.reader) {
+            // Copied off the reader while it is still here. The reader leaves
+            // -- `_OpenAsset` takes it, possibly on another thread and possibly
+            // before this line is reached again -- and what it knew about the
+            // asset's identity must not leave with it.
+            entry->metadata = entry->result.reader->Metadata();
+            entry->succeeded = true;
+        }
     }
 
-    if (entry->result.reader) {
-        // Remembered here rather than at the open below it, because this reader
-        // is handed out once and the consumer that asks for its identity asks
-        // after it is gone. RESOLVER.md §3.
-        _RememberIdentity(identifier, entry->result.reader->Metadata());
+    if (entry->succeeded) {
+        // `succeeded` and not `result.reader`: a concurrent `_OpenAsset` may
+        // already have taken the reader out of this entry, and an asset whose
+        // reader has been handed to somebody still exists.
+        //
+        // Remembered here rather than at the open in `_OpenAsset`, because that
+        // reader is handed out once and the consumer that asks for its identity
+        // asks after it is gone. RESOLVER.md §3.
+        _RememberIdentity(identifier, entry->metadata);
         return ArResolvedPath(identifier);
     }
 
@@ -159,9 +171,11 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
         reader = std::move(result.reader);
     }
 
-    // Both paths, and not only the fresh open: an identifier resolved before
-    // `kMaxRememberedIdentities` other assets were resolved has been forgotten
-    // by now, and this is the last point at which its identity is known.
+    // Both paths, and not only the fresh open. A reader taken from the table
+    // was already recorded by whatever put it there, and recording it again is
+    // free; a reader opened here may never have been resolved through this
+    // process at all, and this is the only point at which its identity is
+    // known.
     _RememberIdentity(identifier, reader->Metadata());
 
     // Captured before the reader is moved from, and valid for as long as the
@@ -221,9 +235,9 @@ ArAssetInfo HttpResolver::_GetAssetInfo(
     // The resolved path when there is one, because that is the identifier the
     // open was performed under; the asset path otherwise, because `ArResolver`
     // permits asking about a path that has not been resolved.
-    const std::string source = !resolvedPath.GetPathString().empty()
-                                   ? resolvedPath.GetPathString()
-                                   : assetPath;
+    const bool resolved = !resolvedPath.GetPathString().empty();
+    const std::string source = resolved ? resolvedPath.GetPathString()
+                                        : assetPath;
     const std::string identifier =
         usdhttpresolver::CreateIdentifier(source, std::string());
 
@@ -232,7 +246,15 @@ ArAssetInfo HttpResolver::_GetAssetInfo(
 
     usdasset::AssetMetadata metadata;
     bool contradicted = false;
-    if (!_IdentityFor(identifier, &metadata, &contradicted)) return info;
+    // An identifier this process has opened is answered either way. What
+    // `resolved` decides is whether one it has *not* opened is worth a round
+    // trip: an empty resolved path is a resolution that failed or never
+    // happened, and asset info is not the call that should discover a dead
+    // origin -- for a layer being reloaded against one, that is a second
+    // identical round trip behind the one `_Resolve` has just paid for.
+    if (!_IdentityFor(identifier, resolved, &metadata, &contradicted)) {
+        return info;
+    }
 
     const usdhttpresolver::PublishedIdentity published =
         usdhttpresolver::PublishIdentity(metadata, contradicted);
@@ -275,14 +297,26 @@ bool HttpResolver::_RememberIdentity(
     const usdasset::AssetMetadata& metadata) const {
     std::lock_guard<std::mutex> lock(_identityMutex);
 
+    // The fingerprint first, because it is the half that decides an answer's
+    // trustworthiness rather than its cost. It is compared before it is
+    // overwritten, and it is never erased.
+    _Fingerprint& fingerprint = _fingerprints[identifier];
+    if (!fingerprint.seen) {
+        fingerprint.validator = metadata.validator;
+        fingerprint.seen = true;
+    } else if (fingerprint.validator != metadata.validator) {
+        // Equality of the validator, which is the only comparison any layer
+        // performs on one (ASSET_READER.md §7.1). A difference is a republish
+        // underneath this process, and it is remembered permanently.
+        fingerprint.contradicted = true;
+        fingerprint.validator = metadata.validator;
+    }
+    const bool contradicted = fingerprint.contradicted;
+
+    // And then the answer, which is bounded: dropping one of these costs a
+    // metadata request, and the line above is why it costs nothing else.
     const auto found = _identities.find(identifier);
     if (found != _identities.end()) {
-        // Byte equality of the validator, which is the only comparison any
-        // layer performs on one (ASSET_READER.md §7.1). A difference is a
-        // republish underneath this process, and it is remembered permanently.
-        if (found->second.metadata.validator != metadata.validator) {
-            _contradicted.insert(identifier);
-        }
         found->second.metadata = metadata;
     } else {
         _identities.emplace(identifier, _Identity{metadata});
@@ -293,7 +327,7 @@ bool HttpResolver::_RememberIdentity(
         }
     }
 
-    return _contradicted.count(identifier) != 0;
+    return contradicted;
 }
 
 bool HttpResolver::_KnownIdentity(const std::string& identifier,
@@ -304,43 +338,54 @@ bool HttpResolver::_KnownIdentity(const std::string& identifier,
     const auto found = _identities.find(identifier);
     if (found == _identities.end()) return false;
 
+    const auto fingerprint = _fingerprints.find(identifier);
+
     *metadata = found->second.metadata;
-    *contradicted = _contradicted.count(identifier) != 0;
+    *contradicted = fingerprint != _fingerprints.end() &&
+                    fingerprint->second.contradicted;
     return true;
 }
 
 bool HttpResolver::_IdentityFor(const std::string& identifier,
+                                bool mayOpen,
                                 usdasset::AssetMetadata* metadata,
                                 bool* contradicted) const {
     if (_KnownIdentity(identifier, metadata, contradicted)) return true;
+    if (!mayOpen) return false;
 
-    // Nothing in this process has opened it. Opening it here goes through the
-    // same retained table `_Resolve` fills, so the metadata request this costs
-    // is the one an `_OpenAsset` that follows would have made rather than an
-    // extra one.
+    // Nothing in this process has opened it, or the answer has aged out of the
+    // bounded table. Opening it here goes through the same retained table
+    // `_Resolve` fills, so the metadata request this costs is the one an
+    // `_OpenAsset` that follows would have made rather than an extra one.
     const std::shared_ptr<_Opened> entry = _GetOrCreate(identifier);
 
-    usdasset::Status status;
     {
         std::lock_guard<std::mutex> lock(entry->mutex);
         if (!entry->opened) {
             entry->result = usdasset::http::Open(identifier, _options);
             entry->opened = true;
+            if (entry->result.reader) {
+                entry->metadata = entry->result.reader->Metadata();
+                entry->succeeded = true;
+            }
         }
-        if (entry->result.reader) {
-            *metadata = entry->result.reader->Metadata();
+        if (entry->succeeded) {
+            // From the entry and not from `result.reader`, which a concurrent
+            // `_OpenAsset` may already have taken. Reading the reader here
+            // would report an asset that opened perfectly well as an asset with
+            // no identity, and the caller would hand a consumer an empty
+            // `ArAssetInfo` for an asset it is about to read.
+            *metadata = entry->metadata;
             *contradicted = _RememberIdentity(identifier, *metadata);
             return true;
         }
-        status = entry->result.status;
     }
 
-    // Same rule as `_Resolve`: a failure is not retained, an absence is not a
-    // diagnostic, and anything else is.
+    // A failure is not retained, exactly as in `_Resolve`. Unlike `_Resolve`,
+    // nothing is posted: this is a question about identity rather than an
+    // operation on the asset, and the operation that follows reports the same
+    // failure with the same code. One fault rendered twice is noise.
     _Forget(identifier, entry);
-    if (status.code != usdasset::StatusCode::NotFound) {
-        usdhttpresolver::Report(status, identifier);
-    }
     return false;
 }
 
