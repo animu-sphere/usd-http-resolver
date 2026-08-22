@@ -240,10 +240,15 @@ void MetricsSnapshot::Add(const MetricsSnapshot& other) {
 
 ReaderMetrics::ReaderMetrics(std::string identifier)
     : _identifier(ElideSecrets(identifier)) {
-    // Touch the registry here so that it is constructed before this object and
-    // therefore destroyed after it. Without this, a ReaderMetrics with static
-    // storage duration could outlive the aggregate it folds into, and
-    // ~ReaderMetrics would reach a destroyed singleton.
+    // Touch the registry here so that it exists before this object does, and so
+    // that the opt-in dump is armed before any counter can be folded into it.
+    //
+    // It is not what makes `~ReaderMetrics` safe. Construction order cannot,
+    // because a reader is not required to be destroyed before the objects that
+    // were constructed before it: a resolver holding a retained open destroys
+    // its reader from a static destructor of its own, arbitrarily late. What
+    // makes it safe is that the aggregate is never destroyed at all -- see
+    // `MetricsRegistry::Instance`.
     (void)MetricsRegistry::Instance();
 }
 
@@ -391,9 +396,9 @@ ScopedLatency::~ScopedLatency() {
 
 class MetricsRegistry::Impl {
 public:
-    /// Keeps std::cerr alive for the opt-in dump in ~MetricsRegistry, which
-    /// runs during static destruction and would otherwise race the standard
-    /// streams' own teardown.
+    /// Keeps std::cerr alive for the opt-in dump, which runs from `std::atexit`
+    /// during static destruction and would otherwise race the standard streams'
+    /// own teardown.
     std::ios_base::Init ioInit;
 
     mutable std::mutex mutex;
@@ -408,17 +413,38 @@ MetricsRegistry::MetricsRegistry()
     : _impl(new Impl()),
       _dumpAtExit(EnvironmentFlagSet("USD_HTTP_RESOLVER_METRICS_DUMP")) {}
 
-MetricsRegistry::~MetricsRegistry() {
-    if (_dumpAtExit) {
-        Dump(std::cerr);
-    }
-}
+// Never runs. Defined here rather than in the header because `Impl` is
+// incomplete there, and left non-trivial-looking on purpose: see `Instance`.
+MetricsRegistry::~MetricsRegistry() = default;
 
 MetricsRegistry& MetricsRegistry::Instance() {
-    // Constructed on first use and destroyed at exit, which is when the
-    // opt-in dump runs.
-    static MetricsRegistry instance;
-    return instance;
+    // Constructed on first use and never destroyed.
+    //
+    // The leak is the point. A `ReaderMetrics` folds into this aggregate from
+    // its destructor, and a reader can be destroyed arbitrarily late: the
+    // resolver retains an open reader for an identifier that was resolved and
+    // never opened (RESOLVER.md §2.3), and that reader is destroyed when the
+    // resolver is, during static destruction. A function-local static aggregate
+    // is destroyed in reverse order of construction -- which is to say *before*
+    // the resolver that was constructed before it -- so the fold would reach a
+    // destroyed object. That is a crash at exit, after every test has passed
+    // and every byte has been served, which is the least debuggable moment a
+    // process has.
+    //
+    // The opt-in dump therefore runs from `std::atexit` rather than from a
+    // destructor. It is armed at first use, so it runs before the static
+    // destructors registered earlier than that -- the same moment the old
+    // destructor ran, and with the same consequence: counters folded after it,
+    // by a reader that outlived it, are not in the dump. Missing a counter in
+    // an opt-in diagnostic is a cost; reaching a destroyed aggregate is not.
+    static MetricsRegistry* const instance = [] {
+        MetricsRegistry* const created = new MetricsRegistry();
+        if (created->DumpAtExitEnabled()) {
+            std::atexit([] { MetricsRegistry::Instance().Dump(std::cerr); });
+        }
+        return created;
+    }();
+    return *instance;
 }
 
 void MetricsRegistry::Fold(const ReaderMetrics& reader) {
