@@ -7,12 +7,15 @@
 #include <utility>
 #include <vector>
 
+#include "pxr/base/vt/dictionary.h"
+#include "pxr/base/vt/value.h"
 #include "pxr/usd/ar/defineResolver.h"
 #include "pxr/usd/ar/writableAsset.h"
 
 #include "Configuration.h"
 #include "Diagnostics.h"
 #include "Identifier.h"
+#include "Identity.h"
 #include "Report.h"
 #include "ResolvedAsset.h"
 
@@ -102,6 +105,10 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
     }
 
     if (entry->result.reader) {
+        // Remembered here rather than at the open below it, because this reader
+        // is handed out once and the consumer that asks for its identity asks
+        // after it is gone. RESOLVER.md §3.
+        _RememberIdentity(identifier, entry->result.reader->Metadata());
         return ArResolvedPath(identifier);
     }
 
@@ -151,6 +158,11 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
         }
         reader = std::move(result.reader);
     }
+
+    // Both paths, and not only the fresh open: an identifier resolved before
+    // `kMaxRememberedIdentities` other assets were resolved has been forgotten
+    // by now, and this is the last point at which its identity is known.
+    _RememberIdentity(identifier, reader->Metadata());
 
     // Captured before the reader is moved from, and valid for as long as the
     // reader is: it is a member of the reader's own implementation, and the
@@ -204,8 +216,132 @@ bool HttpResolver::_CanWriteAssetToPath(const ArResolvedPath& resolvedPath,
     return false;
 }
 
+ArAssetInfo HttpResolver::_GetAssetInfo(
+    const std::string& assetPath, const ArResolvedPath& resolvedPath) const {
+    // The resolved path when there is one, because that is the identifier the
+    // open was performed under; the asset path otherwise, because `ArResolver`
+    // permits asking about a path that has not been resolved.
+    const std::string source = !resolvedPath.GetPathString().empty()
+                                   ? resolvedPath.GetPathString()
+                                   : assetPath;
+    const std::string identifier =
+        usdhttpresolver::CreateIdentifier(source, std::string());
+
+    ArAssetInfo info;
+    if (identifier.empty()) return info;
+
+    usdasset::AssetMetadata metadata;
+    bool contradicted = false;
+    if (!_IdentityFor(identifier, &metadata, &contradicted)) return info;
+
+    const usdhttpresolver::PublishedIdentity published =
+        usdhttpresolver::PublishIdentity(metadata, contradicted);
+
+    // `version` is the field a consumer reads first, and it travels with
+    // nothing beside it -- no stability, no explanation. A token found there is
+    // treated as an identity fit to key a generated cache on, so only an
+    // identity that is fit for that goes there. A weak or contradicted
+    // validator leaves it empty and says why in `resolverInfo`.
+    if (published.reusable) info.version = published.validationToken;
+
+    // The four values of RESOLVER.md §3, under the neutral names the consumer
+    // contract uses. `size` is a `uint64_t`, which is what a byte count is.
+    VtDictionary resolverInfo;
+    resolverInfo["resolvedIdentifier"] = VtValue(published.resolvedIdentifier);
+    resolverInfo["size"] = VtValue(published.size);
+    resolverInfo["validationToken"] = VtValue(published.validationToken);
+    resolverInfo["stability"] = VtValue(published.stability);
+    info.resolverInfo = VtValue(resolverInfo);
+
+    // `assetName` stays empty. It names an asset in a studio asset system, this
+    // resolver knows only URLs, and filling it with the last path segment would
+    // publish a guess in a field a consumer may key on.
+    return info;
+}
+
+ArTimestamp HttpResolver::_GetModificationTimestamp(
+    const std::string& assetPath, const ArResolvedPath& resolvedPath) const {
+    (void)assetPath;
+    (void)resolvedPath;
+    return ArTimestamp();
+}
+
 std::string HttpResolver::_GetExtension(const std::string& assetPath) const {
     return usdhttpresolver::ExtensionOf(assetPath);
+}
+
+bool HttpResolver::_RememberIdentity(
+    const std::string& identifier,
+    const usdasset::AssetMetadata& metadata) const {
+    std::lock_guard<std::mutex> lock(_identityMutex);
+
+    const auto found = _identities.find(identifier);
+    if (found != _identities.end()) {
+        // Byte equality of the validator, which is the only comparison any
+        // layer performs on one (ASSET_READER.md §7.1). A difference is a
+        // republish underneath this process, and it is remembered permanently.
+        if (found->second.metadata.validator != metadata.validator) {
+            _contradicted.insert(identifier);
+        }
+        found->second.metadata = metadata;
+    } else {
+        _identities.emplace(identifier, _Identity{metadata});
+        _identityOrder.push_back(identifier);
+        while (_identityOrder.size() > kMaxRememberedIdentities) {
+            _identities.erase(_identityOrder.front());
+            _identityOrder.pop_front();
+        }
+    }
+
+    return _contradicted.count(identifier) != 0;
+}
+
+bool HttpResolver::_KnownIdentity(const std::string& identifier,
+                                  usdasset::AssetMetadata* metadata,
+                                  bool* contradicted) const {
+    std::lock_guard<std::mutex> lock(_identityMutex);
+
+    const auto found = _identities.find(identifier);
+    if (found == _identities.end()) return false;
+
+    *metadata = found->second.metadata;
+    *contradicted = _contradicted.count(identifier) != 0;
+    return true;
+}
+
+bool HttpResolver::_IdentityFor(const std::string& identifier,
+                                usdasset::AssetMetadata* metadata,
+                                bool* contradicted) const {
+    if (_KnownIdentity(identifier, metadata, contradicted)) return true;
+
+    // Nothing in this process has opened it. Opening it here goes through the
+    // same retained table `_Resolve` fills, so the metadata request this costs
+    // is the one an `_OpenAsset` that follows would have made rather than an
+    // extra one.
+    const std::shared_ptr<_Opened> entry = _GetOrCreate(identifier);
+
+    usdasset::Status status;
+    {
+        std::lock_guard<std::mutex> lock(entry->mutex);
+        if (!entry->opened) {
+            entry->result = usdasset::http::Open(identifier, _options);
+            entry->opened = true;
+        }
+        if (entry->result.reader) {
+            *metadata = entry->result.reader->Metadata();
+            *contradicted = _RememberIdentity(identifier, *metadata);
+            return true;
+        }
+        status = entry->result.status;
+    }
+
+    // Same rule as `_Resolve`: a failure is not retained, an absence is not a
+    // diagnostic, and anything else is.
+    _Forget(identifier, entry);
+    if (status.code != usdasset::StatusCode::NotFound) {
+        usdhttpresolver::Report(status, identifier);
+    }
+    return false;
 }
 
 std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(

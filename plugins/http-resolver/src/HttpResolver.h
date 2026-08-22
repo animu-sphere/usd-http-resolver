@@ -21,14 +21,18 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "pxr/pxr.h"
+#include "pxr/usd/ar/assetInfo.h"
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
+#include "pxr/usd/ar/timestamp.h"
 
 #include "usdAssetCache/CacheOptions.h"
 #include "usdAssetHttp/HttpAssetReader.h"
+#include "usdAssetIo/AssetReader.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -86,6 +90,41 @@ protected:
     bool _CanWriteAssetToPath(const ArResolvedPath& resolvedPath,
                               std::string* whyNot) const override;
 
+    /// The identity a consumer decides its own cache reuse from: RESOLVER.md
+    /// §3, and the four neutral values `Identity.h` projects.
+    ///
+    /// Answered from the open this process already performed for this
+    /// identifier, and not from a fresh metadata request, because those are
+    /// different answers: the identity a consumer needs is the identity of the
+    /// bytes it is holding, and a `HEAD` issued now can describe a revision
+    /// published after the asset it is asking about was opened. An identifier
+    /// nothing has opened is opened here, and retained, so that the request it
+    /// costs is the one the `_OpenAsset` that follows would have made.
+    ArAssetInfo _GetAssetInfo(const std::string& assetPath,
+                              const ArResolvedPath& resolvedPath) const override;
+
+    /// Invalid, always, and deliberately.
+    ///
+    /// A validator is not a time. `Last-Modified` sometimes is, but reading it
+    /// as one means parsing an HTTP construct above the backend that captured
+    /// it, which §7.1 of ASSET_READER.md places below this layer -- and a
+    /// strong `ETag`, which is the validator this resolver most wants to
+    /// publish, carries no time at all.
+    ///
+    /// Synthesizing one anyway is worse than not answering, and not by a
+    /// little. A consumer that finds no token in `GetAssetInfo` falls back to
+    /// this timestamp and builds an identity out of it, so a fabricated number
+    /// would manufacture exactly the durable identity that a weak or absent
+    /// validator is not allowed to have. The identity surface is `GetAssetInfo`
+    /// alone, and this returns the invalid timestamp that says so.
+    ///
+    /// What an invalid timestamp costs is a reload: `SdfLayer::Reload` re-reads
+    /// a layer whose timestamp is invalid rather than comparing it. That is a
+    /// request, and never a wrong answer.
+    ArTimestamp _GetModificationTimestamp(
+        const std::string& assetPath,
+        const ArResolvedPath& resolvedPath) const override;
+
     /// The extension, ignoring the query string.
     ///
     /// Overridden because the default implementation takes the text after the
@@ -128,6 +167,42 @@ private:
     void _Forget(const std::string& identifier,
                  const std::shared_ptr<_Opened>& entry) const;
 
+    /// What one identifier's most recent successful open discovered.
+    ///
+    /// Kept because `_Resolve` hands its reader out exactly once and a consumer
+    /// asks for asset info *after* opening the asset, by which time the reader
+    /// that knows the answer belongs to the consumer. Remembering the metadata
+    /// costs a few hundred bytes and keeps the answer describing the bytes the
+    /// consumer actually holds.
+    struct _Identity {
+        usdasset::AssetMetadata metadata;
+    };
+
+    /// Records `metadata` as the identity of `identifier`, and reports whether
+    /// this identifier has ever contradicted itself in this process.
+    ///
+    /// A contradiction is a republish underneath a running process: two opens
+    /// of one identifier that captured two different validators. It is
+    /// remembered permanently, in `_contradicted`, because the consequence is
+    /// permanent -- see `PublishIdentity` -- and because it can only be entered
+    /// by an asset that actually changed.
+    bool _RememberIdentity(const std::string& identifier,
+                           const usdasset::AssetMetadata& metadata) const;
+
+    /// The remembered identity for `identifier`, if there is one.
+    bool _KnownIdentity(const std::string& identifier,
+                        usdasset::AssetMetadata* metadata,
+                        bool* contradicted) const;
+
+    /// The remembered identity, or a fresh open's, or nothing.
+    ///
+    /// The open it may perform is the retained kind: it goes through the same
+    /// table `_Resolve` fills, so a following `_OpenAsset` finds the reader
+    /// rather than issuing a second metadata request.
+    bool _IdentityFor(const std::string& identifier,
+                      usdasset::AssetMetadata* metadata,
+                      bool* contradicted) const;
+
     /// Unclaimed opens the table will hold before dropping the oldest.
     ///
     /// A bound rather than a policy: an entry holds an open reader, a resolve
@@ -147,9 +222,31 @@ private:
     /// a store per resolver would not be one budget.
     usdasset::cache::CacheOptions _cacheOptions;
 
+    /// Remembered identities the process will hold before dropping the oldest.
+    ///
+    /// Larger than `kMaxRetainedOpens`, and for a different reason: an entry
+    /// here holds no reader and no connection, only a metadata struct, and what
+    /// is lost when one is dropped is the ability to answer `GetAssetInfo`
+    /// without a request. Dropping one costs a metadata request, which then
+    /// describes whatever revision is published *now* -- correct for an asset
+    /// that has not moved, and the reason `_contradicted` is remembered
+    /// separately and permanently for one that has.
+    static constexpr std::size_t kMaxRememberedIdentities = 512;
+
     mutable std::mutex _tableMutex;
     mutable std::unordered_map<std::string, std::shared_ptr<_Opened>> _table;
     mutable std::deque<std::string> _order;  ///< Insertion order, for eviction.
+
+    mutable std::mutex _identityMutex;
+    mutable std::unordered_map<std::string, _Identity> _identities;
+    mutable std::deque<std::string> _identityOrder;
+
+    /// Identifiers observed at two different validators. Never dropped: a
+    /// bounded set would forget a contradiction and start publishing a reusable
+    /// identity for an asset that has already proved it does not have one, and
+    /// this grows by one string per asset that is republished underneath a live
+    /// process, which is not a rate.
+    mutable std::unordered_set<std::string> _contradicted;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

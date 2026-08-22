@@ -25,10 +25,14 @@
 #include <vector>
 
 #include "pxr/base/tf/errorMark.h"
+#include "pxr/base/vt/dictionary.h"
+#include "pxr/base/vt/value.h"
 #include "pxr/pxr.h"
 #include "pxr/usd/ar/asset.h"
+#include "pxr/usd/ar/assetInfo.h"
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
+#include "pxr/usd/ar/timestamp.h"
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/usd/attribute.h"
 #include "pxr/usd/usd/prim.h"
@@ -331,6 +335,212 @@ void TestRangeUnsupportedIsTerminal() {
     mark.Clear();
 }
 
+/// One field out of the `resolverInfo` dictionary, or the empty string.
+///
+/// The test reads the dictionary the way a consumer would rather than through
+/// a helper the bundle exports, because there is no such helper: the surface is
+/// `ArAssetInfo` and nothing else, which is what ADR-0001 means by keeping the
+/// consumer interface at OpenUSD's own types.
+std::string InfoField(const ArAssetInfo& info, const std::string& key) {
+    if (!info.resolverInfo.IsHolding<VtDictionary>()) return std::string();
+    const VtDictionary& fields = info.resolverInfo.UncheckedGet<VtDictionary>();
+    const VtDictionary::const_iterator found = fields.find(key);
+    if (found == fields.end()) return std::string();
+    if (!found->second.IsHolding<std::string>()) return std::string();
+    return found->second.UncheckedGet<std::string>();
+}
+
+std::uint64_t InfoSize(const ArAssetInfo& info) {
+    if (!info.resolverInfo.IsHolding<VtDictionary>()) return 0;
+    const VtDictionary& fields = info.resolverInfo.UncheckedGet<VtDictionary>();
+    const VtDictionary::const_iterator found = fields.find("size");
+    if (found == fields.end()) return 0;
+    if (!found->second.IsHolding<std::uint64_t>()) return 0;
+    return found->second.UncheckedGet<std::uint64_t>();
+}
+
+/// §3: the identity a consumer keys its own generated cache on, for the asset
+/// that has the validator that admits it.
+void TestAssetInfoIsPublished() {
+    const std::size_t size = 4096;
+    Serve("/identity/strong.bin", Pattern(size), "\"strong-1\"");
+    const std::string url = g_server->Url("/identity/strong.bin");
+
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(!resolved.empty());
+
+    // Asked after the resolve, which is where a consumer asks it -- and after
+    // the open, below, which is where the reader that knows the answer is gone.
+    const std::size_t afterResolve = g_server->RequestCount();
+    const std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(resolved);
+    CHECK(asset != nullptr);
+
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, resolved);
+
+    // The four values of RESOLVER.md §3, under the names the consumer contract
+    // uses.
+    CHECK(InfoField(info, "resolvedIdentifier") == url);
+    CHECK_EQ(InfoSize(info), std::uint64_t{size});
+    CHECK(InfoField(info, "validationToken") == "\"strong-1\"");
+    CHECK(InfoField(info, "stability") == "Stable");
+
+    // And the field a consumer reads first: a token there means "this identity
+    // may key something that outlives the open".
+    CHECK(info.version == "\"strong-1\"");
+
+    // It cost nothing. The identity came from the open this process already
+    // performed, which is both cheaper and *more correct* than a fresh `HEAD`:
+    // a `HEAD` issued now would describe whatever is published now, which is
+    // not necessarily what the asset above is reading.
+    CHECK_EQ(g_server->RequestCount(), afterResolve);
+}
+
+/// The two identities that must not be reusable, end to end: a weak validator
+/// and no validator at all. Both read correctly; neither may key anything.
+void TestAssetInfoStabilityClasses() {
+    usdassetfixture::AssetSpec weak;
+    weak.path = "/identity/weak.bin";
+    weak.content = Pattern(512);
+    weak.etag = "\"weak-1\"";
+    weak.weakValidator = true;
+    g_server->Serve(weak);
+
+    const std::string weakUrl = g_server->Url("/identity/weak.bin");
+    const ArResolvedPath weakResolved = ArGetResolver().Resolve(weakUrl);
+    CHECK(!weakResolved.empty());
+    const ArAssetInfo weakInfo = ArGetResolver().GetAssetInfo(weakUrl,
+                                                              weakResolved);
+    CHECK(weakInfo.version.empty());
+    CHECK(InfoField(weakInfo, "stability") == "Unstable");
+    // Still published, because a weak validator that changed is still evidence
+    // that the asset changed (ASSET_READER.md §7.2). It just cannot prove that
+    // one that did *not* change means the bytes are identical.
+    CHECK(!InfoField(weakInfo, "validationToken").empty());
+
+    usdassetfixture::AssetSpec anonymous;
+    anonymous.path = "/identity/none.bin";
+    anonymous.content = Pattern(512);
+    g_server->Serve(anonymous);
+
+    const std::string anonymousUrl = g_server->Url("/identity/none.bin");
+    const ArResolvedPath anonymousResolved =
+        ArGetResolver().Resolve(anonymousUrl);
+    CHECK(!anonymousResolved.empty());
+    const ArAssetInfo anonymousInfo =
+        ArGetResolver().GetAssetInfo(anonymousUrl, anonymousResolved);
+    CHECK(anonymousInfo.version.empty());
+    CHECK(InfoField(anonymousInfo, "stability") == "Unavailable");
+    CHECK(InfoField(anonymousInfo, "validationToken").empty());
+    // Readable all the same: an asset with no identity is still an asset.
+    CHECK_EQ(InfoSize(anonymousInfo), std::uint64_t{512});
+
+    const std::shared_ptr<ArAsset> asset =
+        ArGetResolver().OpenAsset(anonymousResolved);
+    CHECK(asset != nullptr);
+}
+
+/// A republish underneath a running process. `ArAssetInfo` is keyed by path,
+/// so once two opens of one identifier have disagreed, this resolver can no
+/// longer say which revision a caller is holding -- and stops publishing an
+/// identity anybody may reuse.
+void TestAssetInfoAfterRepublishIsNotReusable() {
+    Serve("/identity/moving.bin", Pattern(256), "\"moving-1\"");
+    const std::string url = g_server->Url("/identity/moving.bin");
+
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(!resolved.empty());
+    CHECK(ArGetResolver().GetAssetInfo(url, resolved).version ==
+          "\"moving-1\"");
+
+    // The open consumes the reader `Resolve` retained, so the resolve below is
+    // a real second open rather than the first one's answer again. That is also
+    // the realistic order: something opened the asset, and the asset moved.
+    const std::shared_ptr<ArAsset> first = ArGetResolver().OpenAsset(resolved);
+    CHECK(first != nullptr);
+
+    CHECK(g_server->Republish("/identity/moving.bin", Pattern(300),
+                              "\"moving-2\""));
+
+    const ArResolvedPath again = ArGetResolver().Resolve(url);
+    CHECK(!again.empty());
+
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, again);
+    CHECK(info.version.empty());
+    CHECK(InfoField(info, "stability") == "Unstable");
+    // The current token is still visible, which is what lets a consumer
+    // invalidate what it filed under the old one.
+    CHECK(InfoField(info, "validationToken") == "\"moving-2\"");
+}
+
+/// §3, last line: no credential appears in asset info. The query string of a
+/// pre-signed URL is the shape that actually occurs.
+void TestAssetInfoElidesCredentials() {
+    Serve("/identity/signed.bin", Pattern(128), "\"signed-1\"");
+    const std::string url =
+        g_server->Url("/identity/signed.bin") + "?X-Amz-Signature=deadbeef";
+
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(!resolved.empty());
+
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, resolved);
+    const std::string identifier = InfoField(info, "resolvedIdentifier");
+    CHECK(identifier.find("deadbeef") == std::string::npos);
+    CHECK(identifier.find("?<elided>") != std::string::npos);
+    // The identity is still usable: what distinguishes revisions is the token,
+    // not the part of the URL that had to be removed.
+    CHECK(info.version == "\"signed-1\"");
+}
+
+/// The timestamp is invalid, deliberately and permanently. A fabricated one
+/// would be read by a consumer's fallback as a durable identity, which is
+/// exactly what an asset without a strong validator must not have.
+void TestModificationTimestampIsInvalid() {
+    const std::string url = g_server->Url("/identity/strong.bin");
+    const ArResolvedPath resolved = ArGetResolver().Resolve(url);
+    CHECK(!resolved.empty());
+    CHECK(!ArGetResolver().GetModificationTimestamp(url, resolved).IsValid());
+}
+
+/// Asking for an identity that nothing has opened costs one metadata request,
+/// and the open that follows reuses it rather than issuing a second.
+void TestAssetInfoRetainsItsOpen() {
+    Serve("/identity/cold.bin", Pattern(64), "\"cold-1\"");
+    const std::string url = g_server->Url("/identity/cold.bin");
+    g_server->ClearLog();
+
+    const ArAssetInfo info = ArGetResolver().GetAssetInfo(url,
+                                                          ArResolvedPath(url));
+    CHECK(info.version == "\"cold-1\"");
+    const std::size_t afterInfo = g_server->RequestCount();
+    CHECK(afterInfo >= 1);
+
+    const std::shared_ptr<ArAsset> asset =
+        ArGetResolver().OpenAsset(ArResolvedPath(url));
+    CHECK(asset != nullptr);
+    CHECK_EQ(g_server->RequestCount(), afterInfo);
+}
+
+/// A reader retained past the end of the test, deliberately.
+///
+/// §2.3 lets `Resolve` keep the reader it opened for the `OpenAsset` that
+/// usually follows, and nothing requires one to follow: a host probing for
+/// existence resolves constantly and opens rarely. Those readers are destroyed
+/// when the resolver is, during static destruction, arbitrarily late and after
+/// every other test here has passed.
+///
+/// This case asserts nothing in a `CHECK`. What it asserts is the exit code,
+/// which is the only place the failure it exists for can appear -- and it did
+/// appear: a reader folding its counters into a process aggregate that had
+/// already been destroyed crashed the process after the suite reported "ok".
+void TestRetainedOpenSurvivesProcessExit() {
+    Serve("/identity/retained.bin", Pattern(64), "\"retained-1\"");
+    const ArResolvedPath resolved =
+        ArGetResolver().Resolve(g_server->Url("/identity/retained.bin"));
+    CHECK(!resolved.empty());
+    // And then nothing. The open stays in the resolver's table until the
+    // process ends, which is the point.
+}
+
 /// §5: writing is unsupported, and says so.
 void TestWritingIsRefused() {
     const std::string url = g_server->Url("/data/blob.bin");
@@ -398,6 +608,13 @@ int main() {
         TestAbsenceIsNotAFailure();
         TestFailureIsReported();
         TestRangeUnsupportedIsTerminal();
+        TestAssetInfoIsPublished();
+        TestAssetInfoStabilityClasses();
+        TestAssetInfoAfterRepublishIsNotReusable();
+        TestAssetInfoElidesCredentials();
+        TestModificationTimestampIsInvalid();
+        TestAssetInfoRetainsItsOpen();
+        TestRetainedOpenSurvivesProcessExit();
         TestWritingIsRefused();
         TestLocalResolutionIsUnchanged(WriteLocalLayer());
     } else {
