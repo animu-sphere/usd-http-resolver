@@ -79,6 +79,14 @@ counters can.
 | `bytesOverFetched` | Bytes fetched inside blocks the caller never read |
 | `evictions` | Blocks dropped under the memory budget |
 | `peakResidentBytes` | High-water mark of cached bytes |
+| `persistedHits` | Blocks served from the on-disk cache |
+| `persistedWrites` | Blocks written to the on-disk cache |
+
+The last two are block counts and not byte counts, deliberately. The bytes a
+persisted hit saved are already in `bytesFromCache`, which is where
+`cacheHitRatio` has to find them; a second byte counter for the same bytes would
+be double counted by anything that summed the section. They are zero for every
+release before `v0.4.0` and for every process that names no cache directory.
 
 `bytesOverFetched` is the honest counter. It is the cost of block alignment and
 coalescing, and a design that reports only its savings is selling something.
@@ -157,12 +165,18 @@ required scenarios are:
 | Bounded spatial query on a large asset | `selectivity` — the headline claim |
 | Full sequential read | The worst case; must not be worse than a plain download |
 | Parallel readers on one asset | `requestsSavedBySingleFlight`, contention |
+| Bounded spatial query, reopened | `persistedHits` — what a second open costs (`v0.4.0`) |
 
 The fourth row is the one that keeps the project honest. A range-based reader
 that reads an entire asset must not lose badly to `curl`; if it does, the block
 and coalescing policy is wrong.
 
-`tests/baseline` runs all five against the loopback fixture server and is
+The sixth arrived with the tier it measures, and it is the only row whose
+comparator is not the row beside it but the row beside it *run twice*: what a
+second reader pays when nothing survived the first. It is measured for a
+`Stable` identity, which is the only identity that may have anything to reuse.
+
+`tests/baseline` runs all six against the loopback fixture server and is
 registered as a test, not kept as a tool a release run remembers to invoke. The
 division it keeps is the one this document implies: **byte counts and request
 counts are asserted exactly, and every ratio and every duration is recorded.**

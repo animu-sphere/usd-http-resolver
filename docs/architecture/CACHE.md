@@ -4,11 +4,11 @@ This document fixes block caching, request coalescing, single-flight
 de-duplication, and cache identity. It is the contract for `usdAssetCache`,
 which is a decorator over `AssetReader` and knows no transport concept.
 
-Status: implemented in `libs/usd-asset-cache` as of `v0.3.0`, except §8, which
-is `v0.4.0`. The block model, coalescing, single-flight, the key, and eviction
-are in the tree and tested; the constants in §3 and §4 are measured and the
-measurement is [BLOCK_POLICY.md](../reference/BLOCK_POLICY.md); the counters in
-§9 populate and are recorded in [BASELINE.md](../reference/BASELINE.md).
+Status: implemented in `libs/usd-asset-cache`. The block model, coalescing,
+single-flight, the key, and eviction landed in `v0.3.0`; §8, persistence, landed
+in `v0.4.0`. The constants in §3 and §4 are measured and the measurement is
+[BLOCK_POLICY.md](../reference/BLOCK_POLICY.md); the counters in §9 populate and
+are recorded in [BASELINE.md](../reference/BASELINE.md).
 
 The architecture below is unchanged by the `v0.2.0` reordering; what changed is
 that the validator it keys on already existed when the cache landed. There is no
@@ -173,7 +173,9 @@ invisible to correctness, so an approximate order costs a re-fetch and nothing
 else. The stripe count falls back toward one for a small budget, which makes the
 order exact where a test can see it.
 
-## 8. Persistence — Planned (`v0.4.0`)
+## 8. Persistence
+
+Implemented in `v0.4.0`, as `DiskBlockStore`.
 
 An on-disk cache is admitted only after validators land, because a persistent
 cache without a validator is a stale-data generator that survives restarts.
@@ -194,16 +196,45 @@ binding in §2.1 of [ASSET_READER.md](ASSET_READER.md) carries the guarantee, so
 in-memory caching is safe regardless. Across opens there is no binding left, and
 a weak match becomes a guess written to disk.
 
-Requirements when it lands:
+The requirements, and what each one is in the tree:
 
-- entries are keyed by the same `CacheKey`, with the validator included;
-- an entry is written only when the reader's identity is `Stable`;
-- writes are atomic (write to a temporary path, then rename) so an interrupted
-  process cannot publish a partial block;
-- the cache directory is owned by the process, and no filename component is
-  attacker-controllable — a URL never becomes a path;
-- a corrupt or unreadable entry is discarded and re-fetched, never trusted;
-- the cache is deletable at any time, and deleting it costs time only.
+| Requirement | As implemented |
+| --- | --- |
+| Entries keyed by the same `CacheKey`, validator included | The file name is half a SHA-256 digest of identifier, validator, block size, and block index; the whole digest is written inside the entry and compared before a cached byte is used, so a name collision costs a miss and can never serve one asset's bytes for another's |
+| Written only when the reader's identity is `Stable` | `Persistable`, answered once at open from the validator captured at open. A weak or absent one neither writes nor reads: it is not that the entry would be missing, it is that this tier is not consulted at all |
+| Atomic writes | The entry is built whole in memory, written to a temporary in the destination's own directory, and renamed into place. A rename that loses a race drops the temporary and reports nothing — the loser's bytes were identical to the winner's |
+| A directory the process owns, no attacker-controllable filename component | Every component is hexadecimal. A URL is digested, never spelled; `http://host/../../etc/passwd` is thirty-two hex characters like every other identifier |
+| A corrupt entry discarded, never trusted | Header and body are checksummed separately. A structurally broken entry is deleted on the way out rather than re-read and re-rejected forever; one that is intact but names another identity is left where it is, because it is somebody's valid entry |
+| Deletable at any time, costing time only | Every operation is best effort and its worst outcome is `false`, which is a miss. The directory vanishing under a live reader is a case with a test |
+
+Three things the implementation adds that this section did not ask for. The
+first is a bound, and the other two are the same refusal read twice:
+
+- **The directory has a budget**, 1 GiB by default. An unbounded cache is a disk
+  nobody can plan for. It is enforced by a sweep on an interval rather than on
+  every write, so the ceiling is the budget plus one interval's writes, and the
+  eviction order is oldest-written first rather than least-recently-used —
+  refreshing a timestamp on every hit would turn a read into a write. Eviction
+  here is invisible to correctness for the reason §7 gives in memory, so an
+  approximate order costs a re-fetch and nothing else.
+- **Persistence is off unless a directory is named.** There is no default
+  location. A resolver that started writing to a disk nobody named would be a
+  surprise, and the variables that turn it on are in
+  [CONFIGURATION.md](../reference/CONFIGURATION.md) §2.
+- **Nothing under the cache directory is reversible to a URL.** The identity is
+  written as a digest and never as itself, because a resolved identifier can be
+  a signed URL and [gate 7](../releases/README.md) forbids a credential in a
+  persisted artifact. A cache entry is the first artifact this project
+  persists, and it is the one place `ElideSecrets` cannot run — an entry has no
+  message to elide, it has a key. So the key is not written down.
+
+Where the tier sits is between owning a block and fetching it, in
+`CachedAssetReader` rather than in `BlockCache`. The memory store answers under
+a stripe mutex, and a file read under that mutex would make every unrelated
+block of the same stripe wait on a disk seek — the objection §5 makes to a
+global lock, where the wait is shorter. Single-flight already puts exactly one
+reader per block at that point, so the disk is read once per block and everyone
+waiting on it is served by the publish that follows.
 
 ## 9. Statistics
 

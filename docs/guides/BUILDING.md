@@ -118,7 +118,7 @@ local fixture server the test harness starts, and needs no network access and no
 external service.
 
 So does the I/O baseline, which is a measurement rather than a suite: it serves
-one 128 MiB synthetic asset over loopback and records the five scenarios
+one 128 MiB synthetic asset over loopback and records the six scenarios
 [METRICS.md](../architecture/METRICS.md) §6 requires. It is a test because its
 byte and request counts are asserted exactly, so a cache that over-fetches or a
 retry nobody asked for fails a lane rather than waiting for a release run; its

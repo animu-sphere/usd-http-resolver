@@ -75,8 +75,17 @@ this repository                 the consumer
 raw bytes at offsets            generated USDC and payloads
 keyed by identifier +           keyed by source identity + format arguments +
   validator + block               tiling arguments + planner version + ...
-in-memory, bounded              on-disk, deterministic, deletable
+in-memory, bounded;             on-disk, deterministic, deletable
+  on disk when Stable
 ```
+
+Both are on a disk as of `v0.4.0`, and they are still two caches. They share no
+key, no directory, and no invalidation: this one is keyed by a digest of
+identifier, validator, and block index, and the consumer's is keyed by
+generation parameters this repository has never heard of. The rule that admits
+an entry here to a disk is the same value the bridge below carries — a `Stable`
+identity — which is why the two answers agree without the two caches ever
+meeting.
 
 The bridge between them is one value: identity stability. This resolver reports
 whether the source identity is `Stable`, `Unstable`, or `Unavailable`; the

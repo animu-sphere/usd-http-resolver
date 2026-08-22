@@ -50,9 +50,10 @@ possible later consequences of that abstraction, not inputs to it.
 ## 2. Current Assessment
 
 The read contract, the local backend, the shared boundary suite, the
-hostile-server corpus, the HTTP backend, the `ArResolver` bundle, and the block
-cache are implemented and passing. What is not is persistence, identity exposed
-to consumers, and every transport after HTTP. The contracts under
+hostile-server corpus, the HTTP backend, the `ArResolver` bundle, the block
+cache, identity exposed to consumers, and the on-disk cache under it are
+implemented and passing. What is not is the first consumer integration, the
+configuration and authentication seams, and every transport after HTTP. The contracts under
 [architecture/](../architecture/) were written before their implementation,
 which is deliberate: the boundary is the product, and it is cheaper to fix here
 than in five consumers — and every one of those implementations has since landed
@@ -487,7 +488,6 @@ and the HTTP implementation have actually run:
 concrete authentication provider
 S3, package, and Wasm backend implementations
 async API and speculative prefetch
-persistent cache implementation
 bounded whole-asset fallback
 write and upload
 content-addressed storage

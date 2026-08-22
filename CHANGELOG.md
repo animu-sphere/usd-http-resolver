@@ -13,11 +13,85 @@ one.
 
 ## Unreleased
 
-Identity leaves the process. The first half of `v0.4.0`: what a consumer may
-learn about an asset's identity, and — the part that took the argument — what it
-may not be told.
+Identity leaves the process, and so do the bytes. `v0.4.0` is two halves of one
+rule — a `Strong` validator, and nothing weaker, may be reused after the reader
+that captured it is gone. The first half decides what a consumer may learn about
+an asset's identity and, the part that took the argument, what it may not be
+told. The second writes blocks to a disk a later process reads back.
 
 ### Added
+
+- **An on-disk block cache**, `usdasset::cache::DiskBlockStore`, which is
+  [CACHE.md](docs/architecture/CACHE.md) §8. Blocks fetched for a `Stable`
+  identity are written into a directory the host names, and a process that
+  starts cold reads them instead of the network: a bounded query that costs 19
+  requests and 331776 bytes on a first open costs 1 request and 0 bytes on a
+  second, and the one request is the metadata `HEAD`, which is *supposed* to
+  still happen. `bounded query, reopened` in
+  [BASELINE.md](docs/reference/BASELINE.md) is that pair.
+
+  A `Weak` or absent identity does not merely skip the write. The tier is not
+  consulted at all, so it cannot read an entry either, and a restart therefore
+  cannot turn a guess into a durable answer.
+
+- **The properties CACHE.md §8 asked for a release in advance**, each with a
+  case: entries keyed by the whole key rather than by the URL; the identity
+  written *inside* the entry and compared byte for byte, so a hash collision
+  costs a miss and can never serve one asset's bytes for another's; publication
+  by rename, so an interrupted process leaves a temporary nobody looks up rather
+  than half an entry; a filename alphabet of sixteen hexadecimal characters, so
+  a URL never becomes a path however it is spelled; separate header and body
+  checksums, with a structurally broken entry discarded on the way out and an
+  intact one belonging to another identity left alone; and a cache directory
+  that can be deleted at any moment, under a live reader, at a cost of time.
+
+- **Nothing under the cache directory is reversible to a URL.** An entry's
+  identity is written as a SHA-256 digest and never as itself, because a
+  resolved identifier can be a signed URL and gate 7 of
+  [docs/releases/README.md](docs/releases/README.md) forbids a credential or a
+  signed-URL query string in any persisted artifact. A cache entry is the first
+  artifact this project persists, and it is the one place `ElideSecrets` cannot
+  run: an entry has no message to elide, it has a key. So the key is not written
+  down, and the digest that replaces it still catches a name collision — which
+  is all the identity was in the entry for.
+
+- **A bound the contract did not ask for and an implementation cannot avoid.**
+  The directory has a budget, 1 GiB by default, swept on an interval rather than
+  enforced per write, evicting oldest-written first. Not least-recently-used:
+  refreshing a timestamp on every hit would turn a read of a cached block into a
+  write. Eviction there is invisible to correctness for the reason it is in
+  memory, so an approximate order costs a re-fetch and nothing else.
+
+- **Two environment variables**, `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` and
+  `USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET`. Naming a directory is the only
+  switch, and there is no default location: a resolver that wrote to a disk
+  nobody named would be a surprise, and where a cache belongs on a given machine
+  is a deployment's decision about a disk this project cannot see
+  ([CONFIGURATION.md](docs/reference/CONFIGURATION.md) §3).
+
+- **`persistedHits` and `persistedWrites`**, in
+  [METRICS.md](docs/architecture/METRICS.md) §2.2. Block counts and not byte
+  counts: the bytes a persisted hit saved are already in `bytesFromCache`, which
+  is where `cacheHitRatio` has to find them, and a second byte counter for the
+  same bytes would be double counted by anything that summed the section.
+
+- **`boundary_persisted_local`**, a fourth row in the shared boundary suite: the
+  same row definition as `cached-local` with the tier underneath it, so the two
+  are a comparison rather than two experiments. Every case unchanged, green
+  under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer.
+
+- **`usdAssetCache_persistence`**, which asks what the suite cannot, because the
+  suite asks only for bytes: whether a second process pays for what the first
+  one fetched, whether a weak validator ever reaches the disk, whether an entry
+  from revision A can serve a read of revision B, what a scribbled file costs,
+  and what the directory a hostile URL was hashed into actually contains.
+
+- **A sixth baseline scenario and a cross-process case.**
+  `bounded query, reopened` in `tests/baseline` records what a second open
+  costs; `httpResolver_stage` re-invokes its own executable with the cache
+  directory in its environment and counts the fixture server's log, so "a second
+  process pays nothing" is measured against a second process rather than
+  simulated inside one.
 
 - **Asset info and identity stability**, through `ArResolver::GetAssetInfo` and
   nothing else. `ArAssetInfo::resolverInfo` carries the four neutral values of

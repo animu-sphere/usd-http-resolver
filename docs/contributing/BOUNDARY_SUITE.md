@@ -9,11 +9,15 @@ Wasm — is admitted by.
 This document fixes what the suite must contain and how a backend is entered
 into it.
 
-Status: implemented in `tests/boundary`, with three rows entered: the local
-backend, the HTTP backend, and the block cache over the local backend. The third
-is not a fourth transport — the cache is a decorator — and it is what makes
-"byte-for-byte equivalence with the uncached path over the full suite" an
-assertion rather than a claim. The fixed cases in §3, the property cases in §4, the concurrency
+Status: implemented in `tests/boundary`, with four rows entered: the local
+backend, the HTTP backend, the block cache over the local backend, and the same
+cache with its persistent tier underneath. The last two are not further
+transports — the cache is a decorator — and they are what makes "byte-for-byte
+equivalence with the uncached path over the full suite" an assertion rather than
+a claim. The persisted row runs the same cases from the same row definition,
+which is what makes the pair a comparison rather than two experiments: if a
+block that came off a disk differed from one that came off the wire, it would
+show up as a byte mismatch against a file. The fixed cases in §3, the property cases in §4, the concurrency
 cases, and the sanitizer builds in §5 all pass — the last of these under the
 `sanitizers` job in `.github/workflows/core-ci.yml`, and first recorded locally
 in [report 01](../reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).

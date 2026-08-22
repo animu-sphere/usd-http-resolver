@@ -25,6 +25,8 @@ it ships with, and the measurement that chose them, are
   and the rest wait.
 - Eviction under a bounded, process-wide memory budget, shared across assets.
 - Bypassing itself entirely for a read large enough to be a streaming pass.
+- Persisting blocks to a directory, for a `Strong` validator only, so that a
+  later process pays nothing for what this one fetched.
 - Populating the cache counters of
   [METRICS.md](../../docs/architecture/METRICS.md) §2.2, including
   `bytesOverFetched`, which is what block alignment costs.
@@ -42,8 +44,14 @@ it ships with, and the measurement that chose them, are
   here and nothing else: never parsed, never compared to an `ETag`, never read
   for recency. Exactly one other field is read, `strength`, exactly once, to
   decide whether an entry may be shared with a reader that did not store it.
-- **No persistence.** On-disk entries are `v0.4.0`, and CACHE.md §8 states what
-  has to be true before one is written.
+- **No persistence for a weak identity.** On-disk entries exist as of `v0.4.0`,
+  and CACHE.md §8's table is the whole rule: `Strong` writes, `Weak` and `None`
+  do not. Within one reader the revision binding carries the guarantee whatever
+  the strength is, which is why those two still cache — privately, in memory,
+  and dropped when the reader closes. Across processes there is no binding left
+  and a weak match becomes a guess written to disk.
+- **No cache directory of its own choosing.** Persistence is off unless a host
+  names a directory. There is no default location.
 - **No read-ahead.** A read is expanded to the blocks it touches and no
   further. Prefetch is research, not a feature of this release.
 - **No format knowledge.** It stores bytes at offsets and has no idea whether
@@ -57,6 +65,7 @@ usdAssetCache/CacheOptions.h        blockSize, budgetBytes, coalesceGapBlocks,
                                     Normalized()
 usdAssetCache/CacheKey.h            AssetIdentity, CacheKey, IsShareable
 usdAssetCache/BlockCache.h          the block store, its bindings, and its stats
+usdAssetCache/DiskBlockStore.h      the persistent tier, its options, Persistable
 usdAssetCache/CachedAssetReader.h   the decorator, Wrap, and WrapAsset
 ```
 
@@ -70,6 +79,10 @@ accessor.
 open passes through untouched, and so does a reader whose metadata says it
 cannot serve random access — caching a reader that cannot seek would store one
 block and miss forever after.
+
+Both take a `DiskBlockStore*` as a last argument. Null takes the process store,
+which is disabled until a host configures it, so a caller that says nothing gets
+exactly the behavior it had before that tier existed.
 
 ## Dependencies
 
@@ -92,9 +105,16 @@ Read(offset, size)
        for each block: resident -> copy out
                        absent   -> claim it, and fetch
                        claimed  -> wait for whoever claimed it
-       merge the claimed blocks into runs, bounded by gap and by length
-       publish each fetched block, evict under the budget
+       for each claimed block: on disk -> publish it, and copy out
+       merge what is left into runs, bounded by gap and by length
+       publish each fetched block, evict under the budget, and write it
+         to disk when the identity is Stable
 ```
+
+The disk is consulted after ownership and before the transport, which is where
+single-flight has already reduced the readers asking for a block to one, and
+outside the store's stripe locks — a file read under one would make every
+unrelated block of that stripe wait on a seek.
 
 ## Error and diagnostic behavior
 
@@ -157,13 +177,15 @@ ctest --test-dir build/core -R usdAssetCache
 | `usdAssetCache_plan` | The arithmetic, with no reader and no thread: alignment, coalescing, the over-fetch charge, option normalization, key identity |
 | `usdAssetCache_cache` | What the cache does to the reader underneath — requests, bytes, hits, eviction, identity sharing |
 | `usdAssetCache_singleflight` | Threads. The ThreadSanitizer target for this module |
+| `usdAssetCache_persistence` | The persistent tier: what a second process pays, what a weak validator may never write, what a scribbled entry costs, and what a hostile URL becomes on a filesystem |
 | `boundary_cached_local_*` | The shared boundary suite, unchanged, over `cache over local` |
+| `boundary_persisted_local_*` | The same suite over the same row with the disk tier underneath it |
 | `usdAssetCache_block_policy` | The block-policy sweep, over a real socket, at five block sizes and four gaps |
 
-The first three need nothing but a compiler. The last two live outside `libs/`,
+The first four need nothing but a compiler. The last three live outside `libs/`,
 because a module's tests must not depend on anything outside it.
 
-All five run under the sanitizer presets without a lane of their own, because
+All of them run under the sanitizer presets without a lane of their own, because
 they are `libs/` and `tests/` and that is what `core-asan` and `core-tsan`
 cover:
 

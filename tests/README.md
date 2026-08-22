@@ -163,6 +163,19 @@ stating: a cached row over a socket would be measuring two things at once, and
 the cache knows no transport concept — if this row had needed one, the decorator
 would have acquired knowledge WORKSPACE.md invariant 5 forbids it.
 
+There is a fourth row, and it is the third one again: `persisted-local`, which
+is `cache over local` with the on-disk tier of CACHE.md §8 underneath it. Both
+are built from one row definition in `backends/CachedLocalRow.h`, and that is
+the point of the pair — the claim being made is that the same cases produce the
+same bytes with the tier and without it, and a comparison whose two halves were
+declared separately could drift into two experiments. What the disk actually
+answers during a run is the row's small budget doing a second job: blocks are
+evicted from memory while the oracle comparison is watching, and an evicted
+block is where the tier is read from. The cross-*process* half of the claim is
+not here, because a suite row is one process; it is in
+`usdAssetCache_persistence` and in `httpResolver_stage`, which re-invokes its
+own executable.
+
 `backends/boundary_local_main.cpp` is the whole of it. The HTTP row is
 `backends/boundary_http_main.cpp` beside it, and it is what the claim above
 cost: one file, one line in `tests/boundary/CMakeLists.txt`, and no change to
