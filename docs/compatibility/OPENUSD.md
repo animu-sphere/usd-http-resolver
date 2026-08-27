@@ -21,7 +21,7 @@ runtime:
 | --- | --- |
 | Target OpenUSD version | 26.08 |
 | Accepted range | `>=26.08,<27.0` |
-| OpenStrata CLI | 0.22.2 |
+| OpenStrata CLI | 0.22.7 |
 | OpenStrata platform / profile | `cy2026` / `usd` |
 | C++ standard | C++17 |
 | CMake | 3.23 or newer |

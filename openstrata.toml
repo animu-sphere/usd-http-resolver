@@ -1,7 +1,16 @@
 [project]
 name = "usd-http-resolver"
-version = "0.4.0"
+version = "0.5.0"
 
 [requires]
 platform = "cy2026"
 profile = "usd"
+
+# Explicit aggregate membership for artifact composition.
+[workspace]
+members = ['libs/*', 'plugins/*']
+release_members = ["http-resolver"]
+
+[[workspace.install_data]]
+source = "tools/packaged_probe.py"
+destination = "share/usd-http-resolver/probes"

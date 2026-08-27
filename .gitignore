@@ -40,3 +40,6 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# OST package output (including nested library/bundle packages).
+**/dist/
