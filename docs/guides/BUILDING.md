@@ -13,7 +13,7 @@ something you can run.
 
 | Tool | Version |
 | --- | --- |
-| `ost` | 0.22.2 or newer |
+| `ost` | 0.22.7 or newer |
 | CMake | 3.23 or newer |
 | Ninja | any recent |
 | A C++17 compiler | MSVC 143, Clang, or GCC |

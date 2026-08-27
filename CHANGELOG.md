@@ -11,6 +11,27 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
+## `v0.5.0` - 2026-08-27
+
+The resolver becomes an independently composable geospatial-runtime component.
+The transport, cache, and public C++ contracts are unchanged from v0.4.0.
+
+### Added
+
+- A workspace aggregate product containing the exact resolver bundle and a
+  component-owned packaged probe. The probe opens a remote USD stage with a
+  relative layer through a loopback HTTP origin and proves byte-range reads.
+- Product data mapping under `share/usd-http-resolver/probes`, so acceptance
+  executes from an installed artifact without producer source paths.
+
+### Changed
+
+- Generated source CI and canonical OpenUSD 26.08 pins are refreshed for the
+  OpenStrata v0.22.8 release line.
+- Packaging records the resolver product as a runtime-composition provider;
+  the v0.22.8 OpenStrata aggregate-product correction is required to consume
+  the outer archive directly during composition.
+
 ## `v0.4.0` - 2026-08-22
 
 Identity leaves the process, and so do the bytes. The release is two halves of

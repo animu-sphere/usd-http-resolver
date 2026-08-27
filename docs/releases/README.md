@@ -7,6 +7,7 @@ rewritten after publication.
 
 | Version | Date | Record |
 | --- | --- | --- |
+| [`v0.5.0`](v0.5.0.md) | 2026-08-27 | Packaged resolver product and component-owned HTTP/range-read acceptance probe. |
 | [`v0.4.0`](v0.4.0.md) | 2026-08-22 | Identity through `GetAssetInfo`, and an on-disk block cache a later process reads back. |
 | [`v0.3.0`](v0.3.0.md) | 2026-08-21 | Block cache, coalesced range reads, and cross-reader single-flight. |
 | [`v0.2.0`](v0.2.0.md) | 2026-08-20 | HTTP range reads, the `ArResolver` bundle, and revision binding. The first recorded I/O baseline. No cache. |
