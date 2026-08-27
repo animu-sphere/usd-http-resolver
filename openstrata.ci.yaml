@@ -34,11 +34,11 @@ schema: 1
 bootstrap:
   ost:
     # Canonical OpenUSD 26.08 SDK leaves, produced with ost 0.22.3.
-    # ost 0.22.7 consumes their current manifest and supports locked composition.
+    # ost 0.22.8 consumes their current manifest and supports locked composition.
     # Windows/Linux use gl; macOS arm64 uses metal. Archive and OCI identities
     # are separate pins. This replaces the retired pre-canonical artifacts and
     # the 0.21.0 schema-compatibility workaround (historical OST report 03).
-    version: "0.22.7"
+    version: "0.22.8"
     repository: animu-sphere/open-strata
 
 runners:
