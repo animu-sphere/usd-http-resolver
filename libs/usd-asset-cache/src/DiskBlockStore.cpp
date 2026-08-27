@@ -401,18 +401,14 @@ public:
         if (error || !fs::is_directory(candidate, error)) {
             return false;
         }
-        // Best effort, and only on a platform that implements POSIX permission
-        // bits. On Windows, replacing permissions can remove inherited ACLs and
-        // make the cache unreadable to the next process. Applied to the
-        // directory this store created and not to the one the host named: a
-        // host may well have pointed this at a directory it shares for other
+        // Best effort, and only on a platform that has the notion. Applied to
+        // the directory this store created and not to the one the host named:
+        // a host may well have pointed this at a directory it shares for other
         // reasons, and tightening somebody else's directory as a side effect of
         // enabling a cache is not this module's decision to make.
-#ifndef _WIN32
         std::error_code permissionError;
         fs::permissions(candidate, fs::perms::owner_all, fs::perm_options::replace,
                         permissionError);
-#endif
 
         root = std::move(candidate);
         enabled = true;
