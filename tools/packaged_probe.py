@@ -83,7 +83,7 @@ def main():
                              "range": requested, "status": status,
                              "bytesSent": end - start + 1 if body else 0})
 
-    with tempfile.TemporaryDirectory(prefix="http-resolver-probe-") as cache:
+    with tempfile.TemporaryDirectory(prefix="http-resolver-probe-", ignore_cleanup_errors=True) as cache:
         environment = dict(os.environ)
         environment["USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR"] = cache
         with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin) as origin:
