@@ -1,9 +1,12 @@
 # Development Policy
 
-Last updated: 2026-08-16
+Last updated: 2026-09-04
 
 This document is the standing development policy for `usd-http-resolver`. The
 roadmap and architecture documents refine it; they do not override it.
+[DIRECTION.md](DIRECTION.md) sits beside it and states where the project is
+going over a longer horizon; it is direction rather than policy, and where the
+two disagree this document wins.
 
 ## 1. Purpose
 
@@ -47,17 +50,43 @@ It is not a generic storage abstraction layer. Only the abstraction that HTTP
 range access actually demands is built. S3, IPFS, and database backends are
 possible later consequences of that abstraction, not inputs to it.
 
+### 1.2 The name is narrower than the architecture
+
+```text
+Repository            usd-http-resolver
+Internal concept      remote asset access
+```
+
+The repository keeps its name for as long as HTTP is the only transport anybody
+uses; renaming a repository is a cost with no engineering payoff. What the
+distinction buys is a rule that applies to every commit: no module below
+`plugins/` may be written in a way that only HTTP could satisfy. That is
+invariants 1, 3, and 12 below, and it is what leaves room to lift a common layer
+out later — for S3, for content-addressed storage, for a `fetch` backend in a
+browser — without a rewrite. Extracting it is a possible consequence of having a
+second and third transport, never a prerequisite for building them. See
+[DIRECTION.md](DIRECTION.md) §1.
+
 ## 2. Current Assessment
 
 The read contract, the local backend, the shared boundary suite, the
 hostile-server corpus, the HTTP backend, the `ArResolver` bundle, the block
-cache, identity exposed to consumers, and the on-disk cache under it are
-implemented and passing. What is not is the first consumer integration, the
-configuration and authentication seams, and every transport after HTTP. The contracts under
+cache, identity exposed to consumers, the on-disk cache under it, and the
+packaged product that composes the bundle as a runtime component are implemented
+and passing, and released through `v0.5.0`. What is not is the first consumer
+integration, the configuration and authentication seams, adaptive read-ahead,
+and every transport after HTTP. The contracts under
 [architecture/](../architecture/) were written before their implementation,
 which is deliberate: the boundary is the product, and it is cheaper to fix here
 than in five consumers — and every one of those implementations has since landed
 against a contract that did not have to move to accept it.
+
+The measurement this repository still cannot make is the one that matters most
+to everything left: every number in [BASELINE.md](../reference/BASELINE.md) is a
+loopback number. The trade this architecture makes is bytes for round trips, and
+so far only the numerator has been measured. Distance arrives with the first
+consumer integration, and several deferred decisions — read-ahead above all —
+are deferred precisely because they cannot be tuned before it.
 
 Invariant 11 below is worth checking against the tree rather than assuming, and
 it holds: the cache's block size and coalescing gap come from a recorded sweep
@@ -253,6 +282,21 @@ Standing rules:
 - Cache behavior is measured before it is tuned. Block size is a measured
   constant, not a guessed one.
 
+The cache arrives in levels, each measurable before the next is built:
+
+| Level | What it does | Status |
+| --- | --- | --- |
+| 1 | Request de-duplication: one missing region, one request, however many readers want it | `v0.3.0`, as per-block single-flight |
+| 2 | Block cache with alignment, expansion, and coalescing | `v0.3.0` |
+| 3 | Adaptive read-ahead: prefetch ahead of a sequential pass, suppress it under a random one | Not implemented |
+| 4 | Persistence across processes, keyed by identifier, validator, and block | `v0.4.0`, `Strong` validator only |
+
+Level 3 is last despite being simpler than level 4, and the reason is the last
+rule in the list above rather than difficulty. Read-ahead trades bytes for round
+trips, and a loopback fixture prices a round trip at nearly zero; a policy tuned
+there is tuned against the wrong cost. It waits for a measurement taken over
+real distance. See [DIRECTION.md](DIRECTION.md) §10.
+
 The full contract is in [CACHE.md](../architecture/CACHE.md).
 
 ## 6. Consistency Policy
@@ -348,7 +392,9 @@ incomplete.
 
 ## 10. Security and Trust
 
-A remote server is untrusted input.
+Two things are untrusted here, and they are untrusted for different reasons.
+
+### 10.1 The server is untrusted input
 
 - Never allocate from a server-declared length without a bound.
 - Validate that a `Content-Range` response actually covers the requested range
@@ -357,8 +403,57 @@ A remote server is untrusted input.
 - Bound redirect chains and reject scheme downgrades from `https` to `http`.
 - Cap retries and total time; never retry unboundedly on a non-idempotent
   condition.
+- Bound the response header block and the total response size, not only the
+  body the caller asked for.
+- Decode nothing. Every request carries `Accept-Encoding: identity`, which is
+  two rules at once: the byte accounting in
+  [METRICS.md](../architecture/METRICS.md) describes the asset rather than the
+  wire, and a client that decompresses is a client with an unbounded output for
+  a bounded input. A decompression bomb is not a case to defend against here
+  because there is no decompressor to feed.
 - Cache files are written to a path the process owns, atomically, with no
   attacker-controllable filename component.
+
+### 10.2 The URL is untrusted input
+
+A resolved identifier can arrive from a USD layer that a user did not author,
+which makes this project a request-forgery primitive if it is careless. In a DCC
+or a render farm that is the more consequential of the two risks, because the
+process is usually inside a network the caller is not.
+
+The policy is that reach is bounded by declared policy rather than by whatever
+the host's resolver stack happens to permit:
+
+- The scheme set is an allowlist. This resolver claims `http` and `https` and
+  refuses everything else, including after a redirect — a redirect to `file:`,
+  `ftp:`, or a scheme it does not register is a refusal, not a follow.
+- Redirect targets are re-checked against the same policy as the original
+  request. A policy applied only at the first hop is not a policy.
+- Whether loopback and private-network destinations are reachable is a
+  deliberate, configurable decision with a documented default, not an accident
+  of what the resolver happened to allow. The fixture server makes loopback a
+  *tested* destination, so the setting has to distinguish a test from a
+  deployment rather than forbid one to protect the other.
+- The number of requests one resolution or one read may cause is bounded, so a
+  redirect chain, a retry budget, and a resume loop cannot compose into an
+  unbounded one.
+
+Most of that is implemented and recorded in
+[CAPABILITY_MATRIX.md](../reference/CAPABILITY_MATRIX.md): the redirect bound,
+the `https` → `http` refusal, the retry budget shared with the resume loop rather
+than nested inside it, and the scheme allowlist, which is applied at every hop
+because a redirect target is parsed by the same parser as an original identifier
+and that parser accepts two schemes. A `Location` naming `file:` is an unusable
+location, not a followed one.
+
+Two things are named here as scope rather than as shipped properties. The
+destination policy — whether loopback and private-network addresses are
+reachable — does not exist, and its difficulty is that the hostile-server corpus
+*is* loopback, so the setting has to distinguish a fixture from a deployment
+rather than forbid one to protect the other. Nor is the response header block
+separately bounded; today the caller's buffer bounds the body and nothing bounds
+what precedes it. Both land with the configuration surface, because a policy with
+no way to state it is a default nobody can override.
 
 ## 11. Testing
 
@@ -410,6 +505,30 @@ this project's overflow lives.
 Integration with a real consumer is composed through OpenStrata, not through a
 build dependency. It is a separate lane and never a gate on repository-local
 tests. See [consumer integration](../roadmap/consumer-integration.md).
+
+### 11.6 Fuzzing
+
+Every parser in this repository consumes bytes an attacker may choose, and each
+one is small enough that a fuzzer covers it properly rather than superficially.
+The targets, in the order their inputs are least trustworthy:
+
+```text
+Content-Range and Content-Length parsing
+HTTP response metadata: validators, Accept-Ranges, Location
+URI normalization and RFC 3986 reference resolution
+the persistent cache entry header
+```
+
+The last is not a network input and is on the list anyway: a cache directory is
+a file a different process wrote, and `v0.4.0` already treats a corrupt entry as
+something to discard rather than trust. A fuzzer is how that claim stops being a
+claim.
+
+This is CI work rather than release work — a corpus that grows, run under
+AddressSanitizer and UndefinedBehaviorSanitizer, with any crash committed as a
+regression case in the ordinary suite. It gates no release, and it is listed
+here so that "the parsers are small" is recorded as a reason to fuzz them rather
+than a reason not to.
 
 ## 12. Repository Shape
 
@@ -500,6 +619,24 @@ inverted one — adding a backend-specific API because a backend does not fit.
 A backend that does not fit is evidence about the contract's generality, and it
 is investigated as that before it is accommodated.
 
+### 15.1 The admission test
+
+Applied to anything proposed from here on, including things not on either list
+above.
+
+| Easy to accept | Needs an argument, usually an ADR |
+| --- | --- |
+| Reusable from more than one FileFormat Plugin | Logic specific to one file format |
+| Expressible without naming HTTP | HTTP detail pushed into USD schema or metadata |
+| Contributes to random access rather than to whole-asset transfer | A bespoke index format |
+| Consistent with OpenUSD's own conventions | A requirement for a cooperating, non-static server |
+| Requires no special preparation of the data | libcurl types on a public surface |
+| Portable to OpenStrata composition and to a Wasm build | The resolver understanding a format's internal structure |
+
+The right-hand column is not a prohibition list. It is the set of proposals that
+have to justify themselves against §2's invariants before they are built, and
+the record of that justification is an ADR rather than a commit message.
+
 ## 16. Definition of Done
 
 A transport backend counts as supported only when all of the following hold:
@@ -516,13 +653,47 @@ A transport backend counts as supported only when all of the following hold:
 
 ## 17. Immediate Actions
 
-1. Phase 3: the block cache, whose definition of success is the table in
-   [BASELINE.md](../reference/BASELINE.md) § *What the next release has to
-   move*. Fewer requests for the clustered index read and for parallel readers,
-   a `bytesOverFetched` that is honest about what block alignment costs, and a
-   full sequential read that does not regress.
+The standing instruction, which outranks the list: do not widen the feature set.
+Everything below is either a correctness property of what already exists or the
+one integration that decides whether the abstraction is real.
+
+1. **The first consumer integration.** `usd-pointcloud-plugins` opening a remote
+   COPC asset through this resolver with no HTTP code of its own, and the
+   recorded amplification baseline that goes with it. It needs a fixture of at
+   least a gigabyte and somewhere to host it. See
+   [consumer integration](../roadmap/consumer-integration.md).
+2. **A measurement taken over distance.** Every recorded number is a loopback
+   number, which prices a round trip at nearly zero and therefore cannot price
+   the trade this architecture makes. This is not a separate task from 1 so much
+   as the reason 1 is first.
+3. **The configuration surface and the network policy that needs it**, per §10.2
+   and [CONFIGURATION.md](../reference/CONFIGURATION.md): the transport bounds
+   resolved from `ArResolverContext` as well as the environment, and the scheme
+   and destination policy stated somewhere a host can override.
+4. **The authentication interception point**, per §4.3 — the seam, and no
+   provider.
+5. **Adaptive read-ahead**, cache level 3 in §5, *after* 2 and not before it.
+
+Deliberately not on this list, and each for a stated reason: freezing the
+internal API before the consumer integration has argued with it (§3.3);
+read-ahead tuned on loopback (§5); an async surface before the synchronous one is
+measured (§15); and any second transport before the first has a consumer (§4.4).
 
 Done and no longer pending:
+
+- The packaged, composable product. `v0.5.0` publishes the workspace as an
+  aggregate product with a component-owned acceptance probe that runs from the
+  installed artifact rather than from a producer build directory, which is the
+  half of §7 of [DIRECTION.md](DIRECTION.md) that this repository owes
+  OpenStrata on its own. Formation-level composition is the other half and is
+  not done.
+- Phase 3, the block cache, whose definition of success was the table in
+  [BASELINE.md](../reference/BASELINE.md) § *What the next release has to move*.
+  It moved: the clustered index read went from 18 requests to 3, eight parallel
+  readers from 152 to 25, `bytesOverFetched` is recorded rather than hidden, and
+  the full sequential read is byte for byte and request for request what it was.
+- Phase 4, identity exposure and persistence, under one rule that governs both
+  halves — `Strong` yes, `Weak` no, `None` no.
 
 - The `v0.2.0` release gate is walked and
   [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the

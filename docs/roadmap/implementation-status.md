@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-08-22.
+Last updated: 2026-09-04.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -54,6 +54,20 @@ later process reads them back. The rule that divides both halves is the same
 one — `Strong` yes, `Weak` no, `None` no — and it is the only rule either of them
 has. The release gate is walked and [its record](../releases/v0.4.0.md) is
 written.
+
+Phase 5 is complete and **`v0.5.0` is released**, and it is not the phase 5 this
+file used to describe. The consumer integration that had been scheduled here is
+gated on a gigabyte fixture and somewhere to host it rather than on code, so the
+packaging work that had been scheduled for `v0.6.0` went first: the workspace
+publishes an aggregate product containing the resolver bundle and a
+component-owned probe at `share/usd-http-resolver/probes/packaged_probe.py`,
+which opens a remote root layer and its relative child through OpenUSD from the
+*installed artifact* and requires a byte-range request to succeed. No producer
+build directory is on any path the probe uses, which is the whole point of it.
+The transport, validator, cache, and public C++ behavior are unchanged from
+`v0.4.0`, and [the record](../releases/v0.5.0.md) says so rather than letting a
+version number imply otherwise. The consumer integration moved to `v0.6.0`
+intact; nothing in its scope was cut.
 
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
@@ -179,23 +193,48 @@ therefore ship unexercised.
 | Proven across a real process boundary | Done — `httpResolver_stage` re-invokes itself with the cache directory in its environment and counts the fixture server's log. The second process issues no `GET`; the metadata `HEAD` still happens, deliberately |
 | Cross-stage reuse rules for consumers | Done — what a consumer may reuse across opens is stated and implemented, and what a *persisted* entry may serve is the same rule read at the byte layer. [consumer integration](consumer-integration.md) §4.1 |
 
-## Phase 5 — first consumer (`v0.5.0`)
+## Phase 5 — packaging and artifact-owned acceptance (`v0.5.0`)
+
+| Task | Status |
+| --- | --- |
+| Workspace aggregate product containing the resolver bundle | Done — the exact bundle, packaged as a runtime-composition provider |
+| Component-owned acceptance probe, installed with the product | Done — `share/usd-http-resolver/probes/packaged_probe.py`, mapped in as product data so acceptance runs from the artifact |
+| Probe proves registration *and* transport, not just loading | Done — a remote root layer, a relative child layer followed to a second remote layer, and a byte-range request that must succeed |
+| No producer build directory on any path the probe uses | Done — that separation is the reason the probe exists rather than reusing `httpResolver_stage` |
+| OpenStrata 0.22.8 release pins, generated CI refreshed | Done — canonical OpenUSD 26.08 pins regenerated on the v0.22.8 line |
+| Reproducibility: two identical package operations, same SHA-256 inventory | Done — a release gate, walked; platform digests live in the generated release evidence rather than in the source record |
+| Behavior unchanged from `v0.4.0` | Asserted — transport, validator, cache, diagnostics, and configuration contracts all carried forward; the I/O baseline is `v0.4.0`'s, because the reader and cache algorithms did not move |
+| OpenStrata formation composition | Deferred to `v0.7.0` — a product exists; a formation pinning this resolver and a consumer bundle by digest against one certified runtime does not |
+
+## Phase 6 — first consumer (`v0.6.0`)
 
 | Task | Status |
 | --- | --- |
 | Runtime composition with `usd-pointcloud-plugins` | Outstanding |
 | Large remote COPC fixture and hosting | Outstanding |
 | Amplification baseline recorded | Outstanding |
+| A baseline measured over real distance rather than loopback | Outstanding — the reason this phase gates phase 8 |
 | Confirmation that the consumer needed no HTTP-aware change | Outstanding |
 
-## Phase 6 — composition and extension points (`v0.6.0`)
+## Phase 7 — configuration, network policy, and the auth seam (`v0.7.0`)
 
 | Task | Status |
 | --- | --- |
-| Configuration surface (env, then `ArResolverContext`) | Outstanding |
-| Request interception point for authentication | Outstanding |
+| Configuration surface resolved from `ArResolverContext`, not only the environment | Outstanding — the environment form ships since `v0.2.0` as a process-wide bootstrap |
+| Declared scheme allowlist, re-applied at every redirect hop | Done, as a consequence rather than as a feature — a redirect target goes through the same parser as an original identifier, and that parser accepts `http` and `https` only, so a `Location` naming `file:` is an unusable location. Worth an explicit case, since nothing today would notice if the parser widened |
+| Loopback and private-network destination policy, with a documented default | Outstanding — §10.2 of the [design policy](../design/DESIGN_POLICY.md). It has to distinguish a fixture server from a deployment, since the corpus depends on loopback |
+| Response header-block and total-response bounds | Outstanding — the caller's buffer bounds the body today; the header block is not separately bounded |
+| Request interception point for authentication | Outstanding — the seam, no provider |
 | OpenStrata formation composition and pinned artifacts | Outstanding |
-| Packaged cross-platform release | Outstanding |
+| Reproducible binary output | Outstanding — measured at the `v0.2.0` gate: two builds agree on 24 of 28 installed files, and the four that differ differ only in embedded build timestamps. Closing it is a link flag and belongs with the packaging work |
+
+## Phase 8 — adaptive read-ahead (`v0.8.0`)
+
+| Task | Status |
+| --- | --- |
+| Sequential-access detection per reader | Outstanding |
+| Prefetch ahead of a sequential pass, suppressed under a scattered one | Outstanding |
+| Parameters chosen by a sweep over a fixture with real latency | Blocked on phase 6 — a loopback sweep would tune against a round-trip cost of nearly zero, which is the wrong cost function |
 
 ## Blocking items
 
@@ -259,7 +298,7 @@ dependency, resolved as libcurl in
 
 ## Next
 
-1. Phase 5, and the first release with an external claim:
+1. Phase 6, and the first release with an external claim:
    `usd-pointcloud-plugins` opening a remote COPC asset through this resolver
    with no HTTP code of its own, and the recorded amplification baseline that
    goes with it. It needs a fixture of at least a gigabyte and somewhere to host
@@ -267,8 +306,24 @@ dependency, resolved as libcurl in
 2. The measurement this repository still cannot make. Every number in
    [BASELINE.md](../reference/BASELINE.md) is a loopback number, so the trade
    this architecture makes — bytes for round trips — is one whose numerator is
-   measured exactly and whose denominator is zero. `v0.5.0` is where distance
-   arrives.
+   measured exactly and whose denominator is zero. `v0.6.0` is where distance
+   arrives, and it is why read-ahead is scheduled behind it rather than beside
+   the cache work it belongs to.
+
+Done, and no longer next: the packaged product. What it settled is a question
+that had been answerable only in the affirmative-by-assumption until then —
+whether what this repository installs is usable by somebody who does not have
+its build tree. The probe answers it by running from the artifact and from
+nowhere else, which is a weaker-looking test than `httpResolver_stage` and
+catches a class of failure that no in-tree test can: a plugin whose `resources`
+directory, `RPATH`, or `plugInfo.json` is correct only relative to a build
+directory passes every in-tree lane and fails on the first machine that is not
+the build machine.
+
+What it did not settle is the OpenStrata half. A product exists and a formation
+does not, so composition today is still `PXR_PLUGINPATH_NAME` and a path — which
+is exactly what the consumer integration will use, and is the reason the
+formation work is not blocking it.
 
 Done, and no longer next: on-disk persistence. The requirements list CACHE.md §8
 wrote a release in advance survived contact with an implementation intact, and

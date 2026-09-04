@@ -2,9 +2,11 @@
 
 This directory breaks the [design policy](../design/DESIGN_POLICY.md) into
 actionable milestones. The policy states the standing direction; this directory
-states the order of work. What is implemented today is in
-[implementation status](implementation-status.md) and, at the level of
-behavior, in [capability matrix](../reference/CAPABILITY_MATRIX.md).
+states the order of work; [DIRECTION.md](../design/DIRECTION.md) states where the
+order is eventually going, over a horizon this file does not schedule. What is
+implemented today is in [implementation status](implementation-status.md) and, at
+the level of behavior, in
+[capability matrix](../reference/CAPABILITY_MATRIX.md).
 
 ## Principles
 
@@ -37,10 +39,17 @@ ship with the first backend that can violate the guarantee, and `v0.4.0` keeps
 only what genuinely depends on them being trustworthy first: exposure to
 consumers, and persistence.
 
-`v0.5.0` is the first release with an external claim: `usd-pointcloud-plugins`
+The release with the first external claim is `v0.6.0`: `usd-pointcloud-plugins`
 opens a remote COPC asset through this resolver, and the recorded byte ratio
 demonstrates the architecture. Everything before it is infrastructure that must
 be right; everything after it is reach.
+
+That claim was planned for `v0.5.0` and is not there, and the sequence below says
+so rather than quietly renumbering. `v0.5.0` shipped the packaging half of what
+had been scheduled as `v0.6.0` — the workspace as an aggregate product with a
+component-owned acceptance probe — because it was ready and because the consumer
+integration is gated on a fixture and a host rather than on code here. The
+integration moved to `v0.6.0` intact; nothing in its scope was cut.
 
 | Release | Theme | Outcome |
 | --- | --- | --- |
@@ -48,10 +57,12 @@ be right; everything after it is reach.
 | `v0.2.0` | HTTP range reads, the resolver bundle, and revision binding | `http`/`https` resolve and serve ranges; byte-equivalent to local against a hostile fixture server; one reader, one revision |
 | `v0.3.0` | Block cache, coalescing, single-flight | Small scattered reads stop becoming small scattered requests |
 | `v0.4.0` | Identity exposure and persistence | Stability metadata a consumer can act on, and a cache that may safely outlive a process |
-| `v0.5.0` | First consumer integration | Remote COPC through `usd-pointcloud-plugins`, with a recorded amplification baseline |
-| `v0.6.0` | Composition and extension points | OpenStrata formation composition, auth interception point, and configuration surface |
-| Research | Async, prefetch, and Wasm | Investigated in parallel; no release gate |
-| Later | Additional transports and consumers | S3, package-internal, and content-addressed backends; `usd-3dgs-plugins` |
+| `v0.5.0` | Composable resolver product | The bundle installs and is verified as a runtime-composition component, from the artifact rather than from a build tree |
+| `v0.6.0` | First consumer integration | Remote COPC through `usd-pointcloud-plugins`, with a recorded amplification baseline — and the first number this project has that is not a loopback number |
+| `v0.7.0` | Configuration, network policy, and the auth seam | The bounds resolved per stage rather than per process, a declared scheme and destination policy, and a request interception point with no provider behind it |
+| `v0.8.0` | Adaptive read-ahead | Cache level 3, tuned against the distance `v0.6.0` measures and not before |
+| Later | Additional consumers, package composition, further transports | `usd-3dgs-plugins`; ranges inside a remote package; S3 and content-addressed backends |
+| Research | Async, Wasm, and WebGPU streaming | Investigated in parallel; no release gate |
 
 The layering that every release preserves:
 
@@ -64,6 +75,8 @@ The layering that every release preserves:
                         v
                   block cache            <- v0.3.0
                         |
+                        +--------------> disk tier   <- v0.4.0
+                        |
              +----------+----------+
              |                     |
              v                     v
@@ -73,6 +86,11 @@ The layering that every release preserves:
                                    v
                         S3 / package / Wasm  (later)
 ```
+
+Nothing in that column moves for a new transport, which is the property the
+whole sequence is protecting. A backend is admitted by the boundary suite, and
+everything above it — cache, identity, resolver — is written in offsets and
+validators rather than in requests and headers.
 
 ### `v0.1.0` — read contract, local backend, and the shared boundary suite
 
@@ -231,7 +249,40 @@ rule either of them has: `Strong` yes, `Weak` no, `None` no. See
 [CACHE.md](../architecture/CACHE.md) §8, and
 [implementation status](implementation-status.md).
 
-### `v0.5.0` — first consumer integration
+### `v0.5.0` — composable resolver product
+
+The release that changes nothing about what the resolver does and everything
+about how somebody else gets it.
+
+Status: released 2026-08-27; [the record](../releases/v0.5.0.md).
+
+Scope: the workspace publishes an aggregate product containing the resolver
+bundle, plus a component-owned acceptance probe installed at
+`share/usd-http-resolver/probes/packaged_probe.py`. The probe loads the resolver
+through OpenUSD, opens a remote root layer and the relative child layer it
+references, and requires a successful byte-range request — from the installed
+artifact, with no producer build directory on any path. The generated source CI
+and the OpenUSD 26.08 pins move to the OpenStrata 0.22.8 release line.
+
+Out of scope, and unchanged from `v0.4.0`: the transport, the validator rules,
+the cache, and every public C++ contract. This is a packaging release, and the
+release record says so rather than implying a behavior change by having a
+version number.
+
+The reason it exists at this position rather than after the consumer integration
+is worth stating, because it is the one place this sequence reordered itself. An
+acceptance probe that runs from an installed artifact is the difference between
+"the tests pass in this tree" and "the thing we hand somebody works"; the
+consumer integration is the second of those and is blocked on a gigabyte fixture
+and somewhere to host it, which is not code. Doing the artifact half first cost
+nothing and makes the integration a composition rather than a build.
+
+What it does *not* do is the whole of what §7 of
+[DIRECTION.md](../design/DIRECTION.md) owes OpenStrata. A product exists; a
+formation that pins this resolver and a consumer bundle by digest against one
+certified runtime does not, and that is `v0.7.0`.
+
+### `v0.6.0` — first consumer integration
 
 The release that tests whether the abstraction is real.
 
@@ -254,18 +305,47 @@ compared against the full-download baseline. If the abstraction leaked — if th
 consumer needed any change that mentions HTTP — that is the finding, and it is
 fixed here rather than documented as a limitation.
 
+This is also the release that finally puts a denominator under every ratio this
+project has recorded. `tests/baseline` measures over loopback, where a round trip
+is nearly free, so the trade the architecture makes — more requests, fewer bytes
+— has so far been measured on only one side. Several deferred decisions are
+waiting on the other side of it, read-ahead most directly.
+
 See [consumer integration](consumer-integration.md).
 
-### `v0.6.0` — composition and extension points
+### `v0.7.0` — configuration, network policy, and the auth seam
 
 Scope: the configuration surface (block size, budgets, timeouts, retry policy)
-resolved from environment and context rather than hard-coded; the request
-interception point for authentication, with no credential reaching a cache key,
-a log, or a diagnostic; OpenStrata formation composition so a consumer
-workspace can pull this resolver as a pinned artifact; and the packaged
-cross-platform release.
+resolved from `ArResolverContext` as well as the environment, so a bound is a
+property of a stage rather than of a process; the declared network policy of
+§10.2 of the [design policy](../design/DESIGN_POLICY.md) — the scheme allowlist
+re-applied at every redirect hop, and a documented, overridable position on
+loopback and private-network destinations; the request interception point for
+authentication, with no credential reaching a cache key, a log, or a diagnostic;
+and OpenStrata formation composition, so a consumer workspace pins this resolver
+and its own bundles by digest against one certified runtime.
+
+The network policy lands here rather than earlier because it is a policy, and a
+policy nobody can state is a default nobody can override. The configuration
+surface is what makes it statable, so the two ship together.
 
 Out of scope: any concrete auth provider. The point is the seam, not SigV4.
+
+### `v0.8.0` — adaptive read-ahead
+
+Cache level 3 in §5 of the [design policy](../design/DESIGN_POLICY.md): observe
+the access pattern, prefetch the next block under a sequential pass, suppress
+prefetch under a scattered one.
+
+It is last among the cache levels despite being simpler than persistence, and
+the reason is invariant 11 rather than difficulty. Read-ahead spends bytes to
+save round trips, and on loopback a round trip costs nearly nothing, so the
+sweep that would choose its parameters would choose them against the wrong cost
+function. `v0.6.0` supplies the real one.
+
+Out of scope: caller-supplied prefetch hints, which are a different feature with
+a different argument — those come from the consumer and are never inferred from
+content, per §3.5 of the design policy.
 
 ## Phases
 
@@ -276,11 +356,15 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | 2 | HTTP backend, resolver bundle, validator capture and revision binding | Complete for `v0.2.0` | The backend, the bundle, the support matrix, and the recorded I/O baseline have all landed; a stage opens over HTTP on all three platforms, and a bounded query moves 0.0025 of a 128 MiB asset. What remains is the release gate, and one deliberate omission: a metadata fallback for a server that refuses `HEAD`, which no corpus row exercises |
 | 3 | Block cache, coalescing, single-flight | Complete for `v0.3.0` | Measured, not guessed; validator-keyed from the start |
 | 4 | Identity exposure, persistent cache, stability metadata | Complete for `v0.4.0` | Everything that makes identity outlive a reader — and, with the disk tier, outlive the process |
-| 5 | First consumer integration and amplification baseline | Planned for `v0.5.0` | The abstraction's real test |
-| 6 | Configuration, auth seam, formation composition, packaging | Planned for `v0.6.0` | Seams only, no providers |
-| 7 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
-| 8 | Additional transports | Deferred | S3, package-internal, content-addressed |
-| 9 | Wasm and browser composition | Research | Constrained by ADR-0003: a `usdAssetWasm` backend over `fetch`, not a rebuild of `usdAssetHttp` |
+| 5 | Packaging: aggregate product and artifact-owned acceptance | Complete for `v0.5.0` | Behavior unchanged; the probe runs from the installed artifact, not from a build tree |
+| 6 | First consumer integration and amplification baseline | Planned for `v0.6.0` | The abstraction's real test, and the first measurement over distance |
+| 7 | Configuration, network policy, auth seam, formation composition | Planned for `v0.7.0` | Seams and policy only, no providers |
+| 8 | Adaptive read-ahead | Planned for `v0.8.0` | Blocked on phase 6, not on phase 7: it needs a latency number, not a config surface |
+| 9 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
+| 10 | Package composition: ranges inside a remote package | Deferred | `https://host/model.usdz[texture.png]` without downloading the package; needs the package resolver's cooperation and a new ADR |
+| 11 | Additional transports | Deferred | S3, content-addressed |
+| 12 | Wasm and browser composition | Research | Constrained by ADR-0003: a `usdAssetWasm` backend over `fetch`, not a rebuild of `usdAssetHttp` |
+| 13 | Streaming scene: Hydra and WebGPU over range-fed formats | Research | Not work in this repository; the reason the layers below it are kept transport-agnostic. [DIRECTION.md](../design/DIRECTION.md) §13 |
 
 ## Workstreams
 
@@ -295,9 +379,12 @@ Out of scope: any concrete auth provider. The point is the seam, not SigV4.
 | W6a | The recorded I/O baseline and the fixture it needed | 2 | Done — `tests/baseline`, the five scenarios of METRICS.md §6; [the record](../reference/BASELINE.md) |
 | W7 | Block cache, coalescing, single-flight, eviction | 3 | Done |
 | W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Done — `GetAssetInfo`, `DiskBlockStore`, and the one rule that governs both |
-| W9 | Consumer integration and amplification baselines | 5 | Planned |
-| W10 | Configuration, auth seam, packaging, formation composition | 6 | Planned |
-| W11 | Async, prefetch, Wasm research | Parallel | No release gate |
+| W9 | Aggregate product and artifact-owned acceptance probe | 5 | Done — `share/usd-http-resolver/probes/packaged_probe.py`, run against the installed artifact |
+| W10 | Consumer integration and amplification baselines | 6 | Planned |
+| W11 | Configuration, network policy, auth seam, formation composition | 7 | Planned |
+| W12 | Adaptive read-ahead | 8 | Planned — gated on W10's latency numbers |
+| W13 | Fuzzing the parsers, per §11.6 of the design policy | Parallel | Planned — CI work; no release gate |
+| W14 | Async, prefetch, Wasm research | Parallel | No release gate |
 
 W1 and W2 exist to make W3 cheap and verifiable. The order is not negotiable:
 an HTTP backend written before the boundary suite is an HTTP backend whose bugs
@@ -322,6 +409,7 @@ only matters once identity is handed to somebody else.
 Related documents outside this directory:
 
 - [Design policy](../design/DESIGN_POLICY.md)
+- [Long-range direction](../design/DIRECTION.md)
 - [Workspace contract](../architecture/WORKSPACE.md)
 - [Asset reader contract](../architecture/ASSET_READER.md)
 - [Resolver contract](../architecture/RESOLVER.md)
@@ -349,3 +437,17 @@ not:
 
 Each consumer is admitted only if it needs no HTTP code of its own. A consumer
 that requires an exception is a defect in this repository.
+
+## What the sequence is for
+
+Phases 9 and beyond are not scheduled and are not promises. They are in this
+file so that the scheduled work is not accidentally built in a way that
+forecloses them — a transport concept leaking into `usdAssetCache` forecloses
+Wasm; a format concept leaking into the resolver forecloses the second and third
+consumers; a bespoke index forecloses every format that already has one. The
+argument for each, and the admission test any of them has to pass, is in
+[DIRECTION.md](../design/DIRECTION.md).
+
+The scheduled work does not change on account of any of it. The next release is
+one consumer, one gigabyte fixture, and one measurement taken far enough away
+that a round trip costs something.

@@ -4,7 +4,7 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-08-22, against `main` at `v0.4.0`.
+Last updated: 2026-09-04, against `main` at `v0.5.0`.
 
 ## Summary
 
@@ -76,6 +76,16 @@ is recorded twice over, with the cache and without it, in
 25 and now move what one reader moves, and the full sequential read is byte for
 byte and request for request what it was.
 
+The newest thing here changes no behavior at all. The workspace publishes an
+aggregate product containing the resolver bundle and a component-owned probe at
+`share/usd-http-resolver/probes/packaged_probe.py`, which loads the resolver
+through OpenUSD from the *installed artifact*, opens a remote root layer and the
+relative child layer it references, and requires a byte-range request to succeed.
+No producer build directory is on any path it uses, which is the entire reason it
+exists beside `httpResolver_stage`: a bundle whose `resources` directory or
+`plugInfo.json` is correct only relative to a build tree passes every in-tree
+lane and fails on the first machine that is not the build machine.
+
 The whole tree still builds and tests with
 `-DUSD_HTTP_RESOLVER_BUILD_PLUGIN=OFF` on a machine with no OpenUSD
 installation present, which is the path `v0.1.0` was defined by and which
@@ -112,9 +122,13 @@ not planned                   explicitly out of scope
 | Resume of a short transfer | implemented | The remainder is re-requested from where it stopped, bounded by the same budget; past it, `InvalidResponse` |
 | Range unsupported → hard error | implemented | `RangeNotSupported`, at open when `Accept-Ranges` is absent and at the first read when it was advertised and then ignored. No whole-asset fallback, per [ADR-0002](../adr/0002-range-unsupported-policy.md) |
 | Response body bounded by the request | implemented | The caller's buffer is the bound. A `200` answering a 64 KiB range request moves 64 KiB and is cut off |
+| Scheme allowlist, at the first hop and at every redirect | implemented | `http` and `https` only. A redirect target is parsed by the same parser as an original identifier, so a `Location` naming `file:` or `s3:` is an unusable location rather than a followed one |
+| Response header-block or total-response bound | not implemented | The caller's buffer bounds the body; nothing bounds what precedes it. §10.1 of the [design policy](../design/DESIGN_POLICY.md) |
+| Loopback / private-network destination policy | not implemented | §10.2 of the design policy. It lands with the configuration surface, and it has to distinguish a fixture server from a deployment, since the hostile corpus is itself loopback |
+| Content encoding refused, not decoded | implemented | `Accept-Encoding: identity` on every request. A compressed range response would make the byte accounting describe the wire rather than the asset, and a decompressing client is a client with an unbounded output for a bounded input |
 | Bounded whole-asset fallback | deferred | Its own residency model; needs a new ADR and a demonstrated need |
 | Multipart ranges | not planned in v0.x | Admitted only if measured to beat coalescing |
-| Authentication | not planned in v0.x | An interception point arrives in `v0.6.0`; no provider |
+| Authentication | not planned in v0.x | An interception point arrives in `v0.7.0`; no provider |
 | S3-compatible backend | not planned in v0.x | Deferred; must fit the contract unchanged |
 | Package-internal ranges | not planned in v0.x | Deferred |
 | Wasm `fetch` backend | research | Constrains the HTTP client choice made in `v0.2.0` |
@@ -140,7 +154,7 @@ not planned                   explicitly out of scope
 | `GetModificationTimestamp` | not planned, ever | Invalid, permanently. A validator is not a time, and a fabricated one would be read by a consumer's fallback as a durable identity. RESOLVER.md §3.4 |
 | Environment-variable configuration | implemented | All nine variables in [CONFIGURATION.md](CONFIGURATION.md) — five transport bounds and four cache values. A bad value warns and takes the default; an adjusted one warns and takes the adjustment |
 | Block cache under every opened asset | implemented | The bundle decorates every `ArAsset` it hands out and binds it into the process store by identifier and validator |
-| `ArResolverContext` configuration | planned (`v0.6.0`) | Per stage; the environment form is a process-wide bootstrap |
+| `ArResolverContext` configuration | planned (`v0.7.0`) | Per stage; the environment form is a process-wide bootstrap |
 | Write support | not planned | Fails explicitly |
 
 ## Cache and consistency
@@ -204,13 +218,19 @@ not planned                   explicitly out of scope
 | Redirect scheme-downgrade rejection | implemented | Not in the corpus and cannot be: the fixture server speaks plaintext HTTP, so there is no `https` to downgrade from. Tested in `usdAssetHttp` against a scripted `Location` |
 | Mid-read revision-change tests, HTTP | implemented | Both halves: `ValidatorChangeMidRead` in the corpus projection, and the boundary suite's own republish-underneath-an-open-reader case |
 | No credential in a message, asserted | implemented | The corpus projection opens a failing URL carrying userinfo and a query token and checks the rendered status for both |
+| Aggregate product containing the resolver bundle | implemented | `v0.5.0`; packaged as a runtime-composition provider, with `share/usd-http-resolver/probes` mapped in as product data |
+| Acceptance from the installed artifact | implemented | `packaged_probe.py` loads the resolver through OpenUSD, opens a remote root layer and its relative child, and requires a byte-range request. No producer build directory is on any path it uses |
+| Reproducible packaging | implemented | Two identical package operations must yield the same SHA-256 inventory for unchanged inputs; a release gate |
+| Reproducible binary output | not implemented | Measured at the `v0.2.0` gate: two builds agree on 24 of 28 installed files, and the four that differ differ only in embedded build timestamps. Closing it is a link flag |
+| OpenStrata formation composition | planned (`v0.7.0`) | A product exists; a formation pinning this resolver and a consumer bundle by digest against one certified runtime does not. Composition today is `PXR_PLUGINPATH_NAME` and a path |
+| Fuzzing the parsers | planned | `Content-Range`, response metadata, URI normalization, and the persistent cache entry header. §11.6 of the [design policy](../design/DESIGN_POLICY.md); no release gate |
 | Amplification baselines | implemented | `tests/baseline`, registered as `usdAssetHttp_io_baseline` so that a byte count which moves fails a lane rather than waiting for a release run. each scenario is measured with the cache and without it, which is the before-and-after METRICS.md §6 asks a release that changes I/O behavior for |
 
 ## Consumers
 
 | Consumer | Status | Notes |
 | --- | --- | --- |
-| `usd-pointcloud-plugins` (COPC) | planned (`v0.5.0`) | First integration; see [consumer integration](../roadmap/consumer-integration.md) |
+| `usd-pointcloud-plugins` (COPC) | planned (`v0.6.0`) | First integration; see [consumer integration](../roadmap/consumer-integration.md) |
 | `usd-3dgs-plugins` | deferred | Validates generality under camera-driven access |
 | `usd-vrm-plugins` / containers | deferred | Nested random access |
 
