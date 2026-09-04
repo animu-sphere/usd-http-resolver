@@ -190,4 +190,4 @@ it.
 Nothing measured over loopback is a network measurement, and the record says so
 rather than implying otherwise. What loopback measures exactly is how many bytes
 and how many requests an access pattern costs, which is what the counters above
-are for. Distance arrives with `v0.5.0` and its consumer fixture.
+are for. Distance arrives with `v0.6.0` and its consumer fixture.

@@ -3,13 +3,13 @@
 This document defines the configuration surface. The five transport bounds are
 implemented as of `v0.2.0` and the four cache variables as of `v0.3.0`; all nine
 are read by `plugins/http-resolver`, once, when the resolver is constructed. The
-`ArResolverContext` form arrives in `v0.6.0`.
+`ArResolverContext` form arrives in `v0.7.0`.
 
 ## 1. Two mechanisms, in order
 
 ```text
 environment variables       process-wide, v0.x bootstrap
-ArResolverContext           per stage, v0.6.0
+ArResolverContext           per stage, v0.7.0
 ```
 
 Environment variables are a bootstrap, not the destination. A host that opens
@@ -46,7 +46,7 @@ fails.
 The three deadlines are the ones the backend separates so that `Timeout`
 (`HTTP006`) can name which one elapsed, which DIAGNOSTICS.md requires of it. The
 value read is the one the resolver was constructed with: these are process-wide,
-and per-stage values are what `ArResolverContext` is for in `v0.6.0`.
+and per-stage values are what `ArResolverContext` is for in `v0.7.0`.
 
 The four cache defaults are measured constants and the measurement that chose
 them is [BLOCK_POLICY.md](BLOCK_POLICY.md). Two of them are labelled there as

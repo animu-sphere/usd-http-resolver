@@ -231,7 +231,7 @@ the trade this release makes — bytes for round trips — is one loopback canno
 price. What loopback does measure exactly is how many bytes and how many
 requests a pattern costs, and that is the whole of what gate 6 is about. A
 measurement over real distance arrives with the first consumer integration in
-`v0.5.0`, against a fixture of at least a gigabyte; see
+`v0.6.0`, against a fixture of at least a gigabyte; see
 [consumer integration](../roadmap/consumer-integration.md).
 
 ## Reproducing it
@@ -277,7 +277,7 @@ only the first reads one back.
 
 ## What the next release has to move
 
-`v0.5.0` is the first release with an external claim, and the scenario this file
+`v0.6.0` is the first release with an external claim, and the scenario this file
 still cannot record is the one that would price the trade every row above makes.
 Loopback has no round-trip time, so "bytes for round trips" is a trade whose
 numerator this harness measures exactly and whose denominator it cannot see. The

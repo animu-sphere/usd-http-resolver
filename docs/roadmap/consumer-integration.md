@@ -3,7 +3,7 @@
 `usd-pointcloud-plugins` is the first consumer. This document states what that
 integration is, what it proves, and the rules both repositories hold to.
 
-Status: planned for `v0.5.0`. Nothing is integrated today.
+Status: planned for `v0.6.0`. Nothing is integrated today.
 
 ## 1. Why this consumer first
 
@@ -43,8 +43,8 @@ Both sides forbid the build edge. This repository states it in the
 
 ## 3. What the consumer already has
 
-The consumer reached `v0.5.0` with resolver-backed COPC reads and does not need
-new code to use this resolver:
+The consumer reached its own `v0.5.0` with resolver-backed COPC reads — its
+version line, not this one — and does not need new code to use this resolver:
 
 ```text
 ArResolver -> ArAsset -> the consumer's RandomAccessSource -> usdCopc

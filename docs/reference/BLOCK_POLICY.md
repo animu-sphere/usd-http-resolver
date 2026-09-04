@@ -57,7 +57,7 @@ states outright:
 That is §2 of CACHE.md as an assumption rather than a result. It is why a
 configuration with fewer requests and more bytes is preferred to one with more
 requests and fewer bytes, and it is the sentence that gets its own measurement
-in `v0.5.0`, when the first consumer integration puts real distance between the
+in `v0.6.0`, when the first consumer integration puts real distance between the
 reader and the origin. Until then the honest statement is that the *direction*
 of the trade is assumed and its *magnitude* is measured.
 
@@ -191,7 +191,7 @@ nothing to measure, and its job is to stop one enormous request defeating
 cancellation rather than to make a pattern faster. `budgetBytes` is a residency
 policy rather than an I/O constant — 128 MiB is a ceiling a DCC process can
 afford and roughly two thousand blocks at the chosen size — and measuring it
-would take a working set that outlives one query, which is `v0.5.0`'s consumer
+would take a working set that outlives one query, which is `v0.6.0`'s consumer
 fixture and not this harness.
 
 ## What the next release has to move
@@ -199,7 +199,7 @@ fixture and not this harness.
 `v0.4.0` adds persistence, which changes what a hit is worth and nothing about
 what a block is. The constants here are expected to survive it.
 
-`v0.5.0` is what tests the premise. The first consumer integration puts real
+`v0.6.0` is what tests the premise. The first consumer integration puts real
 distance between the reader and the origin, and it is the first run in which a
 round trip costs what this file assumes it costs. If 64 KiB is the wrong number,
 that is where it will show, and this file is what the new measurement replaces.

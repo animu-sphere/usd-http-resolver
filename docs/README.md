@@ -9,13 +9,17 @@ the summary is a documentation bug. When a summary disagrees with
 [architecture/WORKSPACE.md](architecture/WORKSPACE.md) about structure, the
 workspace contract wins; structural changes must update that contract first.
 
-This repository is at `v0.2.0`, released 2026-08-20; its
-[record](releases/v0.2.0.md) states what shipped and what did not. `v0.3.0` is
-in the tree and unreleased: the block cache, its measured constants, and the
-resolver that now decorates every asset it opens. The read contract, the local
-backend, the shared boundary suite, the hostile-server corpus, the HTTP backend,
-the `ArResolver` bundle, and the cache are implemented, and a `UsdStage` opens
-over HTTP. What the tree actually contains is stated in
+This repository is at `v0.5.0`, released 2026-08-27; its
+[record](releases/v0.5.0.md) states what shipped and what did not. The read
+contract, the local backend, the shared boundary suite, the hostile-server
+corpus, the HTTP backend, the `ArResolver` bundle, the block cache, identity
+exposed to consumers, and the on-disk cache under it are implemented; a
+`UsdStage` opens over HTTP; and the bundle installs as an aggregate product whose
+acceptance probe runs from the artifact rather than from a build tree. What is
+not done is the first consumer integration, and with it the first measurement
+this project has taken over real distance.
+
+What the tree actually contains is stated in
 [reference/CAPABILITY_MATRIX.md](reference/CAPABILITY_MATRIX.md), what a bounded
 query costs is in [reference/BASELINE.md](reference/BASELINE.md), and why the
 cache's constants are what they are is in
@@ -39,7 +43,14 @@ contract and plan.
 
 - [design/DESIGN_POLICY.md](design/DESIGN_POLICY.md) defines the product
   intent, the transport boundary, the consumer boundary, cache policy,
-  consistency policy, diagnostics, thread safety, measurement, and licensing.
+  consistency policy, diagnostics, thread safety, security and network policy,
+  measurement, and licensing. §15.1 is the test any new feature is admitted by.
+- [design/DIRECTION.md](design/DIRECTION.md) states where the project is going
+  past the end of the release sequence — the remote-asset-access layer under the
+  resolver, the four cache levels, the consumer order, OpenStrata's position,
+  Wasm, and the USD-over-object-storage framing that explains why the cache work
+  looks like database work. It is direction, not contract: where it and the
+  design policy disagree, the policy wins.
 - [architecture/WORKSPACE.md](architecture/WORKSPACE.md) is the binding
   structural contract for modules, bundles, dependency directions, and artifact
   naming. A structural change updates it first.
