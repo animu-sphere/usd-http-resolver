@@ -4,7 +4,8 @@ This document defines the configuration surface. The five transport bounds are
 implemented as of `v0.2.0`, the four cache variables as of `v0.3.0`, the two
 persistence variables as of `v0.4.0`, and the destination policy as of `v0.7.0`;
 all twelve are read by `plugins/http-resolver`, once, when the resolver is
-constructed. The `ArResolverContext` form arrives in `v0.7.0`.
+constructed. Eight of them can also be set per stage, through an
+`ArResolverContext`, as of `v0.7.0` (§4).
 
 ## 1. Two mechanisms, in order
 
@@ -16,8 +17,8 @@ ArResolverContext           per stage, v0.7.0
 Environment variables are a bootstrap, not the destination. A host that opens
 two stages against two servers with two credentials cannot be served by a
 process-global, and the moment authentication is real, the context form is the
-only correct one. Both will coexist: environment values become the defaults
-that a bound context overrides.
+only correct one. Both coexist: environment values are the defaults a bound
+context overrides.
 
 ## 2. Variables
 
@@ -47,8 +48,8 @@ fails.
 
 The three deadlines are the ones the backend separates so that `Timeout`
 (`HTTP006`) can name which one elapsed, which DIAGNOSTICS.md requires of it. The
-value read is the one the resolver was constructed with: these are process-wide,
-and per-stage values are what `ArResolverContext` is for in `v0.7.0`.
+value read is the one the resolver was constructed with, unless the stage's
+context sets another (§4).
 
 The four cache defaults are measured constants and the measurement that chose
 them is [BLOCK_POLICY.md](BLOCK_POLICY.md). Two of them are labelled there as
@@ -102,7 +103,8 @@ Link-local is refused because nothing legitimate serves USD from it and the one
 thing reliably found there is the credential endpoint of a cloud instance. A
 deployment that wants less reach says so: `public` alone for a render farm that
 must never reach its own network from a layer it did not author, `private` alone
-for one that must never leave it.
+for one that must never leave it — for the whole process in the environment, or
+for one stage in its context (§4).
 
 The policy is judged twice, and neither judgement is redundant:
 
@@ -177,11 +179,71 @@ turn a correctness property into a deployment mistake:
   environment or the context, and no credential is ever named in a variable
   this resolver defines, printed, or persisted.
 
-## 4. Precedence
+## 4. Precedence, and the context form
 
 ```text
 ArResolverContext  >  environment variable  >  built-in default
 ```
 
-Resolved at bind time, not per request. A per-request read of a global is both
-slow and unpredictable when a host mutates the environment mid-session.
+The environment is read once, when the resolver is constructed, and kept. A
+context is resolved against that snapshot rather than against `getenv`, so a
+host that mutates its environment mid-session does not change what a stage it
+opened earlier is configured by — and a reader keeps the options it was opened
+with, so a stage's configuration is bound when its assets are opened, not per
+request.
+
+A context is created from a string, through OpenUSD, with either scheme name —
+one resolver type serves both:
+
+```python
+ctx = Ar.GetResolver().CreateContextFromString(
+    "https",
+    "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS=60000")
+stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
+```
+
+The string is `NAME=value` entries separated by `;`. The names are the
+environment's, spelled exactly as §2 spells them, and each value goes through
+the parser the environment's would: refused or adjusted for the same reasons,
+and reported the same way. Whitespace around an entry, a name, or a value is
+tolerated, and so is an empty entry — a trailing `;` is what concatenation
+leaves behind. A name set twice keeps the last value, as an environment
+assignment would, and says so.
+
+Eight variables may be set in a context, and four may not:
+
+| May be set per stage | Environment only |
+| --- | --- |
+| `CONNECT_TIMEOUT_MS`, `READ_TIMEOUT_MS`, `TOTAL_TIMEOUT_MS` | `BLOCK_SIZE` |
+| `MAX_RETRIES`, `MAX_REDIRECTS` | `CACHE_BUDGET` |
+| `DESTINATIONS` | `PERSISTENT_CACHE_DIR` |
+| `COALESCE_GAP`, `MAX_REQUEST_BYTES` | `PERSISTENT_CACHE_BUDGET` |
+
+The left column is what binds a reader or its cache wrap, and is therefore a
+property of whoever opened the asset. The right column is what the process
+shares: one block store with one budget (CACHE.md §7), one persistent
+directory, and a store whose stripes are sized for one block size — eight blocks
+to a stripe, so a stage that asked for blocks larger than a stripe would fetch
+each one and watch it evicted on arrival. A context that names one of those is
+told, when it is created, that the value is read from the environment.
+
+Problems are reported once, when the context is created, and never at bind
+time: a context is created once and bound on every thread that composes the
+stage, and a warning per bind would be one typo rendered once per prim. What a
+context carries is what it admitted, so two contexts that say the same thing
+compare and hash equal however they were spelled, and a context whose every
+entry was refused configures a stage exactly as no context does.
+
+In Python, a context reads back as its canonical string —
+`Ar.ResolverContext('USD_HTTP_RESOLVER_DESTINATIONS=public')` — which is what
+`Usd.Stage.__repr__` prints for a stage opened with one.
+
+Two properties follow for the destination policy in particular, and both are
+asserted in `httpResolver_stage`. A stage whose context refuses a destination
+cannot reach it through a layer another stage has already loaded: every
+identifier this resolver owns is context-dependent, which is what makes
+OpenUSD's layer registry look the layer up by the path `Resolve` returned
+rather than by its name ([RESOLVER.md](../architecture/RESOLVER.md) §6). And it
+cannot reach it through a reader another stage's resolve left behind: a
+retained open is handed only to a caller that would have opened it under the
+same transport options.

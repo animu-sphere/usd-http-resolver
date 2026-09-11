@@ -315,6 +315,12 @@ See [consumer integration](consumer-integration.md).
 
 ### `v0.7.0` — configuration, network policy, and the auth seam
 
+Status: in progress on `main`, ahead of `v0.6.0` for the reason `v0.5.0` was —
+it is code, and the consumer integration is waiting on a fixture and a host. The
+configuration surface, the destination policy, and the header-block bound have
+landed; the request interception point and formation composition have not. See
+[implementation status](implementation-status.md).
+
 Scope: the configuration surface (block size, budgets, timeouts, retry policy)
 resolved from `ArResolverContext` as well as the environment, so a bound is a
 property of a stage rather than of a process; the declared network policy of
@@ -358,7 +364,7 @@ content, per §3.5 of the design policy.
 | 4 | Identity exposure, persistent cache, stability metadata | Complete for `v0.4.0` | Everything that makes identity outlive a reader — and, with the disk tier, outlive the process |
 | 5 | Packaging: aggregate product and artifact-owned acceptance | Complete for `v0.5.0` | Behavior unchanged; the probe runs from the installed artifact, not from a build tree |
 | 6 | First consumer integration and amplification baseline | Planned for `v0.6.0` | The abstraction's real test, and the first measurement over distance |
-| 7 | Configuration, network policy, auth seam, formation composition | Planned for `v0.7.0` | Seams and policy only, no providers |
+| 7 | Configuration, network policy, auth seam, formation composition | In progress for `v0.7.0` | Configuration surface, destination policy, and header-block bound landed; the auth seam and formation composition have not. Seams and policy only, no providers |
 | 8 | Adaptive read-ahead | Planned for `v0.8.0` | Blocked on phase 6, not on phase 7: it needs a latency number, not a config surface |
 | 9 | Second consumer (`usd-3dgs-plugins`) | Deferred | Camera-driven streaming; validates generality |
 | 10 | Package composition: ranges inside a remote package | Deferred | `https://host/model.usdz[texture.png]` without downloading the package; needs the package resolver's cooperation and a new ADR |
@@ -381,7 +387,7 @@ content, per §3.5 of the design policy.
 | W8 | Identity exposure, persistence, cross-stage reuse rules | 4 | Done — `GetAssetInfo`, `DiskBlockStore`, and the one rule that governs both |
 | W9 | Aggregate product and artifact-owned acceptance probe | 5 | Done — `share/usd-http-resolver/probes/packaged_probe.py`, run against the installed artifact |
 | W10 | Consumer integration and amplification baselines | 6 | Planned |
-| W11 | Configuration, network policy, auth seam, formation composition | 7 | Planned |
+| W11 | Configuration, network policy, auth seam, formation composition | 7 | In progress — `ArResolverContext` configuration, the destination policy, and the header-block bound are done |
 | W12 | Adaptive read-ahead | 8 | Planned — gated on W10's latency numbers |
 | W13 | Fuzzing the parsers, per §11.6 of the design policy | Parallel | Planned — CI work; no release gate |
 | W14 | Async, prefetch, Wasm research | Parallel | No release gate |

@@ -14,9 +14,51 @@ one.
 ## Unreleased
 
 The start of `v0.7.0`: the bounds §10 of the design policy names and the tree
-did not yet enforce.
+did not yet enforce, and the per-stage configuration surface that lets a host
+state them for one stage rather than for the whole process.
 
 ### Added
+
+- **Per-stage configuration through `ArResolverContext`.** A context is made
+  from a string, through OpenUSD's own entry point, with the environment's own
+  names:
+
+  ```python
+  ctx = Ar.GetResolver().CreateContextFromString(
+      "https", "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_MAX_RETRIES=0")
+  stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
+  ```
+
+  One vocabulary and one parser: a value in a context is refused or adjusted
+  for exactly the reasons the same value in the environment would be. Eight
+  variables may be set per stage — the three deadlines, retries, redirects, the
+  destination policy, and the two coalescing limits. The block size, the two
+  budgets, and the persistent directory stay the environment's, because every
+  stage shares the store they configure and the store's stripes are sized for
+  one block size. The environment is snapshot once, at construction, and a
+  context resolves against the snapshot: precedence is context, then
+  environment, then default. Problems are reported once, when the context is
+  created, and never per bind.
+
+- **Every identifier this resolver owns is context-dependent**, and it has to
+  be. For a path that is not, OpenUSD's layer registry finds an already-loaded
+  layer by its identifier whatever `Resolve` has just said, so a stage whose
+  context refuses a destination would be handed the layer anyway by any other
+  stage that had opened the URL first. Answering `false` was tried, and that is
+  exactly the case in `httpResolver_stage` that fails.
+
+- **A retained open is handed only to a caller it fits.** The table of opens
+  `Resolve` keeps for the `OpenAsset` that follows is keyed by the transport
+  options as well as the identifier, because a reader keeps the options it was
+  opened with; a reader retained under a permissive policy is never handed to a
+  stage whose context is narrower. Keying by identifier alone was tried too, and
+  the refusing context got a reader.
+
+- **A context is readable from Python**, as its canonical string:
+  `Ar.ResolverContext('USD_HTTP_RESOLVER_DESTINATIONS=public')`. Without a
+  to-Python conversion, `ctx.Get()` raised and `Usd.Stage.__repr__` printed
+  `pathResolverContext=<invalid repr>`; the conversion is registered once Python
+  is running, and a C++ host that never starts an interpreter never pays for it.
 
 - **A destination policy**, `USD_HTTP_RESOLVER_DESTINATIONS`: which classes of
   address — `public`, `private`, `loopback`, `link-local` — a connection may
@@ -83,6 +125,15 @@ did not yet enforce.
   two spellings, `ftp:`, `gopher:`, `data:`, `s3:`, and an `https:` with no
   authority — and the two scheme-less forms that stay inside the allowlist, a
   network-path reference and an absolute path, are still followed.
+
+### Changed
+
+- **An adjusted configuration value says it was used.** A block size rounded
+  down to a power of two, or a coalescing gap capped under the request ceiling,
+  used to be reported with the same ending as a refused value — "using the
+  default" — which was false: the adjusted value was the one in force. Adjusted
+  and refused values are now told apart, and a refused context value says that
+  its stage falls back to the environment rather than to the default.
 
 ## `v0.5.0` - 2026-08-27
 

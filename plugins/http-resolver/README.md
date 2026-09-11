@@ -23,6 +23,7 @@ When this README and that document disagree, the document wins.
 ```json
 "HttpResolver": {
     "bases": ["ArResolver"],
+    "implementsContexts": true,
     "uriSchemes": ["http", "https"]
 }
 ```
@@ -62,7 +63,8 @@ removed because §4.3 of the
 resolver API, and an identifier *is* the resolver API — a URL that needs
 credentials therefore fails at the origin with `HTTP002` rather than succeeding
 with a secret in every log line. Authentication arrives as the interception
-point in `v0.6.0`, not as a URL component.
+point in `v0.7.0`, supplied through the resolver context, and not as a URL
+component.
 
 Relative references anchor to the layer they were authored in, per RFC 3986
 §5.2, which is what makes a remote scene work at all: a layer published to a CDN
@@ -213,9 +215,23 @@ adjustment. `0` is legal for the two counters and means "do not", and is
 rejected for the three deadlines, because to most transports a zero deadline
 means *no* deadline — the one value §10 of the design policy exists to forbid.
 
-Per-stage configuration through `ArResolverContext` is `v0.6.0`. A host that
-opens two stages against two servers cannot be served by a process-global, and
-that is the surface the environment variables are a bootstrap for.
+Eight of these can also be set per stage, through an `ArResolverContext` made
+from a string with the same names — the transport bounds, the destination
+policy, and the two coalescing limits:
+
+```python
+ctx = Ar.GetResolver().CreateContextFromString(
+    "https", "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_MAX_RETRIES=0")
+stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
+```
+
+The block size, the two budgets, and the persistent directory stay the
+environment's, because every stage in the process shares the store they
+configure. A context is validated when it is created and warns then; what it
+carries afterwards is what it admitted. The rules, and why every identifier this
+bundle owns is declared context-dependent, are in
+[CONFIGURATION.md](../../docs/reference/CONFIGURATION.md) §4 and
+[RESOLVER.md](../../docs/architecture/RESOLVER.md) §6.
 
 ## Plugin discovery and installation
 
@@ -305,8 +321,9 @@ The fifth is the release's claim: it stands up an origin on loopback, opens a
 a 4 KiB window out of a 1 MiB asset and checks the `Range` header the server
 actually received, and confirms that a `404` is silent, that a failure is not,
 that range-unsupported is terminal, that asset info reports the identity of the
-open rather than of a new request, and that a local stage still opens exactly as
-it did.
+open rather than of a new request, that a resolver context configures the stage
+it is bound to and no other — including through a layer another stage already
+loaded — and that a local stage still opens exactly as it did.
 
 One of its cases asserts nothing at all in a `CHECK`: it resolves an asset it
 never opens, leaving a retained reader to be destroyed during static teardown,

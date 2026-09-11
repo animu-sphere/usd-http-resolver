@@ -1,6 +1,6 @@
 # Development Policy
 
-Last updated: 2026-09-04
+Last updated: 2026-09-11
 
 This document is the standing development policy for `usd-http-resolver`. The
 roadmap and architecture documents refine it; they do not override it.
@@ -73,9 +73,11 @@ The read contract, the local backend, the shared boundary suite, the
 hostile-server corpus, the HTTP backend, the `ArResolver` bundle, the block
 cache, identity exposed to consumers, the on-disk cache under it, and the
 packaged product that composes the bundle as a runtime component are implemented
-and passing, and released through `v0.5.0`. What is not is the first consumer
-integration, the configuration and authentication seams, adaptive read-ahead,
-and every transport after HTTP. The contracts under
+and passing, and released through `v0.5.0`. On `main` since then: the bounds
+§10 names — the response header block and the destination policy — and
+per-stage configuration through `ArResolverContext`. What is not is the first
+consumer integration, the authentication seam, adaptive read-ahead, and every
+transport after HTTP. The contracts under
 [architecture/](../architecture/) were written before their implementation,
 which is deliberate: the boundary is the product, and it is cheaper to fix here
 than in five consumers — and every one of those implementations has since landed
@@ -671,13 +673,10 @@ one integration that decides whether the abstraction is real.
    number, which prices a round trip at nearly zero and therefore cannot price
    the trade this architecture makes. This is not a separate task from 1 so much
    as the reason 1 is first.
-3. **The configuration surface and the network policy that needs it**, per §10.2
-   and [CONFIGURATION.md](../reference/CONFIGURATION.md): the transport bounds
-   resolved from `ArResolverContext` as well as the environment, and the scheme
-   and destination policy stated somewhere a host can override.
-4. **The authentication interception point**, per §4.3 — the seam, and no
-   provider.
-5. **Adaptive read-ahead**, cache level 3 in §5, *after* 2 and not before it.
+3. **The authentication interception point**, per §4.3 — the seam, and no
+   provider. It has somewhere to live now: a credential provider is the
+   context's to carry, and the context exists.
+4. **Adaptive read-ahead**, cache level 3 in §5, *after* 2 and not before it.
 
 Deliberately not on this list, and each for a stated reason: freezing the
 internal API before the consumer integration has argued with it (§3.3);
@@ -686,6 +685,18 @@ measured (§15); and any second transport before the first has a consumer (§4.4
 
 Done and no longer pending:
 
+- The configuration surface and the network policy that needed it. The
+  destination policy of §10.2 is `USD_HTTP_RESOLVER_DESTINATIONS`, judged at
+  connect time and before every hop, with a default that refuses link-local and
+  nothing else; the response header block of §10.1 is bounded; and the
+  transport bounds and the policy are a stage's through `ArResolverContext`,
+  with the environment as the default a context overrides
+  ([CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 and §4). Two things
+  the work had to decide that no document had said: every identifier this
+  resolver owns is context-dependent, because OpenUSD's layer registry
+  otherwise hands a loaded layer to a stage whose context would refuse it; and
+  a reader retained under one configuration is never handed to a caller under
+  another.
 - The packaged, composable product. `v0.5.0` publishes the workspace as an
   aggregate product with a component-owned acceptance probe that runs from the
   installed artifact rather than from a producer build directory, which is the

@@ -10,8 +10,7 @@ it is described in [ASSET_READER.md](ASSET_READER.md).
 Sections marked **Planned** are direction, not shipped behavior.
 
 Status: implemented in `v0.2.0`, except §3, which is `v0.4.0`, and §6, which is
-`v0.6.0` apart from the environment variables named in
-[CONFIGURATION.md](../reference/CONFIGURATION.md).
+`v0.7.0`.
 
 §3 has landed: asset info and identity stability are implemented, and what that
 surface may and may not publish is stated there rather than left to the code.
@@ -370,16 +369,69 @@ explicitly. Assets are immutable; publishing a new revision at a new path is
 the supported editing model, per §6 of the
 [design policy](../design/DESIGN_POLICY.md).
 
-## 6. Context and configuration — Planned (`v0.6.0`)
+## 6. Context and configuration
 
-`ArResolverContext` binding is where per-stage configuration belongs: cache
-budget, timeouts, retry policy, and — later — a credential provider. It is
-resolved at bind time, never read from a global on each request.
+`ArResolverContext` binding is where per-stage configuration belongs, and as of
+`v0.7.0` it is where this resolver reads it from. The environment is the
+process's configuration and the bootstrap for everything else; a context
+overrides it for the stage it is bound to, and for nothing else
+([CONFIGURATION.md](../reference/CONFIGURATION.md) §4).
 
-Environment variables are the v0.x mechanism and are documented in
-[CONFIGURATION.md](../reference/CONFIGURATION.md). They are a bootstrap, not
-the final surface: a host that opens two stages against two servers with two
-credentials cannot be served by a process-global.
+A context is created from a string, through OpenUSD's own entry point, and in
+no other way:
+
+```text
+ArGetResolver().CreateContextFromString("https",
+    "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_MAX_RETRIES=0")
+```
+
+The names are the environment's, so the configuration surface stays one
+vocabulary, and the entry point is OpenUSD's, so no host includes a header from
+this repository to configure it — the property ADR-0001 holds consumers to,
+extended to the hosts that configure them. What the object carries is the
+overrides as written, after validation; what they produce is resolved against
+the environment when a call is made under it.
+
+Three consequences are contract rather than detail.
+
+**A context sets what binds a reader, and not what the process shares.** The
+transport bounds, the destination policy, and the coalescing limits may be set
+per stage. The block size, the two cache budgets, and the persistent directory
+may not: the block store and the persistent tier are shared by every stage in
+the process (CACHE.md §7), and the store's stripes are sized for one block size.
+A context that names one of those is told so when it is created.
+
+**Every identifier this resolver owns is context-dependent.** Not because a path
+resolves to a different path under two contexts — an identifier resolves to
+itself — but because whether it resolves *at all* can, and OpenUSD's layer
+registry acts on the answer. For a path that is not context-dependent,
+`SdfLayer::FindOrOpen` finds an already-loaded layer by its identifier whatever
+`Resolve` has just said; for one that is, it looks the layer up by the path
+`Resolve` returned. Answering no would let one stage's destination policy be
+walked past by opening the same URL in another stage first, and
+`httpResolver_stage` asserts that it cannot be.
+
+**A retained open is handed only to a caller it fits.** §2.3's table of
+retained opens is keyed by the identifier *and* the transport options the
+reader was opened with, because a reader keeps those options for its lifetime.
+A reader a resolve retained under one policy is never handed to an `OpenAsset`
+under a narrower one; that call opens again, under its own. Identity, by
+contrast, is shared across contexts: a validator describes the bytes at a URL,
+not the configuration that fetched them, and §3.2's record of a republish is
+kept per identifier.
+
+What a context reaches is what OpenUSD resolves and opens while it is bound, and
+the boundary is worth stating because it is OpenUSD's rather than this
+resolver's. The context is read from the calling thread, per call. Composition
+binds a layer stack's context on every thread it computes a prim index on, so
+the layers and references a stage composes are resolved under the stage's
+context however parallel the composition is. A plugin that opens an asset on a
+thread of its own, with nothing bound, is configured by the environment — and
+the reader it gets keeps that configuration for its lifetime, because a reader
+is bound when it is opened and not per read.
+
+A credential provider is the context's to carry when authentication arrives.
+Nothing here carries one yet.
 
 ## 7. Thread safety
 

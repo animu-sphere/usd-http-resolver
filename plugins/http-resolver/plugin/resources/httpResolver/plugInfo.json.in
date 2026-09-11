@@ -11,6 +11,7 @@
                     "HttpResolver": {
                         "bases": ["ArResolver"],
                         "displayName": "HTTP range-read asset resolver",
+                        "implementsContexts": true,
                         "uriSchemes": ["http", "https"]
                     }
                 }

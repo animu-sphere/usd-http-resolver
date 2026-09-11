@@ -31,9 +31,10 @@ void Report(const usdasset::Status& status, std::string_view identifier);
 /// the caller can hand it a counter unconditionally.
 void ReportRetries(std::uint64_t retryCount, std::string_view identifier);
 
-/// Posts a warning for an environment variable that was set and could not be
-/// used, per CONFIGURATION.md §2. The variable's value is included because
-/// these five carry no secret and because a typo is unfindable otherwise.
+/// Posts a warning for a configuration value that was set and could not be
+/// used as written -- in the environment or in a resolver context -- per
+/// CONFIGURATION.md §2. The value is included because no variable here carries
+/// a secret and because a typo is unfindable otherwise.
 void ReportConfigurationProblem(const ConfigurationProblem& problem);
 
 }  // namespace usdhttpresolver

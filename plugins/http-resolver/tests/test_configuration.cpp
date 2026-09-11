@@ -323,11 +323,205 @@ void TestPersistenceVariables() {
     CHECK_EQ(budgetOnly.persistence.budgetBytes, std::uint64_t{8388608});
 }
 
+// --- the context form ----------------------------------------------------------
+
+using usdhttpresolver::OverridesFrom;
+
+/// What a context may set, and what it may not. The four it may not are the
+/// ones the process shares -- the block store, its block size, and the
+/// persistent tier -- and a stage that set them would be setting them for
+/// every other stage too.
+void TestContextVariableSet() {
+    const std::vector<const char*>& configured = usdhttpresolver::ConfiguredVariables();
+    const std::vector<const char*>& context = usdhttpresolver::ContextVariables();
+    CHECK_EQ(context.size(), std::size_t{8});
+
+    for (const char* name : context) {
+        bool known = false;
+        for (const char* candidate : configured) {
+            if (std::string(name) == candidate) known = true;
+        }
+        CHECK(known);
+    }
+    const char* const processWide[] = {
+        "USD_HTTP_RESOLVER_BLOCK_SIZE",
+        "USD_HTTP_RESOLVER_CACHE_BUDGET",
+        "USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR",
+        "USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET",
+    };
+    for (const char* name : processWide) {
+        for (const char* candidate : context) {
+            CHECK(std::string(name) != candidate);
+        }
+    }
+}
+
+void TestContextStrings() {
+    {
+        // How a host writes one: across lines, with spaces, and with the
+        // trailing separator concatenation leaves behind.
+        std::vector<ConfigurationProblem> problems;
+        const std::map<std::string, std::string> overrides = OverridesFrom(
+            "  USD_HTTP_RESOLVER_MAX_RETRIES = 0 ;\n"
+            "  USD_HTTP_RESOLVER_DESTINATIONS = public, private ;\n",
+            &problems);
+        CHECK(problems.empty());
+        CHECK_EQ(overrides.size(), std::size_t{2});
+        CHECK_EQ(overrides.at("USD_HTTP_RESOLVER_MAX_RETRIES"), std::string("0"));
+        CHECK_EQ(overrides.at("USD_HTTP_RESOLVER_DESTINATIONS"),
+                 std::string("public, private"));
+        // Canonical: sorted by name, whatever order it was written in.
+        CHECK_EQ(usdhttpresolver::CanonicalContextString(overrides),
+                 std::string("USD_HTTP_RESOLVER_DESTINATIONS=public, private;"
+                             "USD_HTTP_RESOLVER_MAX_RETRIES=0"));
+    }
+    {
+        // Nothing is not a problem.
+        std::vector<ConfigurationProblem> problems;
+        CHECK(OverridesFrom("", &problems).empty());
+        CHECK(OverridesFrom(" ; ;", &problems).empty());
+        CHECK(problems.empty());
+    }
+
+    // Each of these is refused, reported as the context's, and absent from
+    // what the context carries -- so that what it compares and hashes by is
+    // what is in force.
+    struct Refused {
+        const char* text;
+        const char* variable;
+    };
+    const Refused refused[] = {
+        {"USD_HTTP_RESOLVER_BLOCK_SIZE=16384", "USD_HTTP_RESOLVER_BLOCK_SIZE"},
+        {"USD_HTTP_RESOLVER_CACHE_BUDGET=1048576", "USD_HTTP_RESOLVER_CACHE_BUDGET"},
+        {"USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR=/var/tmp/x",
+         "USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR"},
+        {"USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET=8388608",
+         "USD_HTTP_RESOLVER_PERSISTENT_CACHE_BUDGET"},
+        {"USD_HTTP_RESOLVER_METRICS_DUMP=1", "USD_HTTP_RESOLVER_METRICS_DUMP"},
+        {"USD_HTTP_RESOLVER_NO_SUCH_THING=1", "USD_HTTP_RESOLVER_NO_SUCH_THING"},
+        {"usd_http_resolver_max_retries=1", "usd_http_resolver_max_retries"},
+        {"MAX_RETRIES=1", "MAX_RETRIES"},
+        {"USD_HTTP_RESOLVER_MAX_RETRIES=abc", "USD_HTTP_RESOLVER_MAX_RETRIES"},
+        {"USD_HTTP_RESOLVER_CONNECT_TIMEOUT_MS=0", "USD_HTTP_RESOLVER_CONNECT_TIMEOUT_MS"},
+        {"USD_HTTP_RESOLVER_DESTINATIONS=everything", "USD_HTTP_RESOLVER_DESTINATIONS"},
+        {"USD_HTTP_RESOLVER_DESTINATIONS=", "USD_HTTP_RESOLVER_DESTINATIONS"},
+        {"=1", ""},
+        {"USD_HTTP_RESOLVER_MAX_RETRIES", ""},
+    };
+    for (const Refused& row : refused) {
+        std::vector<ConfigurationProblem> problems;
+        const std::map<std::string, std::string> overrides =
+            OverridesFrom(row.text, &problems);
+        if (problems.size() != 1 || !overrides.empty()) {
+            std::fprintf(stderr,
+                         "FAIL %s:%d: '%s' gave %zu problem(s) and %zu override(s)\n",
+                         __FILE__, __LINE__, row.text, problems.size(),
+                         overrides.size());
+            ++::usdassettest::FailureCount();
+            continue;
+        }
+        CHECK(problems[0].fromContext);
+        CHECK(!problems[0].adjusted);
+        CHECK_EQ(problems[0].variable, std::string(row.variable));
+    }
+
+    {
+        // One bad entry does not discard its neighbours.
+        std::vector<ConfigurationProblem> problems;
+        const std::map<std::string, std::string> overrides = OverridesFrom(
+            "USD_HTTP_RESOLVER_MAX_REDIRECTS=nonsense;USD_HTTP_RESOLVER_MAX_RETRIES=1",
+            &problems);
+        CHECK_EQ(problems.size(), std::size_t{1});
+        CHECK_EQ(overrides.size(), std::size_t{1});
+        CHECK(overrides.count("USD_HTTP_RESOLVER_MAX_RETRIES") == 1);
+    }
+    {
+        // Set twice: the last wins, as an environment assignment would, and
+        // the repetition is reported as an adjustment rather than a refusal.
+        std::vector<ConfigurationProblem> problems;
+        const std::map<std::string, std::string> overrides = OverridesFrom(
+            "USD_HTTP_RESOLVER_MAX_RETRIES=1; USD_HTTP_RESOLVER_MAX_RETRIES=2",
+            &problems);
+        CHECK_EQ(problems.size(), std::size_t{1});
+        if (!problems.empty()) CHECK(problems[0].adjusted);
+        CHECK_EQ(overrides.at("USD_HTTP_RESOLVER_MAX_RETRIES"), std::string("2"));
+    }
+    {
+        // An adjusted value is kept and reported: a gap wider than a merged
+        // request can carry is capped wherever it is applied.
+        std::vector<ConfigurationProblem> problems;
+        const std::map<std::string, std::string> overrides =
+            OverridesFrom("USD_HTTP_RESOLVER_COALESCE_GAP=1024", &problems);
+        CHECK_EQ(problems.size(), std::size_t{1});
+        if (!problems.empty()) {
+            CHECK(problems[0].adjusted);
+            CHECK(problems[0].fromContext);
+        }
+        CHECK_EQ(overrides.size(), std::size_t{1});
+    }
+}
+
+/// CONFIGURATION.md §4, as a function: context over environment over default,
+/// one variable at a time.
+void TestPrecedence() {
+    const std::map<std::string, std::string> environment = {
+        {"USD_HTTP_RESOLVER_MAX_RETRIES", "5"},
+        {"USD_HTTP_RESOLVER_CONNECT_TIMEOUT_MS", "1500"},
+    };
+    const std::map<std::string, std::string> overrides = {
+        {"USD_HTTP_RESOLVER_MAX_RETRIES", "0"},
+        {"USD_HTTP_RESOLVER_DESTINATIONS", "public"},
+    };
+
+    std::vector<ConfigurationProblem> problems;
+    const usdasset::http::HttpOptions layered = OptionsFrom(
+        usdhttpresolver::Layered(overrides, usdhttpresolver::LookupIn(environment)),
+        &problems);
+    CHECK(problems.empty());
+    CHECK_EQ(layered.maxAttempts, 1);             // the context's
+    CHECK_EQ(layered.connectTimeoutMs, 1500);     // the environment's
+    CHECK_EQ(layered.maxRedirects,                // the default
+             usdasset::http::HttpOptions().maxRedirects);
+    CHECK(layered.destinations.publicAddresses);
+    CHECK(!layered.destinations.loopback);
+
+    // A snapshot takes what the lookup has of the variables this version
+    // reads, and nothing else.
+    const std::map<std::string, std::string> snapshot = usdhttpresolver::Snapshot(
+        From({{"USD_HTTP_RESOLVER_MAX_RETRIES", "3"}, {"PATH", "/usr/bin"}}));
+    CHECK_EQ(snapshot.size(), std::size_t{1});
+    CHECK_EQ(snapshot.at("USD_HTTP_RESOLVER_MAX_RETRIES"), std::string("3"));
+}
+
+/// The key a retained reader is handed out by. Equal exactly when a reader
+/// opened under one configuration may serve a caller under the other.
+void TestTransportFingerprint() {
+    using usdhttpresolver::TransportFingerprint;
+    const usdasset::http::HttpOptions defaults;
+    CHECK_EQ(TransportFingerprint(defaults), TransportFingerprint(defaults));
+
+    usdasset::http::HttpOptions narrower;
+    narrower.destinations.loopback = false;
+    CHECK(TransportFingerprint(narrower) != TransportFingerprint(defaults));
+
+    usdasset::http::HttpOptions impatient;
+    impatient.transferTimeoutMs = 1000;
+    CHECK(TransportFingerprint(impatient) != TransportFingerprint(defaults));
+
+    usdasset::http::HttpOptions persistent;
+    persistent.maxAttempts = 1;
+    CHECK(TransportFingerprint(persistent) != TransportFingerprint(defaults));
+}
+
 }  // namespace
 
 int main() {
     TestDefaults();
     TestDestinations();
+    TestContextVariableSet();
+    TestContextStrings();
+    TestPrecedence();
+    TestTransportFingerprint();
     TestEachVariable();
     TestRejectedValues();
     TestIndependence();

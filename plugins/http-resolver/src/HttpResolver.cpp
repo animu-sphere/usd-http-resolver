@@ -13,6 +13,7 @@
 #include "pxr/usd/ar/writableAsset.h"
 
 #include "Configuration.h"
+#include "Context.h"
 #include "Diagnostics.h"
 #include "Identifier.h"
 #include "Identity.h"
@@ -44,11 +45,21 @@ usdasset::Status UnsupportedWrite() {
 }  // namespace
 
 HttpResolver::HttpResolver() {
+    // The environment, once. Everything this resolver is configured by -- the
+    // base configuration here, and every context resolved later -- reads this
+    // snapshot rather than `getenv`, so one process has one environment.
+    _environment = usdhttpresolver::Snapshot(
+        [](const char* name, std::string* valueOut) {
+            return usdhttpresolver::ReadEnvironmentVariable(name, valueOut);
+        });
+
     std::vector<usdhttpresolver::ConfigurationProblem> problems;
     const usdhttpresolver::ResolverConfiguration configuration =
-        usdhttpresolver::ConfigurationFromEnvironment(&problems);
-    _options = configuration.transport;
-    _cacheOptions = configuration.cache.Normalized();
+        usdhttpresolver::ConfigurationFrom(usdhttpresolver::LookupIn(_environment),
+                                           &problems);
+    _base.transport = configuration.transport;
+    _base.cache = configuration.cache.Normalized();
+    _base.fingerprint = usdhttpresolver::TransportFingerprint(_base.transport);
 
     // The budget belongs to the process store rather than to this resolver, so
     // it is applied where it lives. Refused only when something is already bound
@@ -56,10 +67,10 @@ HttpResolver::HttpResolver() {
     // stage opens cannot happen -- and if it somehow does, the store keeps the
     // budget it has and says so rather than being rebuilt underneath a live
     // reader.
-    if (!usdasset::cache::BlockCache::ConfigureProcess(_cacheOptions)) {
+    if (!usdasset::cache::BlockCache::ConfigureProcess(_base.cache)) {
         problems.push_back(
             {"USD_HTTP_RESOLVER_CACHE_BUDGET",
-             std::to_string(_cacheOptions.budgetBytes),
+             std::to_string(_base.cache.budgetBytes),
              "the process block store was already in use; its budget and block "
              "size were left as they were"});
     }
@@ -111,11 +122,17 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
         usdhttpresolver::CreateIdentifier(assetPath, std::string());
     if (identifier.empty()) return ArResolvedPath();
 
-    const std::shared_ptr<_Opened> entry = _GetOrCreate(identifier);
+    // Under the stage's own configuration, when one is bound. A resolve under a
+    // context that refuses a destination fails here, and -- because the path is
+    // context-dependent -- that failure is what OpenUSD's layer registry acts
+    // on, even for a layer another stage has already loaded.
+    const _Effective effective = _EffectiveConfiguration();
+    const std::string key = _OpenKey(identifier, effective);
+    const std::shared_ptr<_Opened> entry = _GetOrCreate(key);
 
     std::lock_guard<std::mutex> lock(entry->mutex);
     if (!entry->opened) {
-        entry->result = usdasset::http::Open(identifier, _options);
+        entry->result = usdasset::http::Open(identifier, effective.transport);
         entry->opened = true;
         if (entry->result.reader) {
             // Copied off the reader while it is still here. The reader leaves
@@ -147,7 +164,7 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
     // it and a third has opened the identifier successfully, and erasing by key
     // would throw away that third thread's reader.
     const usdasset::Status status = entry->result.status;
-    _Forget(identifier, entry);
+    _Forget(key, entry);
 
     if (status.code != usdasset::StatusCode::NotFound) {
         usdhttpresolver::Report(status, identifier);
@@ -167,9 +184,15 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
         resolvedPath.GetPathString(), std::string());
     if (identifier.empty()) return nullptr;
 
+    // The reader `_Resolve` retained is taken only when it was opened the way
+    // this call would open it. Under a different context -- a narrower
+    // destination policy, a shorter deadline -- it is left for a caller it
+    // fits, and this call opens its own.
+    const _Effective effective = _EffectiveConfiguration();
+
     std::unique_ptr<usdasset::http::HttpAssetReader> reader;
 
-    if (const std::shared_ptr<_Opened> entry = _Take(identifier)) {
+    if (const std::shared_ptr<_Opened> entry = _Take(_OpenKey(identifier, effective))) {
         std::lock_guard<std::mutex> lock(entry->mutex);
         reader = std::move(entry->result.reader);
     }
@@ -178,7 +201,7 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
         // Either nothing resolved this identifier in this process, or the
         // reader `_Resolve` captured has already been handed to somebody.
         usdasset::http::HttpOpenResult result =
-            usdasset::http::Open(identifier, _options);
+            usdasset::http::Open(identifier, effective.transport);
         if (!result.reader) {
             usdhttpresolver::Report(result.status, identifier);
             return nullptr;
@@ -221,7 +244,7 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
     usdasset::OpenResult opened;
     opened.reader = std::unique_ptr<usdasset::AssetReader>(reader.release());
     usdasset::OpenResult cached = usdasset::cache::WrapAsset(
-        std::move(opened), metrics, _cacheOptions, nullptr);
+        std::move(opened), metrics, effective.cache, nullptr);
     if (!cached.reader) {
         usdhttpresolver::Report(cached.status, identifier);
         return nullptr;
@@ -267,7 +290,8 @@ ArAssetInfo HttpResolver::_GetAssetInfo(
     // happened, and asset info is not the call that should discover a dead
     // origin -- for a layer being reloaded against one, that is a second
     // identical round trip behind the one `_Resolve` has just paid for.
-    if (!_IdentityFor(identifier, resolved, &metadata, &contradicted)) {
+    if (!_IdentityFor(identifier, resolved, _EffectiveConfiguration(), &metadata,
+                      &contradicted)) {
         return info;
     }
 
@@ -305,6 +329,70 @@ ArTimestamp HttpResolver::_GetModificationTimestamp(
 
 std::string HttpResolver::_GetExtension(const std::string& assetPath) const {
     return usdhttpresolver::ExtensionOf(assetPath);
+}
+
+ArResolverContext HttpResolver::_CreateContextFromString(
+    const std::string& contextStr) const {
+    std::vector<usdhttpresolver::ConfigurationProblem> problems;
+    std::map<std::string, std::string> overrides =
+        usdhttpresolver::OverridesFrom(contextStr, &problems);
+
+    // Reported here and nowhere else. A context is created once and bound many
+    // times, often from worker threads, and a warning per bind would be one
+    // typo rendered once per composed prim.
+    for (const usdhttpresolver::ConfigurationProblem& problem : problems) {
+        usdhttpresolver::ReportConfigurationProblem(problem);
+    }
+
+    // Before the context exists, so that the first `repr` of a stage opened
+    // with it can already print it (Context.h).
+    HttpResolverContextEnsurePythonConversion();
+
+    // A context even when nothing was admitted. An empty one configures a
+    // stage exactly as the environment does, and returning no context at all
+    // would be indistinguishable, to the host, from a resolver that does not
+    // implement contexts -- when what happened is that it read the string and
+    // said what was wrong with it.
+    return ArResolverContext(HttpResolverContext(std::move(overrides)));
+}
+
+bool HttpResolver::_IsContextDependentPath(const std::string& assetPath) const {
+    // Every path that reaches this resolver is one of its own: the dispatching
+    // resolver routes by scheme. See the header for why the answer is yes.
+    (void)assetPath;
+    return true;
+}
+
+HttpResolver::_Effective HttpResolver::_EffectiveConfiguration() const {
+    const HttpResolverContext* context =
+        _GetCurrentContextObject<HttpResolverContext>();
+    if (context == nullptr || context->GetOverrides().empty()) return _base;
+
+    // Resolved per call rather than cached per context. It is a dozen short
+    // string parses against a request that crosses a network, and a cache
+    // keyed by context would be a second table to bound, lock, and get wrong
+    // for no measurable return. No problems are collected: the context's were
+    // reported when it was created, and the environment's when this resolver
+    // was.
+    const usdhttpresolver::ResolverConfiguration configuration =
+        usdhttpresolver::ConfigurationFrom(
+            usdhttpresolver::Layered(context->GetOverrides(),
+                                     usdhttpresolver::LookupIn(_environment)),
+            nullptr);
+
+    _Effective effective;
+    effective.transport = configuration.transport;
+    effective.cache = configuration.cache.Normalized();
+    effective.fingerprint = usdhttpresolver::TransportFingerprint(effective.transport);
+    return effective;
+}
+
+std::string HttpResolver::_OpenKey(const std::string& identifier,
+                                   const _Effective& effective) {
+    // A newline cannot appear in a normalized identifier -- it is a control
+    // byte, and normalization encodes those -- so the two halves cannot run
+    // into each other.
+    return identifier + '\n' + effective.fingerprint;
 }
 
 bool HttpResolver::_RememberIdentity(
@@ -363,6 +451,7 @@ bool HttpResolver::_KnownIdentity(const std::string& identifier,
 
 bool HttpResolver::_IdentityFor(const std::string& identifier,
                                 bool mayOpen,
+                                const _Effective& effective,
                                 usdasset::AssetMetadata* metadata,
                                 bool* contradicted) const {
     if (_KnownIdentity(identifier, metadata, contradicted)) return true;
@@ -372,12 +461,13 @@ bool HttpResolver::_IdentityFor(const std::string& identifier,
     // bounded table. Opening it here goes through the same retained table
     // `_Resolve` fills, so the metadata request this costs is the one an
     // `_OpenAsset` that follows would have made rather than an extra one.
-    const std::shared_ptr<_Opened> entry = _GetOrCreate(identifier);
+    const std::string key = _OpenKey(identifier, effective);
+    const std::shared_ptr<_Opened> entry = _GetOrCreate(key);
 
     {
         std::lock_guard<std::mutex> lock(entry->mutex);
         if (!entry->opened) {
-            entry->result = usdasset::http::Open(identifier, _options);
+            entry->result = usdasset::http::Open(identifier, effective.transport);
             entry->opened = true;
             if (entry->result.reader) {
                 entry->metadata = entry->result.reader->Metadata();
@@ -400,30 +490,30 @@ bool HttpResolver::_IdentityFor(const std::string& identifier,
     // nothing is posted: this is a question about identity rather than an
     // operation on the asset, and the operation that follows reports the same
     // failure with the same code. One fault rendered twice is noise.
-    _Forget(identifier, entry);
+    _Forget(key, entry);
     return false;
 }
 
 std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(
-    const std::string& identifier) const {
+    const std::string& key) const {
     // Declared before the lock, and therefore destroyed after it is released.
     //
     // That ordering is the whole point of this vector. Dropping the last
     // reference to an evicted entry runs `~HttpAssetReader`, which tears down a
     // connection -- a socket close, and a TLS shutdown that can put bytes on the
     // wire. Doing that while holding the table lock would block every unrelated
-    // identifier's resolution behind one eviction, which is exactly the "no lock
+    // key's resolution behind one eviction, which is exactly the "no lock
     // across a request" property RESOLVER.md §7 requires.
     std::vector<std::shared_ptr<_Opened>> evicted;
 
     std::lock_guard<std::mutex> lock(_tableMutex);
 
-    const auto found = _table.find(identifier);
+    const auto found = _table.find(key);
     if (found != _table.end()) return found->second;
 
     std::shared_ptr<_Opened> entry = std::make_shared<_Opened>();
-    _table.emplace(identifier, entry);
-    _order.push_back(identifier);
+    _table.emplace(key, entry);
+    _order.push_back(key);
 
     while (_order.size() > kMaxRetainedOpens) {
         // The evicted entry may still be held by a thread that is opening it;
@@ -440,16 +530,16 @@ std::shared_ptr<HttpResolver::_Opened> HttpResolver::_GetOrCreate(
 }
 
 std::shared_ptr<HttpResolver::_Opened> HttpResolver::_Take(
-    const std::string& identifier) const {
+    const std::string& key) const {
     std::lock_guard<std::mutex> lock(_tableMutex);
 
-    const auto found = _table.find(identifier);
+    const auto found = _table.find(key);
     if (found == _table.end()) return nullptr;
 
     std::shared_ptr<_Opened> entry = found->second;
     _table.erase(found);
     for (auto it = _order.begin(); it != _order.end(); ++it) {
-        if (*it == identifier) {
+        if (*it == key) {
             _order.erase(it);
             break;
         }
@@ -457,7 +547,7 @@ std::shared_ptr<HttpResolver::_Opened> HttpResolver::_Take(
     return entry;
 }
 
-void HttpResolver::_Forget(const std::string& identifier,
+void HttpResolver::_Forget(const std::string& key,
                            const std::shared_ptr<_Opened>& entry) const {
     // Same ordering argument as `_GetOrCreate`: whatever this drops is dropped
     // after the lock is released. A forgotten entry is a failed open and so
@@ -467,7 +557,7 @@ void HttpResolver::_Forget(const std::string& identifier,
 
     std::lock_guard<std::mutex> lock(_tableMutex);
 
-    const auto found = _table.find(identifier);
+    const auto found = _table.find(key);
     if (found == _table.end() || found->second != entry) {
         // Somebody else has already replaced this entry. Theirs is newer than
         // the failure being forgotten, and is not ours to discard.
@@ -477,7 +567,7 @@ void HttpResolver::_Forget(const std::string& identifier,
     _table.erase(found);
 
     for (auto it = _order.begin(); it != _order.end(); ++it) {
-        if (*it == identifier) {
+        if (*it == key) {
             _order.erase(it);
             break;
         }
