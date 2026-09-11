@@ -11,6 +11,46 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
+## Unreleased
+
+The start of `v0.7.0`: the bounds §10 of the design policy names and the tree
+did not yet enforce.
+
+### Added
+
+- **A bound on the response header block**, 64 KiB per exchange and summed
+  across interim `1xx` responses, counted in the transport before a line is
+  stored. With the caller's buffer bounding the body, a response can no longer
+  choose how much this process allocates for it, which is the whole of §10.1's
+  "bound the response header block and the total response size". A response
+  abandoned at the bound is refused whole, as `InvalidResponse` naming the
+  bound, whatever its status — its status line arrived intact, and an open that
+  read `Content-Length` and `Accept-Ranges` out of the prefix that fit would be
+  acting on a response nobody finished receiving. It is not retried: asking
+  again does not make the block smaller.
+
+  The bound was not optional, and the corpus is how that is known rather than
+  argued. With it removed, libcurl 8.7.1 opens an asset behind a megabyte of
+  ordinary header fields without complaint; the library's own ceilings are on a
+  single line, and a block of kilobyte lines never reaches them.
+
+- **`OversizedHeaders`**, a nineteenth corpus row: a correct response padded
+  with a megabyte of kilobyte-sized fields, placed after the ones that matter.
+  Kilobyte fields rather than one enormous one, so that what a client has to
+  bound is the block and not the line — a row made of one huge line would be
+  caught by the library's limit and would prove nothing about the client's. The
+  self-test asserts the size from the bytes on the wire and everything else
+  about the response against the Normal row, so a client cannot pass by
+  refusing a response that was also malformed.
+
+- **The scheme allowlist, asserted at the redirect hop.** It already held, as a
+  consequence of a `Location` going through the same parser as an identifier;
+  it is now a case, because a consequence is the kind of property nothing
+  notices losing. Seven targets are refused and never requested — `file:` in
+  two spellings, `ftp:`, `gopher:`, `data:`, `s3:`, and an `https:` with no
+  authority — and the two scheme-less forms that stay inside the allowlist, a
+  network-path reference and an absolute path, are still followed.
+
 ## `v0.5.0` - 2026-08-27
 
 The resolver becomes an independently composable geospatial-runtime component.

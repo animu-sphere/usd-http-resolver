@@ -17,6 +17,7 @@ const std::vector<Behavior>& AllBehaviors() {
         Behavior::ContentRangeTooShort,
         Behavior::ContentRangeShifted,
         Behavior::UnknownContentLength,
+        Behavior::OversizedHeaders,
         Behavior::ValidatorChangeMidRead,
         Behavior::RedirectChain,
         Behavior::RedirectLoop,
@@ -41,6 +42,7 @@ const char* BehaviorName(Behavior behavior) noexcept {
         case Behavior::ContentRangeTooShort: return "ContentRangeTooShort";
         case Behavior::ContentRangeShifted: return "ContentRangeShifted";
         case Behavior::UnknownContentLength: return "UnknownContentLength";
+        case Behavior::OversizedHeaders: return "OversizedHeaders";
         case Behavior::ValidatorChangeMidRead: return "ValidatorChangeMidRead";
         case Behavior::RedirectChain: return "RedirectChain";
         case Behavior::RedirectLoop: return "RedirectLoop";
@@ -73,6 +75,8 @@ const char* BehaviorDescription(Behavior behavior) noexcept {
             return "206 whose Content-Range starts at a different offset";
         case Behavior::UnknownContentLength:
             return "200 with no Content-Length, body delimited by close";
+        case Behavior::OversizedHeaders:
+            return "a correct response padded with headerBytes of header fields";
         case Behavior::ValidatorChangeMidRead:
             return "the ETag and content change underneath an open reader";
         case Behavior::RedirectChain:

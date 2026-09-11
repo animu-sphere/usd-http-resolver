@@ -51,6 +51,11 @@ struct Exchange {
     /// then stalled", which `Timeout` is required to name.
     bool headersComplete = false;
 
+    /// Header bytes delivered so far on this exchange, interim responses
+    /// included, and whether they ran past `kMaxResponseHeaderBytes`.
+    std::size_t headerBytes = 0;
+    bool headersTooLarge = false;
+
     unsigned char* body = nullptr;
     std::size_t capacity = 0;
     std::size_t written = 0;
@@ -69,6 +74,18 @@ struct Exchange {
 std::size_t OnHeader(char* data, std::size_t size, std::size_t count, void* userdata) {
     Exchange& exchange = *static_cast<Exchange*>(userdata);
     const std::size_t bytes = size * count;
+
+    // Counted before the line is copied or stored, so that the bound holds for
+    // the allocation it exists to prevent rather than for the one after it.
+    // Returning anything other than `bytes` aborts the transfer, which libcurl
+    // reports as a write error; `headersTooLarge` is what tells that apart from
+    // the body bound's own abort below.
+    if (bytes > kMaxResponseHeaderBytes - exchange.headerBytes) {
+        exchange.headersTooLarge = true;
+        return 0;
+    }
+    exchange.headerBytes += bytes;
+
     std::string line(data, bytes);
 
     while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
@@ -214,6 +231,18 @@ TransportError ClassifyCurlError(CURLcode code, const Exchange& exchange, bool c
         case CURLE_URL_MALFORMAT:
         case CURLE_WEIRD_SERVER_REPLY:
             return TransportError::Malformed;
+
+#if LIBCURL_VERSION_NUM >= 0x080600
+        case CURLE_TOO_LARGE:
+            // libcurl's own ceilings -- one header line past 100 KiB, or a
+            // block past its total -- fire before `OnHeader` ever sees the
+            // line, so the refusal is the library's rather than this file's.
+            // It is the same fact about the server, and it is reported as one.
+            // Older libcurl names it something vaguer, and that is classified
+            // below as a transport fault: failed closed either way, and only
+            // the words differ.
+            return TransportError::HeadersTooLarge;
+#endif
 
         case CURLE_OUT_OF_MEMORY:
             return TransportError::Internal;
@@ -392,7 +421,19 @@ public:
         response.bodyOverflowed = exchange.overflowed;
         response.connected = pretransferTime > 0;
 
-        if (code == CURLE_WRITE_ERROR && exchange.overflowed) {
+        if (code == CURLE_WRITE_ERROR && exchange.headersTooLarge) {
+            // Abandoned by `OnHeader`, at the bound. The status line may well
+            // have arrived and been perfectly ordinary; what the response did
+            // not do was finish describing itself within the space it was
+            // given, and nothing it said is worth acting on.
+            //
+            // So none of it is handed up. The table holds the first 64 KiB of
+            // a block that did not end, and a `Content-Length` or an
+            // `Accept-Ranges` found in it would be a fact read out of a
+            // response nobody finished receiving.
+            response.error = TransportError::HeadersTooLarge;
+            response.headers.Clear();
+        } else if (code == CURLE_WRITE_ERROR && exchange.overflowed) {
             // Not a failure. The transfer was cut off deliberately, by this
             // file, because the server had more to send than the caller was
             // willing to receive. Whether that is an error depends on what the

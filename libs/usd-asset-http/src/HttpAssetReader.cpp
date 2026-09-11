@@ -147,6 +147,15 @@ Status ProjectTransportError(TransportError error, const Uri& uri) {
         case TransportError::Malformed:
             return Status::Error(StatusCode::InvalidResponse,
                                  "the response could not be parsed as HTTP" + Where(uri));
+        case TransportError::HeadersTooLarge:
+            // `InvalidResponse`, because what a caller does about it is what it
+            // does about any other response it cannot use: nothing, and tell a
+            // human. The bound is named so that the human can tell an origin
+            // that misbehaved from a limit that was too tight.
+            return Status::Error(StatusCode::InvalidResponse,
+                                 "the response header block exceeded " +
+                                     std::to_string(kMaxResponseHeaderBytes) +
+                                     " bytes" + Where(uri));
         case TransportError::Internal:
             return Status::Error(StatusCode::NetworkError,
                                  "the HTTP client could not issue the request" +
@@ -330,6 +339,21 @@ ExchangeResult PerformExchange(Transport& transport,
         }
 
         result.finalUri = current;
+
+        if (response.error == TransportError::HeadersTooLarge) {
+            // Before the status is looked at, because the status is the one
+            // part of this response that did arrive intact. A `200` whose
+            // header block never ended is not a `200` with some headers: it is
+            // a response that was abandoned, and letting it through to the
+            // branches below would have an open judge `Content-Length` and
+            // `Accept-Ranges` from whichever prefix of the block fit.
+            result.response = std::move(response);
+            result.status = ProjectTransportError(result.response.error, current);
+            if (result.response.status != 0) {
+                result.status.WithTransportStatus(result.response.status);
+            }
+            return result;
+        }
 
         if (response.status == 0) {
             result.response = std::move(response);

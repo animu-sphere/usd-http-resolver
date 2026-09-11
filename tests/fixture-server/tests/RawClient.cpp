@@ -195,6 +195,7 @@ RawResponse RawClient::ReadResponse(int timeoutMs, bool expectBody) {
     const std::string head = _buffered.substr(0, headEnd + 4);
     _buffered.erase(0, headEnd + 4);
     response.headElapsedMs = ElapsedMs(started);
+    response.headBytes = head.size();
 
     if (!ParseHead(head, &response)) {
         response.end = ResponseEnd::Error;

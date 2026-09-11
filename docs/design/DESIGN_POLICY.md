@@ -446,14 +446,16 @@ because a redirect target is parsed by the same parser as an original identifier
 and that parser accepts two schemes. A `Location` naming `file:` is an unusable
 location, not a followed one.
 
-Two things are named here as scope rather than as shipped properties. The
+The response header block is bounded too, at 64 KiB per exchange, which with the
+caller's buffer bounding the body is the whole of §10.1's "total response size".
+
+One thing is named here as scope rather than as a shipped property. The
 destination policy — whether loopback and private-network addresses are
 reachable — does not exist, and its difficulty is that the hostile-server corpus
 *is* loopback, so the setting has to distinguish a fixture from a deployment
-rather than forbid one to protect the other. Nor is the response header block
-separately bounded; today the caller's buffer bounds the body and nothing bounds
-what precedes it. Both land with the configuration surface, because a policy with
-no way to state it is a default nobody can override.
+rather than forbid one to protect the other. It lands with the configuration
+surface, because a policy with no way to state it is a default nobody can
+override.
 
 ## 11. Testing
 

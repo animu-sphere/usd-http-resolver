@@ -109,10 +109,43 @@ enum class TransportError {
     IncompleteBody,
     /// The response could not be parsed as HTTP at all.
     Malformed,
+    /// The header block ran past `kMaxResponseHeaderBytes`, and the exchange
+    /// was abandoned before the block ended. Separate from `Malformed` because
+    /// every line that arrived may have been perfectly well formed -- what was
+    /// wrong was how many of them there were.
+    HeadersTooLarge,
     /// The transport itself failed -- out of memory, a handle that would not
     /// initialize. Never a property of the server.
     Internal,
 };
+
+/// The most header bytes one exchange may deliver: status lines, fields, and
+/// line terminators, counted as they arrive and summed across every interim
+/// `1xx` response on the exchange.
+///
+/// §10.1 of the design policy requires a bound on "the response header block
+/// and the total response size, not only the body the caller asked for". The
+/// body already has one -- `TransportRequest::bodyCapacity`, sized from what
+/// the caller asked for -- and this is the other half. Without it, the header
+/// table is a buffer whose size the server chooses: one response of ten million
+/// short fields is ten million allocations in a process that asked for 64 KiB.
+///
+/// Summed across interim responses rather than reset at each status line,
+/// because a server that sends an unending stream of small `100 Continue`s is
+/// the same attack spelled differently, and a bound that restarts at every
+/// status line bounds nothing.
+///
+/// A bound and not a tuned value, and labelled as one for invariant 11's sake.
+/// Real origins send a few hundred bytes to a few kilobytes, and nginx, the
+/// commonest thing in front of one, refuses by default to relay a response
+/// whose header block does not fit in one memory page. 64 KiB is an order of
+/// magnitude of headroom over that, and below libcurl's own 100 KiB ceiling on
+/// a single line, so for a block of ordinary lines this bound is the one that
+/// decides rather than the library's. It is a constant rather than a variable
+/// for the reason CONFIGURATION.md §3 gives about the cache bypass threshold: it
+/// is a correctness-of-policy rule, and a deployment that could raise it
+/// without limit could remove it.
+constexpr std::size_t kMaxResponseHeaderBytes = 64 * 1024;
 
 const char* TransportErrorName(TransportError error) noexcept;
 

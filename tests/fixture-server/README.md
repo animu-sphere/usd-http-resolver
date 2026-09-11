@@ -48,7 +48,7 @@ ctest --test-dir build/core -R usdAssetFixture_corpus
 
 ## The corpus
 
-§11.2 of the design policy names nine conditions. Each has a row, and three
+§11.2 of the design policy names nine conditions. Each has a row, and four
 more rows come from constraints fixed elsewhere:
 
 | Behavior | Condition | Required by |
@@ -60,6 +60,7 @@ more rows come from constraints fixed elsewhere:
 | `ContentRangeTooShort` | `206` accurately describing a range shorter than the request | §11.2; the example in [DIAGNOSTICS.md](../../docs/architecture/DIAGNOSTICS.md) §6 |
 | `ContentRangeShifted` | `206` describing a range at a different offset | §11.2; a different check from the row above — start, not length |
 | `UnknownContentLength` | `200` with no `Content-Length`, body delimited by close | ADR-0003: the client must be able to refuse it |
+| `OversizedHeaders` | A correct response padded with `headerBytes` (a megabyte) of kilobyte-sized header fields, after the ones that matter | §10.1 of the design policy: the header block is bounded, not only the body |
 | `ValidatorChangeMidRead` | The `ETag` and content change underneath an open reader | §11.2, and §6 of the design policy |
 | `RedirectChain` | `redirectHops` `302`s, then the asset | §11.2 |
 | `RedirectLoop` | A `302` pointing at its own path, unbounded by the server | ADR-0003: bounding a chain is this repository's counter, not the library's |

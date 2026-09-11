@@ -55,7 +55,12 @@ struct Knobs {
     int delayMs = 1000;
     int changeAfterRequests = 1;
     int transientFailures = 1;
+    std::size_t headerBytes = 0;
 };
+
+/// The longest padding field OversizedHeaders emits. Small enough that no
+/// client's ceiling on a single line is what refuses the block; see Corpus.h.
+constexpr std::size_t kPaddingFieldBytes = 1024;
 
 struct AssetState {
     Knobs knobs;
@@ -142,6 +147,7 @@ public:
         state.knobs.delayMs = spec.delayMs;
         state.knobs.changeAfterRequests = spec.changeAfterRequests;
         state.knobs.transientFailures = spec.transientFailures;
+        state.knobs.headerBytes = spec.headerBytes;
         state.current = std::move(current);
         state.pending = std::move(pending);
 
@@ -652,6 +658,26 @@ private:
             // the connection does, and a client that accepts this cannot tell a
             // complete response from a truncated one.
             headers.emplace_back("Connection", "close");
+        }
+
+        if (effective == Behavior::OversizedHeaders) {
+            // After every field that matters, so that a client which stops
+            // reading at some bound has already been handed a complete-looking
+            // `Content-Length` and `Accept-Ranges`. That is the harder case: a
+            // client that acts on the prefix it managed to read opens the asset
+            // on the strength of a response it never finished receiving.
+            //
+            // Distinct names, because a client is entitled to fold repeated
+            // fields together, and one that did would be bounding something
+            // other than the block.
+            const std::string filler(kPaddingFieldBytes, 'x');
+            std::size_t remaining = plan.knobs.headerBytes;
+            for (std::size_t index = 0; remaining > 0; ++index) {
+                const std::size_t take = std::min(remaining, filler.size());
+                headers.emplace_back("X-Padding-" + std::to_string(index),
+                                     filler.substr(0, take));
+                remaining -= take;
+            }
         }
 
         // Logged once the status line is on the wire, and logged as `0` when it

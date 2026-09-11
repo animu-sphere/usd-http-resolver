@@ -83,6 +83,20 @@ enum class Behavior {
     /// this rather than one that helpfully accumulates until EOF.
     UnknownContentLength,
 
+    /// A correct response -- status, framing, validator, and body all right --
+    /// whose header block carries `headerBytes` of padding in fields that are
+    /// each well formed and individually unremarkable. The block does end; what
+    /// is wrong with it is its size. §10.1 of the design policy requires a
+    /// client to bound the header block and not only the body, and a client
+    /// that buffers until the blank line is a client whose allocation the
+    /// server chooses.
+    ///
+    /// Every field is at most a kilobyte, far under any client's ceiling on a
+    /// single line, so that what a client has to bound here is the block. A row
+    /// made of one enormous line would be caught by the library's line limit
+    /// and would prove nothing about the client's own.
+    OversizedHeaders,
+
     /// The validator and the content change after `changeAfterRequests`
     /// requests. A later request carrying the old `If-Range` gets `200` and the
     /// whole *new* body, per RFC 9110 §13.1.5 -- which is `AssetChanged`, and
@@ -195,6 +209,12 @@ struct AssetSpec {
     /// Requests answered with `503` before service resumes, for
     /// TransientServerError.
     int transientFailures = 1;
+
+    /// Bytes of padding OversizedHeaders adds to every response's header
+    /// block, beyond the fields an ordinary response carries. A megabyte is two
+    /// orders of magnitude past any header block an ordinary origin sends, so a
+    /// client that accepts it has no bound worth the name.
+    std::size_t headerBytes = 1024 * 1024;
 };
 
 }  // namespace usdassetfixture

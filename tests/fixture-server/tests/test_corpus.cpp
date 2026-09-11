@@ -422,6 +422,45 @@ void TestUnknownContentLength(Server& server,
     CHECK(BodyEquals(response, content, 0, kSize));
 }
 
+void TestOversizedHeaders(Server& server, const std::vector<unsigned char>& content) {
+    CaseScope scope(BehaviorName(Behavior::OversizedHeaders));
+    Exercised(Behavior::OversizedHeaders);
+    const unsigned short port = server.Port();
+
+    // The row's claim is that the block is large and nothing else is wrong. So
+    // the size is asserted from the bytes on the wire, and everything else is
+    // asserted to be exactly what the Normal row puts there -- a response that
+    // was also malformed would let a client pass for refusing the wrong thing.
+    const RawResponse head =
+        FetchOnce(port, HeadRequest("/oversized-headers"), 5000, false);
+    CHECK_STATUS(head, 200);
+    CHECK(head.headBytes > 256 * 1024);
+    CHECK_EQ(head.Header("Accept-Ranges"), std::string("bytes"));
+    CHECK_EQ(head.Header("Content-Length"), std::to_string(kSize));
+    CHECK_EQ(head.Header("ETag"), std::string("\"v1\""));
+
+    // Many ordinary lines rather than one enormous one, so that what a client
+    // has to bound is the block. Checked field by field: a single line past a
+    // client's per-line ceiling would be refused by that ceiling and would say
+    // nothing about the client's own bound.
+    std::size_t padding = 0;
+    for (const auto& field : head.headers) {
+        if (field.first.compare(0, 10, "X-Padding-") != 0) continue;
+        ++padding;
+        CHECK(field.second.size() <= 1024);
+    }
+    CHECK(padding > 256);
+
+    // And the ranged GET is the Normal row's, padded the same way.
+    const RawResponse ranged =
+        FetchOnce(port, GetRequest("/oversized-headers", {{"Range", "bytes=16-47"}}));
+    CHECK_STATUS(ranged, 206);
+    CHECK(ranged.headBytes > 256 * 1024);
+    CHECK_EQ(ranged.Header("Content-Range"),
+             "bytes 16-47/" + std::to_string(kSize));
+    CHECK(BodyEquals(ranged, content, 16, 32));
+}
+
 // --- revision binding --------------------------------------------------------
 
 void TestValidatorChangeMidRead(Server& server,
@@ -940,6 +979,7 @@ void RegisterFixtures(Server& server, const std::vector<unsigned char>& content)
     server.Serve(base("/short-range", Behavior::ContentRangeTooShort));
     server.Serve(base("/shifted-range", Behavior::ContentRangeShifted));
     server.Serve(base("/unknown-length", Behavior::UnknownContentLength));
+    server.Serve(base("/oversized-headers", Behavior::OversizedHeaders));
     server.Serve(base("/loop", Behavior::RedirectLoop));
     server.Serve(base("/always-416", Behavior::RangeNotSatisfiable));
     server.Serve(base("/missing", Behavior::NotFound));
@@ -1050,6 +1090,7 @@ int main() {
     TestContentRangeTooShort(*server, content);
     TestContentRangeShifted(*server, content);
     TestUnknownContentLength(*server, content);
+    TestOversizedHeaders(*server, content);
     TestValidatorChangeMidRead(*server, content);
     TestRepublish(*server);
     TestRedirectChain(*server, content);

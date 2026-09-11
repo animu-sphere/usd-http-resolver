@@ -131,7 +131,15 @@ HTTP/1.1 over libcurl, with almost every convenience turned off:
 | Raw response status | ADR-0002 makes a `200` answering a `Range` request `RangeNotSupported`, and a client that normalizes a partial response into "here are your bytes" cannot implement that |
 | `Accept-Encoding: identity` | A compressed range response would make the byte accounting describe the wire rather than the asset |
 | Bounded write callback | The caller's buffer is the bound. A server answering a 64 KiB range request with a 10 GB body moves 64 KiB and is then cut off |
+| Bounded header callback | 64 KiB per exchange, interim responses included (`kMaxResponseHeaderBytes`). Without it the header table is a buffer whose size the server chooses: libcurl 8.7.1 on its own accepts a megabyte of ordinary header fields, measured against the corpus's `OversizedHeaders` row |
 | `CURLOPT_NOSIGNAL` | libcurl's alarm-based DNS timeout is not safe to use from a thread |
+
+The two bounded callbacks together are the whole of §10.1's "bound the response
+header block and the total response size": a response can deliver at most 64 KiB
+of header and at most what the caller's buffer holds of body, whatever it
+declares. A response abandoned at the header bound is refused whole — its status
+line arrived intact, and an open that read a `Content-Length` out of the prefix
+that fit would be acting on a response nobody finished receiving.
 
 No libcurl error string ever reaches a `Status::message`. They embed the
 effective URL, and a message built from one would undo the credential elision
@@ -216,6 +224,7 @@ response whose weak validator has changed is still positive evidence of
 | Redirect chain past `maxRedirects`; no `Location`; unusable `Location` | `InvalidResponse` |
 | `https` → `http` redirect | `InvalidResponse` |
 | Response that is not HTTP | `InvalidResponse` |
+| Header block past 64 KiB, at any status | `InvalidResponse`, naming the bound; not retried |
 | DNS, refusal, TLS handshake, reset connection | `NetworkError` |
 | `5xx` or `429` after the retry budget | `NetworkError`, with the status attached |
 | Connect, response, or transfer deadline | `Timeout`, naming which |
