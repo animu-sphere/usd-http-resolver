@@ -48,7 +48,7 @@ using EnvironmentLookup =
 
 /// The transport options `lookup` describes, starting from the defaults.
 ///
-/// Every variable is independent: one bad value leaves the other four in force
+/// Every variable is independent: one bad value leaves the others in force
 /// rather than discarding the whole configuration.
 usdasset::http::HttpOptions OptionsFrom(
     const EnvironmentLookup& lookup,

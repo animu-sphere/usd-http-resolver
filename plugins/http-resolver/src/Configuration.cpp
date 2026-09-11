@@ -15,6 +15,7 @@ constexpr const char* kReadTimeout = "USD_HTTP_RESOLVER_READ_TIMEOUT_MS";
 constexpr const char* kTotalTimeout = "USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS";
 constexpr const char* kMaxRetries = "USD_HTTP_RESOLVER_MAX_RETRIES";
 constexpr const char* kMaxRedirects = "USD_HTTP_RESOLVER_MAX_REDIRECTS";
+constexpr const char* kDestinations = "USD_HTTP_RESOLVER_DESTINATIONS";
 
 constexpr const char* kBlockSize = "USD_HTTP_RESOLVER_BLOCK_SIZE";
 constexpr const char* kCacheBudget = "USD_HTTP_RESOLVER_CACHE_BUDGET";
@@ -87,6 +88,76 @@ void ReadInto(const EnvironmentLookup& lookup, const char* name, long long min,
         return;
     }
     *target = static_cast<int>(value);
+}
+
+/// Parses a destination set: address class names separated by commas, each
+/// spelled as `AddressClassName` spells it.
+///
+/// A set rather than a level, because the four classes are not an order. An
+/// intranet-only deployment permits `private` and refuses `public`; a render
+/// farm permits `public` and refuses the rest; neither is a point on a scale
+/// that also contains the other.
+///
+/// Whitespace around a name is tolerated -- `public, private` is how a person
+/// writes a list -- and nothing else is. An unknown name refuses the whole
+/// value rather than the one name, because a policy that silently dropped the
+/// word it did not recognize is a different policy from the one written, and
+/// the difference is always in the direction of a destination nobody meant to
+/// permit or refuse.
+bool ParseDestinations(const std::string& text, usdasset::http::DestinationPolicy* out,
+                       std::string* reasonOut) {
+    using usdasset::http::AddressClass;
+
+    if (text.empty()) {
+        *reasonOut = "empty";
+        return false;
+    }
+
+    usdasset::http::DestinationPolicy policy;
+    policy.publicAddresses = false;
+    policy.privateNetworks = false;
+    policy.loopback = false;
+    policy.linkLocal = false;
+
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t comma = text.find(',', at);
+        std::string name = text.substr(
+            at, comma == std::string::npos ? std::string::npos : comma - at);
+        const std::size_t first = name.find_first_not_of(" \t");
+        const std::size_t last = name.find_last_not_of(" \t");
+        name = first == std::string::npos ? std::string()
+                                          : name.substr(first, last - first + 1);
+
+        if (name.empty()) {
+            *reasonOut = "an empty entry in the list";
+            return false;
+        }
+        const AddressClass classes[] = {AddressClass::Public, AddressClass::Private,
+                                        AddressClass::Loopback, AddressClass::LinkLocal};
+        bool known = false;
+        for (const AddressClass addressClass : classes) {
+            if (name != usdasset::http::AddressClassName(addressClass)) continue;
+            known = true;
+            switch (addressClass) {
+                case AddressClass::Public: policy.publicAddresses = true; break;
+                case AddressClass::Private: policy.privateNetworks = true; break;
+                case AddressClass::Loopback: policy.loopback = true; break;
+                case AddressClass::LinkLocal: policy.linkLocal = true; break;
+            }
+        }
+        if (!known) {
+            *reasonOut = "unknown address class '" + name +
+                         "'; expected public, private, loopback, or link-local";
+            return false;
+        }
+
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
+
+    *out = policy;
+    return true;
 }
 
 /// The 64-bit form of `ReadInto`, for the variables that are byte counts.
@@ -245,6 +316,19 @@ usdasset::http::HttpOptions OptionsFrom(
     // Zero redirects is legal and means "refuse to follow any".
     ReadInto(lookup, kMaxRedirects, 0, 100, &options.maxRedirects, problemsOut);
 
+    // The destination policy of §10.2. Unset is the documented default --
+    // `public,private,loopback`, which is `DestinationPolicy`'s own -- and not
+    // "everything": a deployment that says nothing about link-local does not
+    // reach the instance-metadata address by accident.
+    std::string destinations;
+    if (lookup(kDestinations, &destinations)) {
+        std::string reason;
+        if (!ParseDestinations(destinations, &options.destinations, &reason) &&
+            problemsOut != nullptr) {
+            problemsOut->push_back({kDestinations, destinations, reason});
+        }
+    }
+
     return options;
 }
 
@@ -292,7 +376,8 @@ const std::vector<const char*>& ConfiguredVariables() {
         kReadTimeout,
         kTotalTimeout,
         kMaxRetries,
-        kMaxRedirects};
+        kMaxRedirects,
+        kDestinations};
     return variables;
 }
 

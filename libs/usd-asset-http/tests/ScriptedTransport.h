@@ -56,6 +56,11 @@ struct SentRequest {
     std::string range;
     std::string ifRange;
     std::size_t capacity = 0;
+    /// What the transport was told to admit. The connect-time half of the
+    /// destination policy is the transport's to enforce, so the policy has to
+    /// reach it on every request -- redirect hops and reads included -- and a
+    /// request that arrived without it is a request judged by the default.
+    usdasset::http::DestinationPolicy destinations;
 };
 
 /// The script: a function of the request and how many have come before it.
@@ -89,6 +94,7 @@ public:
             sent.range = request.range;
             sent.ifRange = request.ifRange;
             sent.capacity = request.bodyCapacity;
+            sent.destinations = request.destinations;
             _script->sent.push_back(std::move(sent));
             index = static_cast<int>(_script->sent.size()) - 1;
         }

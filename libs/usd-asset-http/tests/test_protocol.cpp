@@ -910,6 +910,104 @@ void TestRedirectTargetsAreHeldToTheSchemeAllowlist() {
     }
 }
 
+void TestDestinationPolicy() {
+    // §10.2 of the design policy: reach is bounded by declared policy. These
+    // are the halves of it that are the protocol layer's -- the pre-flight on a
+    // literal address, at every hop, and the projection of the transport's own
+    // refusal. The connect-time half is the transport's, and is exercised over
+    // a real socket in `tests/corpus`.
+    {
+        // The default refuses link-local, and a literal is refused before any
+        // request is issued for it: the instance-metadata address never sees a
+        // packet from this process.
+        auto script = MakeScript(Wellbehaved("\"v1\""));
+        const HttpOpenResult opened = usdasset::http::testing::OpenWithTransport(
+            "http://169.254.169.254/latest/meta-data/", HttpOptions(), Factory(script));
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+        CHECK(opened.reader == nullptr);
+        CHECK(opened.status.message.find("link-local") != std::string::npos);
+        CHECK_EQ(script->Count(), 0);
+    }
+    {
+        // And at a redirect hop, which is where a hostile origin would put it.
+        // Every spelling that carries the refused address in another family is
+        // the same refusal.
+        const char* const targets[] = {
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::ffff:169.254.169.254]/latest/meta-data/",
+            "https://[fe80::1%25en0]/x",
+        };
+        for (const char* target : targets) {
+            auto script = MakeScript([target](const TransportRequest&, int) {
+                return RedirectResponse(target);
+            });
+            const HttpOpenResult opened = OpenWith(script);
+            CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+            // One request: the one that discovered the hop.
+            CHECK_EQ(script->Count(), 1);
+        }
+    }
+    {
+        // A narrower policy refuses what it says, and nothing else. Loopback
+        // is permitted by default -- the fixture server is loopback -- and a
+        // deployment that refuses it gets the refusal it asked for.
+        HttpOptions options;
+        options.destinations.loopback = false;
+        auto script = MakeScript(Wellbehaved("\"v1\""));
+        const HttpOpenResult refused = usdasset::http::testing::OpenWithTransport(
+            "http://127.0.0.1:8080/a.usda", options, Factory(script));
+        CHECK_EQ(refused.status.code, StatusCode::AccessDenied);
+        CHECK(refused.status.message.find("loopback") != std::string::npos);
+        CHECK_EQ(script->Count(), 0);
+
+        const HttpOpenResult permitted = usdasset::http::testing::OpenWithTransport(
+            "http://127.0.0.1:8080/a.usda", HttpOptions(), Factory(script));
+        CHECK(permitted.reader != nullptr);
+    }
+    {
+        // The policy reaches the transport on every request -- the metadata
+        // request, each redirect hop, and every read -- because the
+        // connect-time half is judged there and a request without it would be
+        // judged by the default instead.
+        HttpOptions options;
+        options.destinations.privateNetworks = false;
+        options.destinations.linkLocal = true;
+        auto script = MakeScript([](const TransportRequest& request, int index) {
+            if (index == 0) return RedirectResponse("/moved.copc");
+            if (request.method == Method::Head) return MetadataResponse(kSize, "\"v1\"");
+            return PartialResponse(request, 0, kSize, "\"v1\"", 0xA5);
+        });
+        HttpOpenResult opened = OpenWith(script, options);
+        CHECK(opened.reader != nullptr);
+        if (opened.reader) {
+            std::vector<unsigned char> buffer(64, 0);
+            CHECK_EQ(opened.reader->Read(0, buffer.data(), 64).status.code,
+                     StatusCode::Ok);
+        }
+        CHECK_EQ(script->Count(), 3);
+        for (const usdassethttptest::SentRequest& sent : script->sent) {
+            CHECK(sent.destinations == options.destinations);
+        }
+    }
+    {
+        // The transport's refusal -- every address the name resolved to was
+        // refused -- is `AccessDenied` naming the class, and is not retried:
+        // asking again asks the same rule the same question.
+        auto script = MakeScript([](const TransportRequest&, int) {
+            TransportResponse response =
+                TransportFailure(TransportError::DestinationRefused);
+            response.refusedClass = usdasset::http::AddressClass::Private;
+            return response;
+        });
+        HttpOptions options;
+        options.maxAttempts = 3;
+        const HttpOpenResult opened = OpenWith(script, options);
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+        CHECK(opened.status.message.find("private") != std::string::npos);
+        CHECK_EQ(script->Count(), 1);
+    }
+}
+
 void TestCallerErrors() {
     auto script = MakeScript(Wellbehaved("\"v1\""));
     HttpOpenResult opened = OpenWith(script);
@@ -949,6 +1047,7 @@ int main() {
     TestConflictingContentLengthIsRefused();
     TestAbandonedHeaderBlockIsNotAResponse();
     TestRedirectTargetsAreHeldToTheSchemeAllowlist();
+    TestDestinationPolicy();
     TestCallerErrors();
     return usdassettest::Report("usdAssetHttp/protocol");
 }

@@ -32,10 +32,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "usdAssetHttp/HttpAssetReader.h"
 
 namespace usdasset {
 namespace http {
@@ -114,6 +117,12 @@ enum class TransportError {
     /// every line that arrived may have been perfectly well formed -- what was
     /// wrong was how many of them there were.
     HeadersTooLarge,
+    /// Every address the name resolved to was one the request's
+    /// `DestinationPolicy` refuses, so no connection was attempted. Separate
+    /// from `ConnectFailed` because it is not a fact about the network: it is
+    /// the caller's own declared policy, and retrying it would be asking the
+    /// same question of the same rule.
+    DestinationRefused,
     /// The transport itself failed -- out of memory, a handle that would not
     /// initialize. Never a property of the server.
     Internal,
@@ -181,6 +190,14 @@ struct TransportRequest {
 
     Timeouts timeouts;
 
+    /// Which classes of address a connection may be opened to. Judged by the
+    /// transport against the numeric address it is about to connect to, after
+    /// name resolution and before the socket exists, because that is the only
+    /// point at which the address is both known and not yet reached. A reused
+    /// connection is not judged again: it was admitted under the same reader's
+    /// policy when it was opened, and a reader's policy does not change.
+    DestinationPolicy destinations;
+
     /// Where the body goes, and the bound §10 of the design policy requires:
     /// "never allocate from a server-declared length without a bound". The
     /// caller sizes this from what it asked for, so a server answering a 64 KiB
@@ -214,6 +231,13 @@ struct TransportResponse {
     /// connect deadline from a response deadline, which `Timeout` (`HTTP006`)
     /// is required to name.
     bool connected = false;
+
+    /// With `TransportError::DestinationRefused`: the class of an address the
+    /// policy refused, for the message. Empty when the refused address was of a
+    /// family the policy cannot classify, which is refused rather than
+    /// admitted -- a policy that let through what it could not read would be a
+    /// policy with a hole the shape of every address family it had not heard of.
+    std::optional<AddressClass> refusedClass;
 };
 
 /// The seam itself.

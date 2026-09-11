@@ -133,7 +133,7 @@ diagnostics. The mapping is one-way and total:
 | Code | `HTTPxxx` | OpenUSD | Typical cause |
 | --- | --- | --- | --- |
 | `NotFound` | `HTTP001` | error | `404`, or a resolved path that does not exist |
-| `AccessDenied` | `HTTP002` | error | `401`, `403` |
+| `AccessDenied` | `HTTP002` | error | `401`, `403`, or a destination the policy refuses ([CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1) |
 | `RangeNotSupported` | `HTTP003` | error | no `Accept-Ranges`, or `200` in response to `Range` |
 | `InvalidResponse` | `HTTP004` | error | wrong `Content-Range`, truncated body, bad framing |
 | `NetworkError` | `HTTP005` | error | connection reset, DNS, TLS failure |

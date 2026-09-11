@@ -102,6 +102,7 @@ installed header.
 ```text
 Open(url)
   -> parse the URL                      absolute http/https, or InvalidArgument
+  -> destination policy, every hop      a refused literal is AccessDenied, unsent
   -> HEAD, following bounded redirects  one metadata round trip, no content
   -> size from Content-Length           absent is a refusal, not a guess
   -> range support from Accept-Ranges   absent is RangeNotSupported, terminal
@@ -131,6 +132,8 @@ HTTP/1.1 over libcurl, with almost every convenience turned off:
 | Raw response status | ADR-0002 makes a `200` answering a `Range` request `RangeNotSupported`, and a client that normalizes a partial response into "here are your bytes" cannot implement that |
 | `Accept-Encoding: identity` | A compressed range response would make the byte accounting describe the wire rather than the asset |
 | Bounded write callback | The caller's buffer is the bound. A server answering a 64 KiB range request with a 10 GB body moves 64 KiB and is then cut off |
+| `CURLOPT_OPENSOCKETFUNCTION` | The destination policy's connect-time half: each address libcurl is about to connect to is classified and refused or admitted before a socket exists, which is the one point where a resolved name's address is known and not yet reached |
+| `CURLOPT_PROTOCOLS_STR` `http,https` | The scheme allowlist a second time. The parser enforces it; this makes a parser that ever widened widen into a refusal |
 | Bounded header callback | 64 KiB per exchange, interim responses included (`kMaxResponseHeaderBytes`). Without it the header table is a buffer whose size the server chooses: libcurl 8.7.1 on its own accepts a megabyte of ordinary header fields, measured against the corpus's `OversizedHeaders` row |
 | `CURLOPT_NOSIGNAL` | libcurl's alarm-based DNS timeout is not safe to use from a thread |
 
@@ -214,6 +217,7 @@ response whose weak validator has changed is still positive evidence of
 | --- | --- |
 | `404`, `410` | `NotFound` |
 | `401`, `403` | `AccessDenied` |
+| A destination `DestinationPolicy` refuses, literal or resolved | `AccessDenied`, naming the class; no request sent, not retried |
 | No `Accept-Ranges` at open; `200` answering a `Range` | `RangeNotSupported` |
 | `Content-Range` that does not cover the request | `InvalidResponse` |
 | Missing or unparseable `Content-Length` at open | `InvalidResponse` |
@@ -346,12 +350,13 @@ The toolchain activates vcpkg's own wrapper, which supplies the release and
 debug paths explicitly. Naming the triplet matters too: the default is the
 dynamic one.
 
-Three suites, and they are not interchangeable:
+Four suites, and they are not interchangeable:
 
 | Suite | Where | Asserts |
 | --- | --- | --- |
-| Module tests | `tests/` | URI arithmetic, framing as a pure function of headers, and the protocol policies over a scripted transport |
+| Module tests | `tests/` | URI arithmetic, address classification, framing as a pure function of headers, and the protocol policies over a scripted transport |
 | Corpus projection | `tests/corpus/` | Which hostile server behavior produces which `StatusCode`, against a real server |
+| Destination policy | `tests/corpus/` | The connect-time half of the policy, through a real resolver: a name that resolves to a refused address is refused before a socket exists |
 | Boundary suite | `tests/boundary/` | The read contract, byte-equivalent to the local backend over an independent oracle |
 
 The scripted transport in the module tests is deliberately never used for

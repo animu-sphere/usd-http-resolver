@@ -18,6 +18,39 @@ did not yet enforce.
 
 ### Added
 
+- **A destination policy**, `USD_HTTP_RESOLVER_DESTINATIONS`: which classes of
+  address — `public`, `private`, `loopback`, `link-local` — a connection may
+  reach. §10.2 of the design policy makes reach a declared policy rather than
+  whatever the host's network allows, because an identifier can arrive from a
+  layer nobody here authored and a resolver that fetches whatever it is told is
+  a request-forgery primitive.
+
+  The default is `public,private,loopback`, which refuses exactly one class.
+  Loopback and private networks stay reachable, because local fixture servers
+  and intranet hosts are what `http` is registered for and a default that broke
+  them would be overridden everywhere; link-local is refused, because nothing
+  legitimate serves USD from it and the credential endpoint of a cloud instance,
+  `169.254.169.254`, is what reliably lives there.
+
+  Judged twice, and neither is redundant. At connect time, against the address
+  libcurl is about to connect to — after the name was resolved, before a socket
+  exists — which is what makes it hold for `localhost`, for a name whose answer
+  changed between lookups, and for `127.1`. And before any request, against a
+  literal in the URL at every redirect hop, which is what makes it hold through
+  a proxy, where the connection is the proxy's. Removing the first leaves the
+  second passing every literal case and lets `localhost` through a policy that
+  refuses loopback; the socket-level case is what catches it.
+
+  An IPv6 address carrying an IPv4 one — mapped, compatible, or NAT64 — is the
+  class of the address it carries, so `[::ffff:169.254.169.254]` is link-local.
+  A refusal is `AccessDenied` (`HTTP002`) naming the class, with no request sent
+  and no retry: the code a `403` gets, because a caller does the same thing about
+  both.
+
+- **The scheme allowlist in the client as well as the parser.** libcurl is told
+  `http,https` and nothing else, so a parser that ever widened would widen into a
+  refusal rather than into a `file:` read.
+
 - **A bound on the response header block**, 64 KiB per exchange and summed
   across interim `1xx` responses, counted in the transport before a line is
   stored. With the caller's buffer bounding the body, a response can no longer

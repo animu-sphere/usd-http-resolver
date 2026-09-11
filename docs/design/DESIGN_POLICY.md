@@ -449,13 +449,16 @@ location, not a followed one.
 The response header block is bounded too, at 64 KiB per exchange, which with the
 caller's buffer bounding the body is the whole of §10.1's "total response size".
 
-One thing is named here as scope rather than as a shipped property. The
-destination policy — whether loopback and private-network addresses are
-reachable — does not exist, and its difficulty is that the hostile-server corpus
-*is* loopback, so the setting has to distinguish a fixture from a deployment
-rather than forbid one to protect the other. It lands with the configuration
-surface, because a policy with no way to state it is a default nobody can
-override.
+And the destination policy exists: `USD_HTTP_RESOLVER_DESTINATIONS`, a set of
+address classes, judged against the address a connection is about to be made to
+and against any literal in the URL at every hop
+([CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1). Its default is
+`public,private,loopback`, which is how the fixture and the deployment are told
+apart without forbidding either: the corpus is loopback and runs under the
+default, intranet hosts are private and are what `http` is registered for, and
+the one class refused — link-local, where a cloud instance's credential endpoint
+lives — is one nothing legitimate serves USD from. A deployment that wants a
+narrower reach states it, and a refusal is `AccessDenied` naming the class.
 
 ## 11. Testing
 

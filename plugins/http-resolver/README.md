@@ -166,9 +166,9 @@ invalid timestamp costs a reload, never a wrong answer.
 
 ## Configuration
 
-The five transport bounds and the four cache values in
-[CONFIGURATION.md](../../docs/reference/CONFIGURATION.md), read once when the
-resolver is constructed:
+The transport bounds, the destination policy, the cache values, and the
+persistent tier in [CONFIGURATION.md](../../docs/reference/CONFIGURATION.md),
+read once when the resolver is constructed:
 
 | Variable | Maps to | Default |
 | --- | --- | --- |
@@ -177,6 +177,7 @@ resolver is constructed:
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | whole-transfer deadline | 300000 |
 | `USD_HTTP_RESOLVER_MAX_RETRIES` | attempts, minus one | 2 |
 | `USD_HTTP_RESOLVER_MAX_REDIRECTS` | redirect hops | 5 |
+| `USD_HTTP_RESOLVER_DESTINATIONS` | address classes a connection may reach | `public,private,loopback` |
 | `USD_HTTP_RESOLVER_BLOCK_SIZE` | cache block size, in bytes | 65536 |
 | `USD_HTTP_RESOLVER_CACHE_BUDGET` | process-wide cache budget, in bytes | 134217728 |
 | `USD_HTTP_RESOLVER_COALESCE_GAP` | blocks of gap merged into one request | 1 |
@@ -195,6 +196,15 @@ Only a `Stable` identity is written there
 ([CACHE.md](../../docs/architecture/CACHE.md) §8), and nothing under the
 directory is reversible to a URL — an entry's identity is a SHA-256 digest,
 because a resolved identifier can be a signed one.
+
+`USD_HTTP_RESOLVER_DESTINATIONS` is the reach an identifier from a layer nobody
+here authored is allowed to have, per §10.2 of the
+[design policy](../../docs/design/DESIGN_POLICY.md). The default refuses
+link-local addresses alone — which is where a cloud instance's credential
+endpoint lives, and where nothing legitimate serves USD from — and keeps
+loopback and private networks reachable, because local fixture servers and
+intranet hosts are what `http` is registered for. A refusal is `HTTP002` naming
+the class, and no request is sent.
 
 A value that does not parse is a warning at construction and then the default;
 one bad value does not discard the others, and a value that is adjusted rather
@@ -285,7 +295,7 @@ arithmetic, and a mistake in any of them is invisible from the outside:
 | Test | Asserts |
 | --- | --- |
 | `httpResolver_identifier` | normalization, anchoring, what is not claimed, idempotence |
-| `httpResolver_configuration` | the five variables, and what a bad value does |
+| `httpResolver_configuration` | every variable, and what a bad value does |
 | `httpResolver_diagnostics` | the `HTTPxxx` table, the message form, and that no secret survives |
 | `httpResolver_identity` | what asset info may publish for a strong, weak, absent, or contradicted validator, and that no credential reaches it |
 | `httpResolver_stage` | a remote stage over a real socket, against the hostile fixture corpus |
@@ -322,9 +332,11 @@ recorded in [NOTICE](../../NOTICE); nothing in this bundle adds one.
 
 ## Known limitations
 
-- **Nothing cached outlives the process.** The block cache is in front of every
-  asset this bundle opens (`v0.3.0`), and it is in memory only: on-disk
-  persistence is `v0.4.0`, admitted for a strong validator alone.
+- **Only a `Stable` identity outlives the process.** The block cache is in front
+  of every asset this bundle opens (`v0.3.0`), and the on-disk tier under it
+  (`v0.4.0`) admits a strong validator the origin issued and nothing weaker, so
+  an asset with a weak or absent validator is re-fetched by every process that
+  reads it.
 - **Identity is exposed through `GetAssetInfo` and nowhere else.** There is no
   side-channel API, and `GetModificationTimestamp` is invalid by design rather
   than by omission. See *Asset info and identity* above.

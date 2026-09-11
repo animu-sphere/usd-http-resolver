@@ -43,6 +43,72 @@ void TestDefaults() {
     CHECK_EQ(options.transferTimeoutMs, defaults.transferTimeoutMs);
     CHECK_EQ(options.maxAttempts, defaults.maxAttempts);
     CHECK_EQ(options.maxRedirects, defaults.maxRedirects);
+    CHECK(options.destinations == defaults.destinations);
+}
+
+/// The destination policy of §10.2, as a set of address class names.
+void TestDestinations() {
+    using usdasset::http::DestinationPolicy;
+
+    struct Row {
+        const char* value;
+        bool publicAddresses;
+        bool privateNetworks;
+        bool loopback;
+        bool linkLocal;
+    };
+    const Row accepted[] = {
+        {"public", true, false, false, false},
+        {"private,loopback", false, true, true, false},
+        // How a person writes a list.
+        {"public, private , loopback", true, true, true, false},
+        {"link-local", false, false, false, true},
+        {"public,private,loopback,link-local", true, true, true, true},
+        // Repetition is redundant, not contradictory.
+        {"public,public", true, false, false, false},
+    };
+    for (const Row& row : accepted) {
+        std::vector<ConfigurationProblem> problems;
+        const usdasset::http::HttpOptions options = OptionsFrom(
+            From({{"USD_HTTP_RESOLVER_DESTINATIONS", row.value}}), &problems);
+        if (!problems.empty()) {
+            std::fprintf(stderr, "FAIL %s:%d: '%s' was refused: %s\n", __FILE__,
+                         __LINE__, row.value, problems[0].reason.c_str());
+            ++::usdassettest::FailureCount();
+            continue;
+        }
+        CHECK_EQ(options.destinations.publicAddresses, row.publicAddresses);
+        CHECK_EQ(options.destinations.privateNetworks, row.privateNetworks);
+        CHECK_EQ(options.destinations.loopback, row.loopback);
+        CHECK_EQ(options.destinations.linkLocal, row.linkLocal);
+    }
+
+    // Refused whole, and the default kept, loudly. An unknown name is not
+    // skipped: a policy that dropped the word it did not recognize is a
+    // different policy from the one that was written.
+    const char* const refused[] = {
+        "",
+        "public,,private",
+        "public,",
+        "Public",
+        "everything",
+        "public,internet",
+        "none",
+        "127.0.0.1",
+    };
+    for (const char* value : refused) {
+        std::vector<ConfigurationProblem> problems;
+        const usdasset::http::HttpOptions options = OptionsFrom(
+            From({{"USD_HTTP_RESOLVER_DESTINATIONS", value}}), &problems);
+        if (problems.size() != 1) {
+            std::fprintf(stderr, "FAIL %s:%d: '%s' produced %zu problem(s)\n",
+                         __FILE__, __LINE__, value, problems.size());
+            ++::usdassettest::FailureCount();
+            continue;
+        }
+        CHECK(problems[0].variable == "USD_HTTP_RESOLVER_DESTINATIONS");
+        CHECK(options.destinations == DestinationPolicy());
+    }
 }
 
 void TestEachVariable() {
@@ -128,10 +194,10 @@ void TestVariableSet() {
     const std::vector<const char*>& variables =
         usdhttpresolver::ConfiguredVariables();
     // Five transport bounds from `v0.2.0`, four cache variables from `v0.3.0`,
-    // and two persistence variables from `v0.4.0`, which is the whole of
-    // CONFIGURATION.md §2 except the metrics dump -- that one is read by
-    // usdAssetIo and not by this resolver.
-    CHECK_EQ(variables.size(), std::size_t{11});
+    // two persistence variables from `v0.4.0`, and the destination policy from
+    // `v0.7.0`, which is the whole of CONFIGURATION.md §2 except the metrics
+    // dump -- that one is read by usdAssetIo and not by this resolver.
+    CHECK_EQ(variables.size(), std::size_t{12});
     for (const char* name : variables) {
         CHECK(std::string(name).rfind("USD_HTTP_RESOLVER_", 0) == 0);
         // Every variable is a byte count or a bound except the cache directory,
@@ -261,6 +327,7 @@ void TestPersistenceVariables() {
 
 int main() {
     TestDefaults();
+    TestDestinations();
     TestEachVariable();
     TestRejectedValues();
     TestIndependence();

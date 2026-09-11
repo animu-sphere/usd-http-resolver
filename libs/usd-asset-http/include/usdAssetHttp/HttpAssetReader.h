@@ -40,6 +40,85 @@
 namespace usdasset {
 namespace http {
 
+/// What kind of network an address belongs to, for the destination policy.
+///
+/// Four classes, and only the four a decision about request forgery turns on
+/// (§10.2 of the design policy). An address is classified by its numeric value
+/// and never by a name, so a hostname that resolves to a loopback address is a
+/// loopback destination however it is spelled.
+///
+///   Loopback    127.0.0.0/8, 0.0.0.0/8, ::1, and the unspecified address ::,
+///               which a connect on the common stacks treats as this host
+///   LinkLocal   169.254.0.0/16 and fe80::/10 -- which is where cloud
+///               instance-metadata services live, 169.254.169.254 among them
+///   Private     10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, the shared address
+///               space 100.64.0.0/10, the unique-local fc00::/7, and the
+///               deprecated site-local fec0::/10
+///   Public      everything else
+///
+/// An IPv6 address that carries an IPv4 one -- mapped (`::ffff:a.b.c.d`),
+/// compatible (`::a.b.c.d`), or behind the NAT64 well-known prefix
+/// (`64:ff9b::a.b.c.d`) -- is the class of the address it carries, because
+/// that is where the connection ends up.
+enum class AddressClass {
+    Public,
+    Private,
+    Loopback,
+    LinkLocal,
+};
+
+/// The stable lowercase spelling of a class: `public`, `private`, `loopback`,
+/// `link-local`. These are also the words the resolver's configuration takes,
+/// so that a message and the setting that would change it use one vocabulary.
+const char* AddressClassName(AddressClass addressClass) noexcept;
+
+/// Which classes of address a reader may connect to.
+///
+/// §10.2 of the design policy: an identifier can arrive from a layer the user
+/// did not author, which makes a resolver a request-forgery primitive unless
+/// its reach is bounded by declared policy rather than by whatever the host's
+/// network happens to allow. The default is that declaration, and it is a
+/// deliberate middle rather than either end:
+///
+///   public, private, loopback   permitted -- `http` is registered for local
+///                               fixture servers and intranet hosts
+///                               (RESOLVER.md §1), and refusing either would
+///                               break the uses the scheme exists for
+///   link-local                  refused -- nothing legitimate serves USD from
+///                               a link-local address, and the one thing that
+///                               reliably lives there is the credential
+///                               endpoint of a cloud instance
+///
+/// A deployment that wants a narrower reach says so; a render farm that must
+/// never reach its own intranet from a layer it did not author sets `public`
+/// alone.
+///
+/// Judged twice, because each judgement covers what the other cannot. The
+/// address a connection is made to is judged at connect time, which is what
+/// makes the policy hold for a name that resolves to a refused address and for
+/// every spelling of an address a system resolver accepts. A literal address in
+/// the URL is also judged before any request is issued, at every redirect hop,
+/// which is what makes the policy hold through a proxy -- where the address this
+/// process connects to is the proxy's, and the destination is the proxy's to
+/// resolve.
+struct DestinationPolicy {
+    bool publicAddresses = true;
+    bool privateNetworks = true;
+    bool loopback = true;
+    bool linkLocal = false;
+
+    bool Permits(AddressClass addressClass) const noexcept;
+
+    bool operator==(const DestinationPolicy& other) const noexcept {
+        return publicAddresses == other.publicAddresses &&
+               privateNetworks == other.privateNetworks &&
+               loopback == other.loopback && linkLocal == other.linkLocal;
+    }
+    bool operator!=(const DestinationPolicy& other) const noexcept {
+        return !(*this == other);
+    }
+};
+
 /// Transport policy, all of it bounded.
 ///
 /// These are the knobs §10 of the design policy requires to exist -- "bound
@@ -49,9 +128,10 @@ namespace http {
 /// a caller that passes nothing gets, and they are the values the release is
 /// measured with.
 ///
-/// They are not yet resolved from the environment or from an
-/// `ArResolverContext`: that is the configuration surface in `v0.6.0`
-/// (RESOLVER.md §6). Until then a caller passes them or takes the defaults.
+/// Nothing here reads the environment. Resolving these from a deployment's
+/// settings is the resolver's configuration surface (CONFIGURATION.md), which
+/// is a policy about where values come from; this module is a mechanism, and a
+/// caller of it passes values or takes the defaults.
 struct HttpOptions {
     /// Establishing a connection. Its own deadline because a connect that
     /// never completes and a server that never answers are different faults,
@@ -76,6 +156,12 @@ struct HttpOptions {
     /// retry entirely. A retried request is counted twice in metrics, because
     /// that is what the network saw (METRICS.md §3).
     int maxAttempts = 3;
+
+    /// Which classes of address this reader may connect to, at the first hop
+    /// and at every redirect. A refusal is `AccessDenied` and issues no
+    /// request: it is a configuration decision, which is what `403` is too,
+    /// and a caller does the same thing about both.
+    DestinationPolicy destinations;
 
     /// Sent as `User-Agent`. Empty takes the module's default.
     std::string userAgent;

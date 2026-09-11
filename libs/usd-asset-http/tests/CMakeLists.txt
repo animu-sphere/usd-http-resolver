@@ -15,6 +15,7 @@
 # replaced without a deprecation.
 
 set(_usd_asset_http_tests
+    destination
     framing
     protocol
     uri)
