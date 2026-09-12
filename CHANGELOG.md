@@ -11,6 +11,157 @@ diagnostic codes in
 surface: adding a code is a minor change, changing what one means is a breaking
 one.
 
+## Unreleased
+
+The start of `v0.7.0`: the bounds §10 of the design policy names and the tree
+did not yet enforce, and the per-stage configuration surface that lets a host
+state them for one stage rather than for the whole process.
+
+### Added
+
+- **Per-stage configuration through `ArResolverContext`.** A context is made
+  from a string, through OpenUSD's own entry point, with the environment's own
+  names:
+
+  ```python
+  ctx = Ar.GetResolver().CreateContextFromString(
+      "https", "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_MAX_RETRIES=0")
+  stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
+  ```
+
+  One vocabulary and one parser: a value in a context is refused or adjusted
+  for exactly the reasons the same value in the environment would be, judged
+  over the environment it will be layered on. Eight variables may be set per
+  stage — the three deadlines, retries, redirects, the destination policy, and
+  the two coalescing limits. The block size, the two budgets, and the persistent
+  directory stay the environment's, because every stage shares the store they
+  configure and the store's stripes are sized for one block size. Precedence is
+  context, then environment, then default. Values are kept as the parser read
+  them, so `060000` and `60000`, or `private, public` and `public,private`, are
+  one context rather than two to every table OpenUSD keys on one. Problems are
+  reported once, when the context is created, and never per bind.
+
+- **A stage's context cannot be walked past through another stage.** Four ways
+  it could have been, each closed and each with its case in
+  `httpResolver_stage`. Every identifier this resolver owns is context-dependent,
+  because for a path that is not, OpenUSD's layer registry finds a loaded layer
+  by identifier whatever `Resolve` has just said. The opens `Resolve` retains
+  are keyed by transport options as well as identifier, because a reader keeps
+  the options it was opened with. Resolutions inside an `ArResolverScopedCache`
+  are cached by this resolver, keyed the same way, because OpenUSD caches them
+  by path alone for a resolver that does not — and a scope routinely spans two
+  stages. And asset info answers from memory only for a caller whose policy
+  could have reached the asset, so a refusing stage is not told the size and
+  token of an asset another stage opened.
+
+- **Installing the bundle still changes nothing about a local-only process.**
+  Implementing contexts means OpenUSD constructs this resolver in every process
+  that opens any stage, so the constructor does nothing: the environment is
+  read, the process stores configured, the persistent directory created, and
+  problems reported at the first resolve, open, asset-info query, or context
+  creation. A child process whose only stage is local, with
+  `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` set, leaves no directory behind; with
+  configuration back in the constructor, it did.
+
+- **A context is readable from Python**, as its canonical string:
+  `Ar.ResolverContext('USD_HTTP_RESOLVER_DESTINATIONS=public')`. Without a
+  to-Python conversion, `ctx.Get()` raised and `Usd.Stage.__repr__` printed
+  `pathResolverContext=<invalid repr>`. The conversion is registered once Python
+  is running, under the GIL and no other lock, so a Python thread and a C++
+  thread creating contexts at once cannot wait on each other. The context type
+  lives in this bundle's namespace, because `ArResolverContext` matches context
+  objects by type name.
+
+- **A destination policy**, `USD_HTTP_RESOLVER_DESTINATIONS`: which classes of
+  address — `public`, `private`, `loopback`, `link-local`, `metadata` — a
+  connection may reach. §10.2 of the design policy makes reach a declared policy
+  rather than whatever the host's network allows, because an identifier can
+  arrive from a layer nobody here authored and a resolver that fetches whatever
+  it is told is a request-forgery primitive.
+
+  The default is `public,private,loopback`. Loopback and private networks stay
+  reachable, because local fixture servers and intranet hosts are what `http` is
+  registered for and a default that broke them would be overridden everywhere;
+  link-local is refused, and so are the well-known instance-metadata endpoints,
+  which are a class of their own and classified by value, because no range
+  contains them: `169.254.169.254` is where most clouds put theirs, but AWS's
+  IPv6 endpoint is unique-local, Alibaba's is in the shared address space, and
+  Azure's WireServer is public. Permitting `link-local` does not permit
+  `metadata`.
+
+  Judged three times, and none is redundant. At connect time, against the
+  address libcurl is about to connect to — after the name was resolved, before a
+  socket exists — which is what makes it hold for `localhost` and for a name
+  whose answer changed between lookups. Before each request, against the host
+  as libcurl's own URL parser will send it, which is what makes it hold through
+  a proxy: libcurl normalizes `2852039166`, `0xa9fea9fe`, and
+  `%31%36%39.254.169.254` to `169.254.169.254` before the proxy sees the
+  request, and without this check each of them reached a proxy that forwarded it
+  there. And at every redirect hop against a canonical literal, before any
+  transport sees it. Removing the connect-time check lets `localhost` through a
+  policy that refuses loopback; removing the client-side one lets the spellings
+  above through a proxy; each has the case that says so.
+
+  An IPv6 address carrying an IPv4 one — mapped, compatible, or NAT64 — is the
+  class of the address it carries, so `[::ffff:169.254.169.254]` is `metadata`.
+  A refusal is `AccessDenied` (`HTTP002`) naming the class, with no request sent
+  and no retry: the code a `403` gets, because a caller does the same thing about
+  both. A list is read with its line breaks trimmed, so a list broken across
+  lines is the list written rather than a refused value that falls back to the
+  wider default. Sockets the policy admits are created close-on-exec.
+
+- **The scheme allowlist in the client as well as the parser.** libcurl is told
+  `http,https` and nothing else, so a parser that ever widened would widen into a
+  refusal rather than into a `file:` read.
+
+- **A bound on the response header block**, 64 KiB per exchange and summed
+  across interim `1xx` responses, counted in the transport before a line is
+  stored. With the caller's buffer bounding the body, a response can no longer
+  choose how much this process allocates for it, which is the whole of §10.1's
+  "bound the response header block and the total response size". A response
+  abandoned at the bound is refused whole, as `InvalidResponse` naming the
+  bound, whatever its status — its status line arrived intact, and an open that
+  read `Content-Length` and `Accept-Ranges` out of the prefix that fit would be
+  acting on a response nobody finished receiving. It is not retried, even when
+  the status line that did arrive was a `503`: asking again does not make the
+  block smaller.
+
+  The bound was not optional, and the corpus is how that is known rather than
+  argued. With it removed, libcurl 8.7.1 opens an asset behind a megabyte of
+  ordinary header fields without complaint; the library's own ceilings are on a
+  single line, and a block of kilobyte lines never reaches them.
+
+- **`OversizedHeaders`**, a nineteenth corpus row: a correct response padded
+  with a megabyte of kilobyte-sized fields, placed after the ones that matter.
+  Kilobyte fields rather than one enormous one, so that what a client has to
+  bound is the block and not the line — a row made of one huge line would be
+  caught by the library's limit and would prove nothing about the client's. The
+  self-test asserts the size from the bytes on the wire and everything else
+  about the response against the Normal row, so a client cannot pass by
+  refusing a response that was also malformed.
+
+- **The scheme allowlist, asserted at the redirect hop.** It already held, as a
+  consequence of a `Location` going through the same parser as an identifier;
+  it is now a case, because a consequence is the kind of property nothing
+  notices losing. Seven targets are refused and never requested — `file:` in
+  two spellings, `ftp:`, `gopher:`, `data:`, `s3:`, and an `https:` with no
+  authority — and the two scheme-less forms that stay inside the allowlist, a
+  network-path reference and an absolute path, are still followed.
+
+### Changed
+
+- **An adjusted configuration value says it was used.** A block size rounded
+  down to a power of two, or a coalescing gap capped under the request ceiling,
+  used to be reported with the same ending as a refused value — "using the
+  default" — which was false: the adjusted value was the one in force. Adjusted
+  and refused values are now told apart, and a refused context value says that
+  its stage falls back to the environment rather than to the default.
+
+- **The environment is read at the resolver's first use, not at its
+  construction.** Nothing changes for a process that uses the resolver; a
+  process that only opens local stages no longer has its environment read, its
+  process stores reconfigured, or configuration warnings posted on its behalf.
+
 ## `v0.5.0` - 2026-08-27
 
 The resolver becomes an independently composable geospatial-runtime component.

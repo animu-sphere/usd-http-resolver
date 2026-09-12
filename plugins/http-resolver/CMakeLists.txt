@@ -71,6 +71,7 @@ set(PLUGIN_NAME HttpResolver)
 
 add_library(${PLUGIN_NAME} SHARED
     src/Configuration.cpp
+    src/Context.cpp
     src/Diagnostics.cpp
     src/HttpResolver.cpp
     src/Identifier.cpp

@@ -62,7 +62,7 @@ bool IsClaimedScheme(std::string_view assetPath) noexcept;
 /// hides one in the part a query-string rule keeps. A URL that needs
 /// credentials therefore fails at the server with `AccessDenied` rather than
 /// succeeding with a secret in every log line; authentication is the
-/// interception point in `v0.6.0`, not a URL component.
+/// interception point in `v0.7.0`, not a URL component.
 ///
 /// Anchoring is RFC 3986 §5.2 reference resolution against `anchorAssetPath`,
 /// which is what makes a remote scene work at all: a layer published to a CDN

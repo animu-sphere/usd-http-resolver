@@ -66,6 +66,8 @@ const char* TransportErrorName(TransportError error) noexcept {
         case TransportError::ConnectionLost: return "ConnectionLost";
         case TransportError::IncompleteBody: return "IncompleteBody";
         case TransportError::Malformed: return "Malformed";
+        case TransportError::HeadersTooLarge: return "HeadersTooLarge";
+        case TransportError::DestinationRefused: return "DestinationRefused";
         case TransportError::Internal: return "Internal";
     }
     return "Unknown";

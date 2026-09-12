@@ -40,6 +40,33 @@ void ReportRetries(std::uint64_t retryCount, std::string_view identifier) {
 }
 
 void ReportConfigurationProblem(const ConfigurationProblem& problem) {
+    // Four sentences rather than one with blanks in it, because the four end
+    // differently and the ending is the part an operator acts on. An adjusted
+    // value was used; a refused one was not; and a refused *context* value
+    // leaves its stage on the environment's value, which is a different
+    // fallback from the environment's own.
+    if (problem.fromContext) {
+        if (problem.variable.empty()) {
+            TF_WARN("a resolver context has an entry '%s', which is %s; it is "
+                    "ignored",
+                    problem.value.c_str(), problem.reason.c_str());
+        } else if (problem.adjusted) {
+            TF_WARN("a resolver context sets %s to '%s': %s",
+                    problem.variable.c_str(), problem.value.c_str(),
+                    problem.reason.c_str());
+        } else {
+            TF_WARN("a resolver context sets %s to '%s', which is %s; stages "
+                    "bound to it use the environment's value or the default",
+                    problem.variable.c_str(), problem.value.c_str(),
+                    problem.reason.c_str());
+        }
+        return;
+    }
+    if (problem.adjusted) {
+        TF_WARN("%s is set to '%s': %s", problem.variable.c_str(),
+                problem.value.c_str(), problem.reason.c_str());
+        return;
+    }
     TF_WARN("%s is set to '%s', which is %s; using the default",
             problem.variable.c_str(), problem.value.c_str(),
             problem.reason.c_str());

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "usdAssetIo/RangeMath.h"
+#include "Destination.h"
 #include "Framing.h"
 #include "TestSupport.h"
 #include "Transport.h"
@@ -115,6 +116,24 @@ std::string Where(const Uri& uri) {
     return " (" + ElideSecrets(uri.ToIdentity()) + ")";
 }
 
+/// The destination policy's refusal, from whichever of its checks refused.
+///
+/// `AccessDenied`, and not a code of its own, on the test DIAGNOSTICS.md §1
+/// sets for a code: what a caller does about it is what it does about a `403`
+/// -- nothing, because a retry asks the same rule the same question, and tell
+/// whoever owns the configuration. The class is named, because "access denied"
+/// alone would send that person to the origin's permissions rather than to
+/// their own policy.
+Status DestinationRefusedStatus(const std::optional<AddressClass>& refused,
+                                const Uri& uri) {
+    const std::string what =
+        refused ? std::string(AddressClassName(*refused)) + " addresses"
+                : std::string("an address it cannot classify");
+    return Status::Error(StatusCode::AccessDenied,
+                         "the destination policy does not permit connecting to " +
+                             what + Where(uri));
+}
+
 Status ProjectTransportError(TransportError error, const Uri& uri) {
     switch (error) {
         case TransportError::ConnectFailed:
@@ -147,6 +166,19 @@ Status ProjectTransportError(TransportError error, const Uri& uri) {
         case TransportError::Malformed:
             return Status::Error(StatusCode::InvalidResponse,
                                  "the response could not be parsed as HTTP" + Where(uri));
+        case TransportError::HeadersTooLarge:
+            // `InvalidResponse`, because what a caller does about it is what it
+            // does about any other response it cannot use: nothing, and tell a
+            // human. The bound is named so that the human can tell an origin
+            // that misbehaved from a limit that was too tight.
+            return Status::Error(StatusCode::InvalidResponse,
+                                 "the response header block exceeded " +
+                                     std::to_string(kMaxResponseHeaderBytes) +
+                                     " bytes" + Where(uri));
+        case TransportError::DestinationRefused:
+            // Reached only without the refused class, which the exchange
+            // passes to `DestinationRefusedStatus` itself when it has one.
+            return DestinationRefusedStatus(std::nullopt, uri);
         case TransportError::Internal:
             return Status::Error(StatusCode::NetworkError,
                                  "the HTTP client could not issue the request" +
@@ -295,6 +327,22 @@ ExchangeResult PerformExchange(Transport& transport,
     int redirects = 0;
 
     for (;;) {
+        // The destination policy's pre-flight, at every hop and before any
+        // transport sees the request. A canonical literal in the URL is judged
+        // here by what it spells, so that the rule holds whichever client is
+        // underneath and a redirect to `http://169.254.169.254/` is refused as
+        // a string rather than as a connection. The transport judges twice
+        // more: the host as its client will actually send it, which is what
+        // holds through a proxy for every other spelling, and every address it
+        // connects to.
+        AddressClass literal = AddressClass::Public;
+        if (ClassifyHostLiteral(current.host, &literal) &&
+            !options.destinations.Permits(literal)) {
+            result.finalUri = current;
+            result.status = DestinationRefusedStatus(literal, current);
+            return result;
+        }
+
         TransportResponse response;
 
         for (;;) {
@@ -308,6 +356,7 @@ ExchangeResult PerformExchange(Transport& transport,
             request.timeouts.connectMs = options.connectTimeoutMs;
             request.timeouts.responseMs = options.responseTimeoutMs;
             request.timeouts.transferMs = options.transferTimeoutMs;
+            request.destinations = options.destinations;
             request.body = body;
             request.bodyCapacity = capacity;
 
@@ -321,15 +370,47 @@ ExchangeResult PerformExchange(Transport& transport,
             // Retried only when nothing usable came back. A response whose
             // headers arrived is the caller's to judge, and a body that stopped
             // early is resumed by the read loop rather than re-fetched whole.
+            //
+            // A block abandoned at the header bound is never retried, whatever
+            // its status line said. Its `503` is the one part of it that
+            // arrived, and it is not evidence of anything a second attempt
+            // could change -- it is an invitation to buffer the same 64 KiB
+            // again, as many times as the budget allows.
             const bool retryable =
-                response.status == 0 ? IsRetryableTransportError(response.error)
-                                     : IsRetryableStatus(response.status);
+                response.error == TransportError::HeadersTooLarge ? false
+                : response.status == 0 ? IsRetryableTransportError(response.error)
+                                       : IsRetryableStatus(response.status);
             if (!retryable) break;
             --*retriesRemaining;
             sink.Retry();
         }
 
         result.finalUri = current;
+
+        if (response.error == TransportError::DestinationRefused) {
+            // The connect-time half: every address the name resolved to was
+            // one the policy refuses. Not retried -- `IsRetryableTransportError`
+            // does not admit it -- because asking again asks the same rule.
+            result.response = std::move(response);
+            result.status =
+                DestinationRefusedStatus(result.response.refusedClass, current);
+            return result;
+        }
+
+        if (response.error == TransportError::HeadersTooLarge) {
+            // Before the status is looked at, because the status is the one
+            // part of this response that did arrive intact. A `200` whose
+            // header block never ended is not a `200` with some headers: it is
+            // a response that was abandoned, and letting it through to the
+            // branches below would have an open judge `Content-Length` and
+            // `Accept-Ranges` from whichever prefix of the block fit.
+            result.response = std::move(response);
+            result.status = ProjectTransportError(result.response.error, current);
+            if (result.response.status != 0) {
+                result.status.WithTransportStatus(result.response.status);
+            }
+            return result;
+        }
 
         if (response.status == 0) {
             result.response = std::move(response);

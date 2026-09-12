@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-09-04.
+Last updated: 2026-09-11.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -68,6 +68,16 @@ The transport, validator, cache, and public C++ behavior are unchanged from
 `v0.4.0`, and [the record](../releases/v0.5.0.md) says so rather than letting a
 version number imply otherwise. The consumer integration moved to `v0.6.0`
 intact; nothing in its scope was cut.
+
+Phase 7 is in progress, ahead of phase 6 for the reason phase 5 was: it is
+code, and the consumer integration is waiting on a fixture and a host. Three of
+its rows have landed. The response header block is bounded, which the corpus
+proved was not optional; the destination policy of §10.2 exists, with a default
+that refuses link-local and the instance-metadata endpoints and nothing else;
+and the transport bounds and that
+policy are a stage's, through `ArResolverContext`, with the environment as the
+default a context overrides. What remains is the request interception point for
+authentication and formation composition.
 
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
@@ -220,10 +230,10 @@ therefore ship unexercised.
 
 | Task | Status |
 | --- | --- |
-| Configuration surface resolved from `ArResolverContext`, not only the environment | Outstanding — the environment form ships since `v0.2.0` as a process-wide bootstrap |
-| Declared scheme allowlist, re-applied at every redirect hop | Done, as a consequence rather than as a feature — a redirect target goes through the same parser as an original identifier, and that parser accepts `http` and `https` only, so a `Location` naming `file:` is an unusable location. Worth an explicit case, since nothing today would notice if the parser widened |
-| Loopback and private-network destination policy, with a documented default | Outstanding — §10.2 of the [design policy](../design/DESIGN_POLICY.md). It has to distinguish a fixture server from a deployment, since the corpus depends on loopback |
-| Response header-block and total-response bounds | Outstanding — the caller's buffer bounds the body today; the header block is not separately bounded |
+| Configuration surface resolved from `ArResolverContext`, not only the environment | Done — `CreateContextFromString` with the environment's own names, eight variables per stage and the four the process shares refused with a reason. Two things had to be decided that the contract had not said. Every identifier is declared context-dependent, because OpenUSD's layer registry otherwise finds a loaded layer by name whatever `Resolve` said, and one stage's destination policy could be walked past by opening the URL in another stage first. And the retained opens are keyed by transport options as well as identifier, because a reader keeps the options it was opened with. Both were checked by removing them, and each removal fails exactly the case written for it |
+| Declared scheme allowlist, re-applied at every redirect hop | Done, as a consequence rather than as a feature — a redirect target goes through the same parser as an original identifier, and that parser accepts `http` and `https` only, so a `Location` naming `file:` is an unusable location. Now with the explicit case it was owed: `usdAssetHttp_protocol` redirects to seven schemes and spellings that must be refused, asserts each is never requested, and asserts the two scheme-less forms that stay inside the allowlist are still followed |
+| Loopback and private-network destination policy, with a documented default | Done — `USD_HTTP_RESOLVER_DESTINATIONS`, default `public,private,loopback`: the corpus is loopback and runs under the default, intranet hosts stay reachable, and link-local and the instance-metadata endpoints are refused — the latter a class of its own, by value, because AWS's IPv6 endpoint is unique-local and Alibaba's is in the shared address space. Judged at connect time against the resolved address, before each request against the host as libcurl will send it, and at every hop against a canonical literal. Each check was removed in turn: without the connect-time one `localhost` walks past a policy that refuses loopback, and without the client-side one `2852039166` reaches a proxy that forwards it to 169.254.169.254. [CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 |
+| Response header-block and total-response bounds | Done — 64 KiB of header per exchange, counted in the transport before a line is stored, and the caller's buffer for the body. A response abandoned at the bound is refused whole at any status, and never retried. The corpus gained a row for it, `OversizedHeaders`, and the row found that the bound was not optional: without it, libcurl 8.7.1 opened an asset behind a megabyte of header fields |
 | Request interception point for authentication | Outstanding — the seam, no provider |
 | OpenStrata formation composition and pinned artifacts | Outstanding |
 | Reproducible binary output | Outstanding — measured at the `v0.2.0` gate: two builds agree on 24 of 28 installed files, and the four that differ differ only in embedded build timestamps. Closing it is a link flag and belongs with the packaging work |
@@ -309,6 +319,43 @@ dependency, resolved as libcurl in
    measured exactly and whose denominator is zero. `v0.6.0` is where distance
    arrives, and it is why read-ahead is scheduled behind it rather than beside
    the cache work it belongs to.
+3. The rest of phase 7: the request interception point for authentication — a
+   seam with no provider, which now has somewhere to be supplied from, since a
+   credential provider is the context's to carry — and formation composition.
+
+Done, and no longer next: the configuration surface and the network policy. The
+contract had said what they were for and not two things they turned out to
+need. OpenUSD's layer registry finds an already-loaded layer by identifier for
+any path that is not context-dependent, whatever `Resolve` has just answered,
+so a per-stage destination policy is only a policy if every identifier this
+resolver owns is declared context-dependent — without that, opening a URL in
+one stage hands the layer to every other stage whatever its context says. And
+the retained opens of RESOLVER.md §2.3 had been keyed by identifier alone,
+which was correct while one process had one configuration and stopped being
+correct the moment it had several: a reader keeps the options it was opened
+with. Both were found by writing the case first and then removing the fix, and
+each removal fails exactly its own case.
+
+A review of that work before it merged found more, and all of it was the same
+shape: a guarantee that held in the case written for it and not in the one next
+to it. The destination policy judged canonical literals before a request and
+addresses at connect time, and through a proxy neither sees `2852039166` — the
+connect is the proxy's, and libcurl normalizes the spelling to
+`169.254.169.254` before the proxy reads it — so the host is now judged as
+libcurl's own URL parser will send it. Refusing link-local did not refuse the
+metadata endpoints that are not link-local, so those became a class of their
+own. OpenUSD caches `Resolve` by path inside a scoped cache for a resolver that
+does not implement scoped caches, which walked past a per-stage policy the
+same way the layer registry had. And implementing contexts turned out to mean
+being constructed in every process that opens any stage, so a constructor that
+configured the persistent tier created its directory for hosts that never named
+a remote URL. Each fix has a case that fails without it.
+
+The header-block bound found something of its own. The corpus row written for
+it — a correct response padded with a megabyte of ordinary fields — opened an
+asset under libcurl 8.7.1 with the bound removed, so the bound was not the
+belt-and-braces it might have been taken for: the library's ceilings are on a
+single line, and a block of kilobyte lines never reaches them.
 
 Done, and no longer next: the packaged product. What it settled is a question
 that had been answerable only in the affirmative-by-assumption until then —

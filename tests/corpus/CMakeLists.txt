@@ -37,3 +37,27 @@ add_test(NAME usdAssetHttp_corpus_projection COMMAND usdAssetHttp_test_projectio
 # *hung* exchange fails the lane rather than holding it, which is the failure
 # mode a suite full of deadlines has.
 set_tests_properties(usdAssetHttp_corpus_projection PROPERTIES TIMEOUT 120)
+
+# The destination policy's connect-time half, which is the one part of §10.2
+# that needs a name, a system resolver, and a listening socket rather than a
+# scripted `Location`. Same reverse edge, for the same reason: the fixture server
+# is the only listening socket this repository has.
+add_executable(usdAssetHttp_test_destinations test_destinations.cpp)
+
+target_link_libraries(usdAssetHttp_test_destinations
+    PRIVATE usdasset::http usdasset::fixtureserver)
+target_include_directories(usdAssetHttp_test_destinations
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(MSVC)
+    target_compile_options(usdAssetHttp_test_destinations PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(usdAssetHttp_test_destinations PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(COMMAND usd_http_resolver_stage_runtime_dependencies)
+    usd_http_resolver_stage_runtime_dependencies(usdAssetHttp_test_destinations)
+endif()
+
+add_test(NAME usdAssetHttp_destination_policy COMMAND usdAssetHttp_test_destinations)
+set_tests_properties(usdAssetHttp_destination_policy PROPERTIES TIMEOUT 60)

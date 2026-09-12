@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace usdhttpresolver {
@@ -15,6 +17,7 @@ constexpr const char* kReadTimeout = "USD_HTTP_RESOLVER_READ_TIMEOUT_MS";
 constexpr const char* kTotalTimeout = "USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS";
 constexpr const char* kMaxRetries = "USD_HTTP_RESOLVER_MAX_RETRIES";
 constexpr const char* kMaxRedirects = "USD_HTTP_RESOLVER_MAX_REDIRECTS";
+constexpr const char* kDestinations = "USD_HTTP_RESOLVER_DESTINATIONS";
 
 constexpr const char* kBlockSize = "USD_HTTP_RESOLVER_BLOCK_SIZE";
 constexpr const char* kCacheBudget = "USD_HTTP_RESOLVER_CACHE_BUDGET";
@@ -58,6 +61,35 @@ bool ParseCount(const std::string& text, long long min, long long max,
     return true;
 }
 
+/// A problem that ended in the value being used, after an adjustment.
+ConfigurationProblem Adjusted(const char* variable, std::string value,
+                              std::string reason) {
+    ConfigurationProblem problem;
+    problem.variable = variable;
+    problem.value = std::move(value);
+    problem.reason = std::move(reason);
+    problem.adjusted = true;
+    return problem;
+}
+
+/// Strips spaces, tabs, and line breaks from both ends. A context string is
+/// often written across lines in a host's configuration file, and a newline
+/// before a name is not part of the name.
+std::string Trim(const std::string& text) {
+    const char* const blanks = " \t\r\n";
+    const std::size_t first = text.find_first_not_of(blanks);
+    if (first == std::string::npos) return std::string();
+    const std::size_t last = text.find_last_not_of(blanks);
+    return text.substr(first, last - first + 1);
+}
+
+bool Contains(const std::vector<const char*>& names, const std::string& name) {
+    for (const char* candidate : names) {
+        if (name == candidate) return true;
+    }
+    return false;
+}
+
 /// `getenv`, and the pragma MSVC needs to allow it.
 ///
 /// `_dupenv_s` exists on one toolchain and allocates; this runs once, at
@@ -87,6 +119,96 @@ void ReadInto(const EnvironmentLookup& lookup, const char* name, long long min,
         return;
     }
     *target = static_cast<int>(value);
+}
+
+/// Every address class, in the order a canonical destination list names them.
+constexpr usdasset::http::AddressClass kAddressClasses[] = {
+    usdasset::http::AddressClass::Public,   usdasset::http::AddressClass::Private,
+    usdasset::http::AddressClass::Loopback, usdasset::http::AddressClass::LinkLocal,
+    usdasset::http::AddressClass::Metadata,
+};
+
+/// The canonical spelling of a destination set: the classes it permits, in
+/// `kAddressClasses` order, separated by commas without spaces.
+std::string DestinationsString(const usdasset::http::DestinationPolicy& policy) {
+    std::string text;
+    for (const usdasset::http::AddressClass addressClass : kAddressClasses) {
+        if (!policy.Permits(addressClass)) continue;
+        if (!text.empty()) text += ',';
+        text += usdasset::http::AddressClassName(addressClass);
+    }
+    return text;
+}
+
+/// Parses a destination set: address class names separated by commas, each
+/// spelled as `AddressClassName` spells it.
+///
+/// A set rather than a level, because the four classes are not an order. An
+/// intranet-only deployment permits `private` and refuses `public`; a render
+/// farm permits `public` and refuses the rest; neither is a point on a scale
+/// that also contains the other.
+///
+/// Whitespace around a name is tolerated -- `public, private` is how a person
+/// writes a list -- and nothing else is. An unknown name refuses the whole
+/// value rather than the one name, because a policy that silently dropped the
+/// word it did not recognize is a different policy from the one written, and
+/// the difference is always in the direction of a destination nobody meant to
+/// permit or refuse.
+bool ParseDestinations(const std::string& text, usdasset::http::DestinationPolicy* out,
+                       std::string* reasonOut) {
+    using usdasset::http::AddressClass;
+
+    if (text.empty()) {
+        *reasonOut = "empty";
+        return false;
+    }
+
+    usdasset::http::DestinationPolicy policy;
+    policy.publicAddresses = false;
+    policy.privateNetworks = false;
+    policy.loopback = false;
+    policy.linkLocal = false;
+
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t comma = text.find(',', at);
+        // `Trim`, and not a narrower one: a list broken across lines in a
+        // context string, or an environment file saved with CRLF endings, puts
+        // a line break beside a name, and refusing the whole value for it
+        // would put the stage on the default -- a wider policy than the one
+        // written, which is the one direction this parser must not fail in.
+        const std::string name = Trim(text.substr(
+            at, comma == std::string::npos ? std::string::npos : comma - at));
+
+        if (name.empty()) {
+            *reasonOut = "an empty entry in the list";
+            return false;
+        }
+        bool known = false;
+        for (const AddressClass addressClass : kAddressClasses) {
+            if (name != usdasset::http::AddressClassName(addressClass)) continue;
+            known = true;
+            switch (addressClass) {
+                case AddressClass::Public: policy.publicAddresses = true; break;
+                case AddressClass::Private: policy.privateNetworks = true; break;
+                case AddressClass::Loopback: policy.loopback = true; break;
+                case AddressClass::LinkLocal: policy.linkLocal = true; break;
+                case AddressClass::Metadata: policy.metadata = true; break;
+            }
+        }
+        if (!known) {
+            *reasonOut = "unknown address class '" + name +
+                         "'; expected public, private, loopback, link-local, or "
+                         "metadata";
+            return false;
+        }
+
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
+
+    *out = policy;
+    return true;
 }
 
 /// The 64-bit form of `ReadInto`, for the variables that are byte counts.
@@ -187,31 +309,31 @@ usdasset::cache::CacheOptions CacheOptionsFrom(
     // rather than from a byte count.
     const usdasset::cache::CacheOptions normalized = options.Normalized();
     if (problemsOut != nullptr && normalized.blockSize != options.blockSize) {
-        problemsOut->push_back({kBlockSize, std::to_string(options.blockSize),
-                                "rounded down to the power of two " +
-                                    std::to_string(normalized.blockSize)});
+        problemsOut->push_back(Adjusted(kBlockSize, std::to_string(options.blockSize),
+                                         "rounded down to the power of two " +
+                                             std::to_string(normalized.blockSize)));
     }
     if (problemsOut != nullptr &&
         normalized.coalesceGapBlocks != options.coalesceGapBlocks) {
         problemsOut->push_back(
-            {kCoalesceGap, std::to_string(options.coalesceGapBlocks),
-             "capped at " + std::to_string(normalized.coalesceGapBlocks) +
-                 ", the widest gap that can fit under "
-                 "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES"});
+            Adjusted(kCoalesceGap, std::to_string(options.coalesceGapBlocks),
+                     "capped at " + std::to_string(normalized.coalesceGapBlocks) +
+                         ", the widest gap that can fit under "
+                         "USD_HTTP_RESOLVER_MAX_REQUEST_BYTES"));
     }
     if (problemsOut != nullptr && normalized.budgetBytes != options.budgetBytes) {
         problemsOut->push_back(
-            {kCacheBudget, std::to_string(options.budgetBytes),
-             "raised to " + std::to_string(normalized.budgetBytes) +
-                 ", one block: a budget that cannot hold a block does not "
-                 "cache nothing, it fetches a block and drops it"});
+            Adjusted(kCacheBudget, std::to_string(options.budgetBytes),
+                     "raised to " + std::to_string(normalized.budgetBytes) +
+                         ", one block: a budget that cannot hold a block does not "
+                         "cache nothing, it fetches a block and drops it"));
     }
     if (problemsOut != nullptr && normalized.maxRequestBytes != options.maxRequestBytes) {
         problemsOut->push_back(
-            {kMaxRequestBytes, std::to_string(options.maxRequestBytes),
-             "raised to " + std::to_string(normalized.maxRequestBytes) +
-                 ", one block: a merged request that cannot carry a block "
-                 "cannot carry the block it was merging"});
+            Adjusted(kMaxRequestBytes, std::to_string(options.maxRequestBytes),
+                     "raised to " + std::to_string(normalized.maxRequestBytes) +
+                         ", one block: a merged request that cannot carry a block "
+                         "cannot carry the block it was merging"));
     }
 
     return options;
@@ -245,19 +367,29 @@ usdasset::http::HttpOptions OptionsFrom(
     // Zero redirects is legal and means "refuse to follow any".
     ReadInto(lookup, kMaxRedirects, 0, 100, &options.maxRedirects, problemsOut);
 
+    // The destination policy of §10.2. Unset is the documented default --
+    // `public,private,loopback`, which is `DestinationPolicy`'s own -- and not
+    // "everything": a deployment that says nothing about link-local does not
+    // reach the instance-metadata address by accident.
+    std::string destinations;
+    if (lookup(kDestinations, &destinations)) {
+        std::string reason;
+        if (!ParseDestinations(destinations, &options.destinations, &reason) &&
+            problemsOut != nullptr) {
+            problemsOut->push_back({kDestinations, destinations, reason});
+        }
+    }
+
     return options;
 }
 
-usdasset::http::HttpOptions OptionsFromEnvironment(
-    std::vector<ConfigurationProblem>* problemsOut) {
-    const EnvironmentLookup lookup = [](const char* name, std::string* valueOut) {
-        const char* value = ReadEnvironment(name);
-        if (value == nullptr) return false;
-        valueOut->assign(value);
-        return true;
-    };
-    return OptionsFrom(lookup, problemsOut);
+bool ReadEnvironmentVariable(const char* name, std::string* valueOut) {
+    const char* value = ReadEnvironment(name);
+    if (value == nullptr) return false;
+    valueOut->assign(value);
+    return true;
 }
+
 
 ResolverConfiguration ConfigurationFrom(
     const EnvironmentLookup& lookup,
@@ -269,16 +401,6 @@ ResolverConfiguration ConfigurationFrom(
     return configuration;
 }
 
-ResolverConfiguration ConfigurationFromEnvironment(
-    std::vector<ConfigurationProblem>* problemsOut) {
-    const EnvironmentLookup lookup = [](const char* name, std::string* valueOut) {
-        const char* value = ReadEnvironment(name);
-        if (value == nullptr) return false;
-        valueOut->assign(value);
-        return true;
-    };
-    return ConfigurationFrom(lookup, problemsOut);
-}
 
 const std::vector<const char*>& ConfiguredVariables() {
     static const std::vector<const char*> variables = {
@@ -292,8 +414,191 @@ const std::vector<const char*>& ConfiguredVariables() {
         kReadTimeout,
         kTotalTimeout,
         kMaxRetries,
-        kMaxRedirects};
+        kMaxRedirects,
+        kDestinations};
     return variables;
+}
+
+const std::vector<const char*>& ContextVariables() {
+    static const std::vector<const char*> variables = {
+        kCoalesceGap,
+        kMaxRequestBytes,
+        kConnectTimeout,
+        kReadTimeout,
+        kTotalTimeout,
+        kMaxRetries,
+        kMaxRedirects,
+        kDestinations};
+    return variables;
+}
+
+std::map<std::string, std::string> OverridesFrom(
+    const std::string& text,
+    const EnvironmentLookup& base,
+    std::vector<ConfigurationProblem>* problemsOut) {
+    std::map<std::string, std::string> entries;
+
+    const auto refuse = [problemsOut](std::string variable, std::string value,
+                                      std::string reason) {
+        if (problemsOut == nullptr) return;
+        ConfigurationProblem problem;
+        problem.variable = std::move(variable);
+        problem.value = std::move(value);
+        problem.reason = std::move(reason);
+        problem.fromContext = true;
+        problemsOut->push_back(std::move(problem));
+    };
+
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t separator = text.find(';', at);
+        const std::string entry = Trim(text.substr(
+            at, separator == std::string::npos ? std::string::npos : separator - at));
+
+        if (!entry.empty()) {
+            const std::size_t equals = entry.find('=');
+            if (equals == std::string::npos) {
+                // Reported with an empty variable: there is no name to report
+                // it under, and inventing one would point the reader at a
+                // setting the entry never named.
+                refuse(std::string(), entry, "not a NAME=value entry");
+            } else {
+                const std::string name = Trim(entry.substr(0, equals));
+                const std::string value = Trim(entry.substr(equals + 1));
+                if (!Contains(ConfiguredVariables(), name)) {
+                    refuse(name, value, "not a variable this resolver reads");
+                } else if (!Contains(ContextVariables(), name)) {
+                    refuse(name, value,
+                           "shared by every stage in the process, so it is read "
+                           "from the environment and not from a context");
+                } else {
+                    // Said before the value is judged, so it says only what
+                    // is true before then: the earlier value is gone. Whether
+                    // the last one is used is the parser's to say, and if it
+                    // is refused that is reported as its own problem below.
+                    if (entries.find(name) != entries.end() && problemsOut != nullptr) {
+                        ConfigurationProblem repeated =
+                            Adjusted(name.c_str(), value,
+                                     "set more than once in one context; only the "
+                                     "last value is considered");
+                        repeated.fromContext = true;
+                        problemsOut->push_back(std::move(repeated));
+                    }
+                    entries[name] = value;
+                }
+            }
+        }
+
+        if (separator == std::string::npos) break;
+        at = separator + 1;
+    }
+
+    // The values, through the parsers the environment's go through, all at
+    // once and over `base`: a coalescing gap is capped against a request
+    // ceiling and a block size, and judging the context's value against the
+    // built-in default of the other would warn about an adjustment that is not
+    // the one applied. Only problems with the context's own variables are the
+    // context's to report; the environment's were reported when it was read.
+    std::vector<ConfigurationProblem> valueProblems;
+    const ResolverConfiguration applied =
+        ConfigurationFrom(Layered(entries, base), &valueProblems);
+    for (ConfigurationProblem& problem : valueProblems) {
+        if (entries.find(problem.variable) == entries.end()) continue;
+        // A refused value leaves the context, so that what the context carries
+        // -- and what it compares and hashes by -- is what is in force. An
+        // adjusted one stays, and is adjusted again wherever it is applied.
+        if (!problem.adjusted) entries.erase(problem.variable);
+        problem.fromContext = true;
+        if (problemsOut != nullptr) problemsOut->push_back(std::move(problem));
+    }
+
+    // And what stays is kept as the parser read it rather than as it was
+    // written. `060000` and `60000` are one deadline, and `private, public`
+    // and `public,private` one policy; a context that compared them unequal
+    // would be two contexts to every table OpenUSD keys on one -- a stage cache
+    // that missed, a layer stack built twice.
+    for (auto& entry : entries) {
+        const std::string& name = entry.first;
+        const usdasset::http::HttpOptions& transport = applied.transport;
+        if (name == kConnectTimeout) {
+            entry.second = std::to_string(transport.connectTimeoutMs);
+        } else if (name == kReadTimeout) {
+            entry.second = std::to_string(transport.responseTimeoutMs);
+        } else if (name == kTotalTimeout) {
+            entry.second = std::to_string(transport.transferTimeoutMs);
+        } else if (name == kMaxRetries) {
+            entry.second = std::to_string(transport.maxAttempts - 1);
+        } else if (name == kMaxRedirects) {
+            entry.second = std::to_string(transport.maxRedirects);
+        } else if (name == kDestinations) {
+            entry.second = DestinationsString(transport.destinations);
+        } else if (name == kCoalesceGap) {
+            entry.second = std::to_string(applied.cache.coalesceGapBlocks);
+        } else if (name == kMaxRequestBytes) {
+            entry.second = std::to_string(applied.cache.maxRequestBytes);
+        }
+    }
+
+    return entries;
+}
+
+std::string CanonicalContextString(const std::map<std::string, std::string>& overrides) {
+    std::string text;
+    for (const auto& entry : overrides) {
+        if (!text.empty()) text += ';';
+        text += entry.first;
+        text += '=';
+        text += entry.second;
+    }
+    return text;
+}
+
+EnvironmentLookup LookupIn(const std::map<std::string, std::string>& values) {
+    return [&values](const char* name, std::string* valueOut) {
+        const auto found = values.find(name);
+        if (found == values.end()) return false;
+        valueOut->assign(found->second);
+        return true;
+    };
+}
+
+EnvironmentLookup Layered(const std::map<std::string, std::string>& overrides,
+                          EnvironmentLookup base) {
+    return [&overrides, base = std::move(base)](const char* name, std::string* valueOut) {
+        const auto found = overrides.find(name);
+        if (found != overrides.end()) {
+            valueOut->assign(found->second);
+            return true;
+        }
+        return base ? base(name, valueOut) : false;
+    };
+}
+
+std::map<std::string, std::string> Snapshot(const EnvironmentLookup& lookup) {
+    std::map<std::string, std::string> values;
+    for (const char* name : ConfiguredVariables()) {
+        std::string value;
+        if (lookup(name, &value)) values.emplace(name, std::move(value));
+    }
+    return values;
+}
+
+std::string TransportFingerprint(const usdasset::http::HttpOptions& options) {
+    const usdasset::http::DestinationPolicy& reach = options.destinations;
+    std::string text;
+    text += "connect=" + std::to_string(options.connectTimeoutMs);
+    text += ";response=" + std::to_string(options.responseTimeoutMs);
+    text += ";transfer=" + std::to_string(options.transferTimeoutMs);
+    text += ";attempts=" + std::to_string(options.maxAttempts);
+    text += ";redirects=" + std::to_string(options.maxRedirects);
+    text += ";reach=";
+    text += reach.publicAddresses ? 'P' : '-';
+    text += reach.privateNetworks ? 'R' : '-';
+    text += reach.loopback ? 'L' : '-';
+    text += reach.linkLocal ? 'K' : '-';
+    text += reach.metadata ? 'M' : '-';
+    text += ";agent=" + options.userAgent;
+    return text;
 }
 
 }  // namespace usdhttpresolver

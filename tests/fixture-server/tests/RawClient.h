@@ -49,6 +49,12 @@ struct RawResponse {
     std::vector<unsigned char> body;
     ResponseEnd end = ResponseEnd::NoResponse;
 
+    /// Bytes from the first byte of the status line through the blank line
+    /// that ends the head. Recorded rather than reconstructed from `headers`,
+    /// because the OversizedHeaders row is a claim about what was on the wire,
+    /// and a sum over parsed fields would be a claim about this parser.
+    std::size_t headBytes = 0;
+
     /// Milliseconds from the request being sent to the blank line arriving,
     /// and to the body finishing. The two slow behaviors differ only in which
     /// of these grows, which is why `Timeout` is required to name the deadline.

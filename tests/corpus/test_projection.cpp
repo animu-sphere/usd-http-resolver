@@ -16,10 +16,12 @@
 // the read contract -- that is `tests/boundary`, over an oracle, and no server
 // is involved in it.
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "usdAssetHttp/HttpAssetReader.h"
@@ -291,6 +293,49 @@ void TestFraming(Server& server) {
                     StatusCode::InvalidResponse);
 }
 
+void TestOversizedHeaders(Server& server) {
+    // A correct response with a header block no client should buffer: a
+    // megabyte of well-formed fields after a `Content-Length` and an
+    // `Accept-Ranges` that are both present and both right. §10.1 of the design
+    // policy requires a bound on the block and not only on the body, and the
+    // prefix that fits under the bound is exactly what a careless client would
+    // open the asset on.
+    g_exercised.insert(Behavior::OversizedHeaders);
+    const std::string path = "/oversized-headers";
+    server.Serve(MakeSpec(path, Behavior::OversizedHeaders));
+    server.ClearLog();
+
+    const HttpOpenResult opened = usdasset::http::Open(server.Url(path), FastOptions());
+    if (opened.status.code != StatusCode::InvalidResponse) {
+        ReportCode(Behavior::OversizedHeaders, "open", opened.status.code,
+                   StatusCode::InvalidResponse);
+        return;
+    }
+    CHECK(opened.reader == nullptr);
+    // Named as a size, so that a human can tell an origin that misbehaved from
+    // a bound that was too tight.
+    CHECK(opened.status.message.find("header block") != std::string::npos);
+
+    // And not retried: nothing about asking again would make the block
+    // smaller, and a retry would buffer the same 64 KiB a second time.
+    //
+    // Waited for rather than read at once. The server logs a request when its
+    // response head has been written or abandoned, and a client that stops
+    // reading at the bound leaves that write to fail on the server's clock
+    // rather than on this thread's. Every request `Open` issued was on the
+    // wire before it returned, so once the log is quiet it is complete.
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    std::size_t logged = server.RequestCount();
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const std::size_t now = server.RequestCount();
+        if (now > 0 && now == logged) break;
+        logged = now;
+    }
+    CHECK_EQ(server.RequestCount(), std::size_t(1));
+}
+
 void TestValidatorChange(Server& server) {
     g_exercised.insert(Behavior::ValidatorChangeMidRead);
     const std::string path = "/moving";
@@ -480,6 +525,7 @@ int main() {
     TestTransientServerError(*server);
     TestRangeSupport(*server);
     TestFraming(*server);
+    TestOversizedHeaders(*server);
     TestValidatorChange(*server);
     TestRedirectLoop(*server);
     TestDeadlines(*server);

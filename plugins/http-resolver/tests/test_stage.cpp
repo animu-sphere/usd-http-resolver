@@ -37,6 +37,9 @@
 #include "pxr/usd/ar/assetInfo.h"
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
+#include "pxr/usd/ar/resolverContext.h"
+#include "pxr/usd/ar/resolverContextBinder.h"
+#include "pxr/usd/ar/resolverScopedCache.h"
 #include "pxr/usd/ar/timestamp.h"
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/usd/attribute.h"
@@ -365,6 +368,59 @@ int RunChildMode(const std::string& url, const std::string& reportPath) {
     std::ofstream report(reportPath);
     report << Checksum(window.data(), window.size()) << "\n";
     return report ? 0 : 1;
+}
+
+/// The other child: open one *local* stage, and nothing else.
+///
+/// It exists to be the host RESOLVER.md §1 makes a promise to -- one with this
+/// bundle installed that never names an `http` URL. Opening a local stage binds
+/// a resolver context, and binding one constructs every resolver that
+/// implements contexts, this one included.
+int RunLocalOnlyChildMode(const std::string& layerPath) {
+    const UsdStageRefPtr stage = UsdStage::Open(layerPath);
+    if (!stage) {
+        std::fprintf(stderr, "child: local stage did not open: %s\n", layerPath.c_str());
+        return 1;
+    }
+    return 0;
+}
+
+/// Installing this bundle changes nothing about a process that opens only
+/// local assets -- not even a directory on disk.
+///
+/// The case the constructor's emptiness is for. Because this resolver
+/// implements contexts, OpenUSD constructs it in any process that opens any
+/// stage; a constructor that configured the persistent tier would create the
+/// directory `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` names for a host that
+/// never asked for a remote asset. Run as a child, because the claim is about
+/// a process whose first contact with the resolver is a local stage, and this
+/// one has long since configured it.
+void TestLocalOnlyProcessIsUntouched(const char* executable,
+                                     const std::string& localLayer) {
+    namespace fs = std::filesystem;
+    if (executable == nullptr || *executable == '\0') return;
+
+    const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    const fs::path untouched =
+        fs::temp_directory_path() / ("usd-http-resolver-untouched-" + std::to_string(now));
+    std::error_code error;
+    fs::remove_all(untouched, error);
+
+    const fs::path layer = fs::absolute(localLayer);
+    std::string command =
+        "\"" + std::string(executable) + "\" --open-local \"" + layer.string() + "\"";
+#if defined(_WIN32)
+    command = "\"" + command + "\"";
+#endif
+
+    SetEnvironment("USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", untouched.string());
+    const int status = std::system(command.c_str());
+    SetEnvironment("USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR", std::string());
+
+    CHECK_EQ(status, 0);
+    // The stage opened, the resolver was constructed, and nothing was made.
+    CHECK(!fs::exists(untouched));
+    fs::remove_all(untouched, error);
 }
 
 /// The persistent tier, end to end and across a real process boundary.
@@ -913,6 +969,254 @@ void TestLocalResolutionIsUnchanged(const std::string& localLayer) {
     mark.Clear();
 }
 
+/// True when `mark` holds an error naming `code`.
+bool SawCode(const TfErrorMark& mark, const char* code) {
+    for (const TfError& error : mark) {
+        if (error.GetCommentary().find(code) != std::string::npos) return true;
+    }
+    return false;
+}
+
+/// CONFIGURATION.md §4: a context configures the stage it is bound to, and
+/// nothing else.
+///
+/// The context is made the way a host makes one -- from a string, through
+/// OpenUSD's own entry point -- because that is the whole interface: no header
+/// of this repository reaches a host, and a test that constructed the object
+/// directly would be testing a path nobody takes.
+void TestContextConfiguresOneStage() {
+    const std::string path = "/context/scene.usda";
+    Serve(path, Bytes("#usda 1.0\n\ndef Xform \"Scoped\"\n{\n}\n"), "\"ctx-1\"");
+    const std::string url = g_server->Url(path);
+
+    const ArResolverContext refusing = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_DESTINATIONS=public");
+    CHECK(!refusing.IsEmpty());
+    // Printed canonically, which is what a log line or a `repr` shows.
+    CHECK(refusing.GetDebugString().find(
+              "HttpResolverContext(USD_HTTP_RESOLVER_DESTINATIONS=public)") !=
+          std::string::npos);
+
+    // Two spellings of one context are one context. Either scheme reaches the
+    // resolver, because one type serves both.
+    const ArResolverContext respelled = ArGetResolver().CreateContextFromString(
+        "https", "  USD_HTTP_RESOLVER_DESTINATIONS = public ;");
+    CHECK(respelled == refusing);
+    CHECK(hash_value(respelled) == hash_value(refusing));
+
+    // And not only in whitespace: values are kept as the parser read them, so
+    // the order of a list and a leading zero do not make a second context --
+    // which, to a stage cache, would be a second stage.
+    CHECK(ArGetResolver().CreateContextFromString(
+              "http", "USD_HTTP_RESOLVER_DESTINATIONS=private, public;"
+                      "USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS=060000") ==
+          ArGetResolver().CreateContextFromString(
+              "http", "USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS=60000;"
+                      "USD_HTTP_RESOLVER_DESTINATIONS=public,private"));
+
+    // Under the refusing context the stage does not open, and the origin never
+    // hears about it: the literal loopback address is refused before a
+    // connection exists.
+    {
+        TfErrorMark mark;
+        const UsdStageRefPtr refused = UsdStage::Open(url, refusing);
+        CHECK(!refused);
+        CHECK(SawCode(mark, "HTTP002"));
+        CHECK_EQ(RequestsFor(path), std::size_t(0));
+        mark.Clear();
+    }
+
+    // The same URL, with no context bound, opens -- the environment's default
+    // permits loopback. And the stage it opens is held, so that its root layer
+    // stays in OpenUSD's layer registry for the next case.
+    TfErrorMark mark;
+    const UsdStageRefPtr permitted = UsdStage::Open(url);
+    CHECK(permitted != nullptr);
+    if (permitted) CHECK(permitted->GetPrimAtPath(SdfPath("/Scoped")).IsValid());
+    CHECK(mark.IsClean());
+    mark.Clear();
+
+    // The case the whole context-dependence answer is for. The layer is loaded
+    // and registered; a registry that found it by identifier would hand it to
+    // the refusing stage without asking this resolver anything, and the policy
+    // would be walked past by having opened the URL somewhere else first.
+    {
+        TfErrorMark refusedMark;
+        const std::size_t before = RequestsFor(path);
+        const UsdStageRefPtr stillRefused = UsdStage::Open(url, refusing);
+        CHECK(!stillRefused);
+        CHECK_EQ(RequestsFor(path), before);
+        refusedMark.Clear();
+    }
+
+    // And a context that says nothing configures a stage exactly as no
+    // context does: it opens, whatever the string got wrong. What it got wrong
+    // was reported when it was created, and is not in what it carries.
+    TfErrorMark lenientMark;
+    const ArResolverContext lenient = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_BLOCK_SIZE=16384; NOT_A_VARIABLE=1");
+    CHECK(lenient.GetDebugString().find("HttpResolverContext()") != std::string::npos);
+    CHECK(UsdStage::Open(url, lenient) != nullptr);
+    lenientMark.Clear();
+}
+
+/// A reader `Resolve` retained under one configuration is handed to an
+/// `OpenAsset` under another only when the two would have opened it the same
+/// way. Otherwise a stage whose context refuses a destination could read from it
+/// through a reader somebody else's resolve left behind.
+void TestRetainedOpenIsNotHandedAcrossContexts() {
+    const std::string path = "/context/retained.bin";
+    Serve(path, Pattern(4096), "\"retained-1\"");
+    const std::string url = g_server->Url(path);
+
+    // Resolved with no context: one metadata request, and the reader is kept
+    // for the `OpenAsset` that usually follows.
+    TfErrorMark mark;
+    CHECK(!ArGetResolver().Resolve(url).empty());
+    CHECK_EQ(RequestsFor(path), std::size_t(1));
+
+    // Opened under a context that refuses loopback. The retained reader was
+    // opened under a policy this caller does not have, so it is not this
+    // caller's to take: the open is performed again, under the caller's own
+    // policy, and refused.
+    const ArResolverContext refusing = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_DESTINATIONS=public,private");
+    {
+        ArResolverContextBinder binder(refusing);
+        const std::shared_ptr<ArAsset> asset =
+            ArGetResolver().OpenAsset(ArResolvedPath(url));
+        CHECK(asset == nullptr);
+        CHECK(SawCode(mark, "HTTP002"));
+    }
+    mark.Clear();
+
+    // And the reader is still there for a caller it fits: opened with no
+    // context, it is taken rather than re-opened, so no second metadata
+    // request reaches the origin.
+    const std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(ArResolvedPath(url));
+    CHECK(asset != nullptr);
+    CHECK_EQ(RequestsFor(path), std::size_t(1));
+    CHECK(mark.IsClean());
+    mark.Clear();
+}
+
+/// An `ArResolverScopedCache` keeps what it resolved -- per configuration, and
+/// not per path.
+///
+/// OpenUSD caches `Resolve` by path alone on behalf of a resolver that does not
+/// implement scoped caches, and a scope routinely spans more than one stage. So
+/// this resolver keeps the scope's cache itself, keyed as the retained opens
+/// are, and this is the case that says why: a refusing context inside a scope
+/// in which the path already resolved is still refused.
+void TestScopedCacheKeepsContextsApart() {
+    const std::string path = "/context/scoped.usda";
+    Serve(path, Bytes("#usda 1.0\n"), "\"scoped-1\"");
+    const std::string url = g_server->Url(path);
+
+    const ArResolverContext refusing = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_DESTINATIONS=public");
+
+    TfErrorMark mark;
+    ArResolverScopedCache scope;
+
+    CHECK(!ArGetResolver().Resolve(url).empty());
+    CHECK_EQ(RequestsFor(path), std::size_t(1));
+
+    {
+        ArResolverContextBinder binder(refusing);
+        CHECK(ArGetResolver().Resolve(url).empty());
+        CHECK(SawCode(mark, "HTTP002"));
+    }
+    mark.Clear();
+
+    // And what the scope is for still holds. The retained reader is taken by
+    // an open, so a resolve outside a scope would cost a second metadata
+    // request; inside it, the scope answers.
+    CHECK(ArGetResolver().OpenAsset(ArResolvedPath(url)) != nullptr);
+    CHECK(!ArGetResolver().Resolve(url).empty());
+    CHECK_EQ(RequestsFor(path), std::size_t(1));
+    CHECK(mark.IsClean());
+    mark.Clear();
+}
+
+/// Asset info answers from what this process remembers only for a caller that
+/// could have reached the asset itself.
+///
+/// Identity is shared across contexts -- a validator describes the bytes at a
+/// URL, not the configuration that fetched them -- but a stage whose context
+/// refuses the destination is not told the size and token of an asset another
+/// stage opened there. It is told what it would have been told had nobody
+/// opened it.
+void TestAssetInfoIsNotToldAcrossAPolicy() {
+    const std::string path = "/context/identity.bin";
+    Serve(path, Pattern(4096), "\"identity-ctx-1\"");
+    const std::string url = g_server->Url(path);
+
+    // Opened with no context bound: the identity is known to this process.
+    CHECK(ArGetResolver().OpenAsset(ArResolvedPath(url)) != nullptr);
+    CHECK(!InfoField(ArGetResolver().GetAssetInfo(url, ArResolvedPath(url)),
+                     "validationToken")
+               .empty());
+
+    const ArResolverContext refusing = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_DESTINATIONS=public");
+    {
+        TfErrorMark mark;
+        ArResolverContextBinder binder(refusing);
+        // With the empty resolved path a refused resolve leaves behind, and
+        // with the path itself: nothing either way, and no diagnostic.
+        const ArAssetInfo unresolved = ArGetResolver().GetAssetInfo(url, ArResolvedPath());
+        CHECK(unresolved.version.empty());
+        CHECK(unresolved.resolverInfo.IsEmpty());
+        const ArAssetInfo resolved = ArGetResolver().GetAssetInfo(url, ArResolvedPath(url));
+        CHECK(resolved.version.empty());
+        CHECK(resolved.resolverInfo.IsEmpty());
+        CHECK(mark.IsClean());
+        mark.Clear();
+    }
+
+    // A context that could have reached it -- one that only bounds retries --
+    // is told, from memory, without a request.
+    const ArResolverContext retries = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_MAX_RETRIES=0");
+    {
+        ArResolverContextBinder binder(retries);
+        const std::size_t before = RequestsFor(path);
+        const ArAssetInfo info = ArGetResolver().GetAssetInfo(url, ArResolvedPath());
+        CHECK(!info.version.empty());
+        CHECK_EQ(RequestsFor(path), before);
+    }
+}
+
+/// The transport bounds are a stage's too, not only the destination policy: a
+/// context that follows no redirects opens nothing behind one, while the same
+/// URL with no context bound follows it.
+void TestContextBoundsTheTransport() {
+    usdassetfixture::AssetSpec spec;
+    spec.path = "/context/moved.usda";
+    spec.content = Bytes("#usda 1.0\n\ndef Xform \"Moved\"\n{\n}\n");
+    spec.etag = "\"moved-1\"";
+    spec.behavior = usdassetfixture::Behavior::RedirectChain;
+    spec.redirectHops = 1;
+    g_server->Serve(spec);
+    const std::string url = g_server->Url(spec.path);
+
+    const ArResolverContext noRedirects = ArGetResolver().CreateContextFromString(
+        "http", "USD_HTTP_RESOLVER_MAX_REDIRECTS=0");
+    {
+        TfErrorMark mark;
+        ArResolverContextBinder binder(noRedirects);
+        CHECK(ArGetResolver().Resolve(url).empty());
+        CHECK(SawCode(mark, "HTTP004"));
+        mark.Clear();
+    }
+
+    TfErrorMark mark;
+    CHECK(!ArGetResolver().Resolve(url).empty());
+    CHECK(mark.IsClean());
+    mark.Clear();
+}
+
 /// Writes the local fixture beside the test executable's working directory, so
 /// that the local-resolution case does not depend on an installed fixture path.
 std::string WriteLocalLayer() {
@@ -931,6 +1235,9 @@ int main(int argc, char** argv) {
     // against a second process.
     if (argc >= 4 && std::string(argv[1]) == "--read-window") {
         return RunChildMode(argv[2], argv[3]);
+    }
+    if (argc >= 3 && std::string(argv[1]) == "--open-local") {
+        return RunLocalOnlyChildMode(argv[2]);
     }
 
     std::string error;
@@ -967,9 +1274,16 @@ int main(int argc, char** argv) {
         TestAssetInfoUnderConcurrentOpen();
         TestAssetInfoDoesNotRediscoverAFailure();
         TestAgedOutIdentityStillDetectsARepublish();
+        TestContextConfiguresOneStage();
+        TestRetainedOpenIsNotHandedAcrossContexts();
+        TestScopedCacheKeepsContextsApart();
+        TestAssetInfoIsNotToldAcrossAPolicy();
+        TestContextBoundsTheTransport();
         TestRetainedOpenSurvivesProcessExit();
         TestWritingIsRefused();
-        TestLocalResolutionIsUnchanged(WriteLocalLayer());
+        const std::string localLayer = WriteLocalLayer();
+        TestLocalResolutionIsUnchanged(localLayer);
+        TestLocalOnlyProcessIsUntouched(argv[0], localLayer);
     } else {
         std::fprintf(stderr,
                      "FAIL: no resolver claimed %s -- is the bundle's "

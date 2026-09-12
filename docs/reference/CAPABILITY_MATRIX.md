@@ -4,7 +4,7 @@ This document describes what the current tree implements. It is not a plan.
 Intent lives in the [roadmap](../roadmap/README.md); contracts live in
 [architecture/](../architecture/).
 
-Last updated: 2026-09-04, against `main` at `v0.5.0`.
+Last updated: 2026-09-12, against `main` after `v0.5.0`.
 
 ## Summary
 
@@ -32,7 +32,7 @@ byte-equivalent to the local backend over every fixture size and 10,000
 generated cases.
 
 `tests/fixture-server` is no longer a passing oracle waiting for a subject.
-`tests/corpus` is the subject: every one of the 18 named behaviors is projected
+`tests/corpus` is the subject: every one of the 19 named behaviors is projected
 onto a `StatusCode`, and the coverage is asserted at runtime rather than
 claimed. Neither side knows the other — nothing in the fixture server has heard
 of `StatusCode`, and nothing in the backend has heard of `Behavior` — so a
@@ -58,7 +58,7 @@ byte-equivalent to the reader underneath.
 
 The resolver takes it. Every asset the bundle opens is decorated and bound into
 the process store, and the four cache variables in
-[CONFIGURATION.md](CONFIGURATION.md) are read at construction.
+[CONFIGURATION.md](CONFIGURATION.md) are read at the resolver's first use.
 
 Identity now leaves the process, and so do the bytes. `GetAssetInfo` publishes
 the resolved identifier, the size, an opaque validation token, and a stability
@@ -122,8 +122,10 @@ not planned                   explicitly out of scope
 | Resume of a short transfer | implemented | The remainder is re-requested from where it stopped, bounded by the same budget; past it, `InvalidResponse` |
 | Range unsupported → hard error | implemented | `RangeNotSupported`, at open when `Accept-Ranges` is absent and at the first read when it was advertised and then ignored. No whole-asset fallback, per [ADR-0002](../adr/0002-range-unsupported-policy.md) |
 | Response body bounded by the request | implemented | The caller's buffer is the bound. A `200` answering a 64 KiB range request moves 64 KiB and is cut off |
-| Scheme allowlist, at the first hop and at every redirect | implemented | `http` and `https` only. A redirect target is parsed by the same parser as an original identifier, so a `Location` naming `file:` or `s3:` is an unusable location rather than a followed one |
-| Response header-block or total-response bound | not implemented | The caller's buffer bounds the body; nothing bounds what precedes it. §10.1 of the [design policy](../design/DESIGN_POLICY.md) |
+| Scheme allowlist, at the first hop and at every redirect | implemented | `http` and `https` only. A redirect target is parsed by the same parser as an original identifier, so a `Location` naming `file:` or `s3:` is an unusable location rather than a followed one — and never requested. Asserted per scheme in `usdAssetHttp_protocol`, because the property is a consequence of the parser and nothing else would notice it widening |
+| Per-stage configuration through `ArResolverContext` | implemented | `CreateContextFromString("http"` or `"https", "NAME=value; ...")`, with the environment's names. Eight variables per stage — the deadlines, retries, redirects, destinations, and the two coalescing limits — and the four the process shares stay the environment's. Values are kept as the parser read them, so contexts that say the same thing are equal. Every identifier is context-dependent, a retained open is handed only to a caller with the same transport options, a scoped cache is keyed by configuration, and asset info is not answered across a policy — so a stage whose context refuses a destination cannot reach it through another stage's layer, reader, scope, or identity. The resolver is constructed in every process that opens a stage and does nothing until first used, so a local-only host is untouched. Printable from Python as its canonical string. [CONFIGURATION.md](CONFIGURATION.md) §4 |
+| Destination policy: loopback, private, link-local, and metadata reach | implemented | `USD_HTTP_RESOLVER_DESTINATIONS`, default `public,private,loopback` — link-local and the well-known instance-metadata endpoints refused, the latter by value wherever they sit (`fd00:ec2::254` is unique-local, `100.100.100.200` is shared address space). Judged three times: at connect time against the address a name resolved to; before each request against the host as libcurl will send it, so decimal, octal, hexadecimal, and percent-encoded spellings are judged as the address they normalize to, through a proxy as well as without one; and at every redirect hop against a canonical literal. IPv4-mapped, -compatible, and NAT64 addresses are the class of the IPv4 address they carry. A refusal is `AccessDenied` naming the class, with no request sent. Asserted as a table in `usdAssetHttp_destination`, over a scripted transport in `usdAssetHttp_protocol`, and over a real socket — through `localhost`, `127.1`, and a proxy — in `usdAssetHttp_destination_policy`. [CONFIGURATION.md](CONFIGURATION.md) §2.1 |
+| Response header-block and total-response bound | implemented | 64 KiB of header per exchange, summed across interim responses, and the caller's buffer for the body. A response abandoned at the header bound is `InvalidResponse` whatever its status, and is not retried. The corpus's `OversizedHeaders` row pads a correct response with a megabyte of ordinary fields, which libcurl alone accepts. §10.1 of the [design policy](../design/DESIGN_POLICY.md) |
 | Loopback / private-network destination policy | not implemented | §10.2 of the design policy. It lands with the configuration surface, and it has to distinguish a fixture server from a deployment, since the hostile corpus is itself loopback |
 | Content encoding refused, not decoded | implemented | `Accept-Encoding: identity` on every request. A compressed range response would make the byte accounting describe the wire rather than the asset, and a decompressing client is a client with an unbounded output for a bounded input |
 | Bounded whole-asset fallback | deferred | Its own residency model; needs a new ADR and a demonstrated need |
@@ -206,7 +208,7 @@ not planned                   explicitly out of scope
 | CI: sanitizer cells | implemented | `core-ci.yml`, `sanitizers` job, Linux. A sanitizer is a property of the compiler, and MSVC implements only `address` — unverified at that |
 | CI: generated OpenStrata support matrix | implemented | `openstrata.ci.yaml`, six `pull_request` cells, and `ost-source-ci.yml` generated from it: the dependency graph on Linux and Windows, `ost build` + `ost test` on Linux and macOS arm64, and the bundle through the pyramid to L1 on the same two. The L1 cap is [report 02](../reports/ost/02-2026-08-18-resolver-bundle-under-the-pyramid.md) §2 |
 | CI: plugin lane on Windows | implemented | `plugin-windows-ci.yml`, hand-authored: no generated cell can hand CMake the vcpkg prefix libcurl needs. It reads its pins back out of `openstrata.ci.yaml` and asserts `httpResolver_stage` by name from the `ctest` log; see [report 03](../reports/ost/03-2026-08-18-a-support-matrix-with-one-hand-authored-lane.md) |
-| Hostile-server fixture corpus | implemented | `tests/fixture-server`; 18 behaviors covering all nine conditions in §11.2 of the design policy. Additional to the boundary suite, not a substitute |
+| Hostile-server fixture corpus | implemented | `tests/fixture-server`; 19 behaviors covering all nine conditions in §11.2 of the design policy, and the header-block bound of §10.1. Additional to the boundary suite, not a substitute |
 | Fixture-server self-test | implemented | Asserts over a raw socket that each behavior puts on the wire what its name claims, with a client that shares no HTTP code with the server |
 | Corpus projection onto the typed vocabulary | implemented | `tests/corpus`; every behavior maps to a `StatusCode`, and coverage against `AllBehaviors()` is asserted at runtime rather than claimed |
 | Boundary suite against the HTTP backend | implemented | `tests/boundary/backends/boundary_http_main.cpp`, one row, running the suite unchanged over a real server and a real socket |

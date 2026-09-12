@@ -61,6 +61,7 @@ find_package(CURL REQUIRED)
 
 add_library(usdAssetHttp STATIC
     src/CurlTransport.cpp
+    src/Destination.cpp
     src/Framing.cpp
     src/HttpAssetReader.cpp
     src/Transport.cpp

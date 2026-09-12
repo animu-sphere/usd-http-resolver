@@ -803,6 +803,231 @@ void TestConflictingContentLengthIsRefused() {
     }
 }
 
+/// A response the transport abandoned at the header bound, carrying whatever
+/// prefix of the block arrived. `CurlTransport` clears that prefix before
+/// handing the response up; this script deliberately does not, because the rule
+/// under test is the exchange layer's, and it has to hold for any transport.
+TransportResponse AbandonedAtHeaderBound(TransportResponse prefix) {
+    prefix.error = TransportError::HeadersTooLarge;
+    return prefix;
+}
+
+void TestAbandonedHeaderBlockIsNotAResponse() {
+    // §10.1 of the design policy: the header block is bounded, and a response
+    // whose block ran past the bound is refused whole. The status line is the
+    // one part of it that arrived intact, and the risk is a layer that reads
+    // it -- a `200`, with a `Content-Length` and an `Accept-Ranges` in the
+    // prefix -- and opens the asset on a response nobody finished receiving.
+    {
+        auto script = MakeScript([](const TransportRequest&, int) {
+            return AbandonedAtHeaderBound(MetadataResponse(kSize, "\"v1\""));
+        });
+        const HttpOpenResult opened = OpenWith(script);
+        CHECK_EQ(opened.status.code, StatusCode::InvalidResponse);
+        CHECK(opened.reader == nullptr);
+        CHECK(opened.status.message.find("header block") != std::string::npos);
+        CHECK(opened.status.transportStatus.has_value());
+        // Not retried. Nothing about asking again makes the block smaller.
+        CHECK_EQ(script->Count(), 1);
+    }
+    {
+        // Nor when its status line is one the retry policy would otherwise
+        // act on. A `503` followed by a megabyte of fields is a hostile
+        // response, not a transient one, and retrying it buffers the bound
+        // again for every attempt the budget allows.
+        const int statuses[] = {503, 429, 502, 504};
+        for (const int status : statuses) {
+            auto script = MakeScript([status](const TransportRequest&, int) {
+                TransportResponse response;
+                response.status = status;
+                response.connected = true;
+                response.headers.Add("Retry-After", "0");
+                return AbandonedAtHeaderBound(response);
+            });
+            HttpOptions options;
+            options.maxAttempts = 3;
+            CHECK_EQ(OpenWith(script, options).status.code, StatusCode::InvalidResponse);
+            CHECK_EQ(script->Count(), 1);
+        }
+    }
+    {
+        // A redirect whose block did not end is not followed, whatever its
+        // `Location` said.
+        auto script = MakeScript([](const TransportRequest&, int) {
+            return AbandonedAtHeaderBound(RedirectResponse("/elsewhere"));
+        });
+        CHECK_EQ(OpenWith(script).status.code, StatusCode::InvalidResponse);
+        CHECK_EQ(script->Count(), 1);
+    }
+    {
+        // And a range response: a correct `Content-Range` in the prefix is
+        // not a framed body, and the read is neither resumed nor retried.
+        auto script = MakeScript([](const TransportRequest& request, int index) {
+            if (index == 0) return MetadataResponse(kSize, "\"v1\"");
+            return AbandonedAtHeaderBound(
+                PartialResponse(request, 0, kSize, "\"v1\"", 0xA5));
+        });
+        HttpOpenResult opened = OpenWith(script);
+        CHECK(opened.reader != nullptr);
+        if (!opened.reader) return;
+
+        std::vector<unsigned char> buffer(256, 0);
+        const ReadResult read = opened.reader->Read(0, buffer.data(), 256);
+        CHECK_EQ(read.status.code, StatusCode::InvalidResponse);
+        CHECK_EQ(read.bytesRead, std::size_t(0));
+        CHECK_EQ(script->Count(), 2);
+    }
+}
+
+void TestRedirectTargetsAreHeldToTheSchemeAllowlist() {
+    // §10.2 of the design policy: the scheme set is an allowlist, applied at
+    // every hop and not only the first. It holds today as a consequence rather
+    // than as a check -- a `Location` goes through the same parser as an
+    // original identifier, and that parser accepts two schemes -- which is
+    // exactly why it is asserted here: nothing else would notice if the parser
+    // ever widened.
+    //
+    // Each target is refused before it is requested, so the one request in
+    // the log is the one that discovered the hop.
+    const char* const refused[] = {
+        "file:///etc/passwd",
+        "FILE:///etc/passwd",
+        "ftp://example.org/data/survey.copc",
+        "gopher://example.org/1",
+        "data:text/plain,hello",
+        "s3://bucket/key",
+        "https:/no-authority",
+    };
+    for (const char* location : refused) {
+        auto script = MakeScript([location](const TransportRequest&, int) {
+            return RedirectResponse(location);
+        });
+        const HttpOpenResult opened = OpenWith(script);
+        CHECK_EQ(opened.status.code, StatusCode::InvalidResponse);
+        CHECK(opened.status.message.find("unusable location") != std::string::npos);
+        CHECK_EQ(script->Count(), 1);
+    }
+
+    // The two forms that stay inside the allowlist without naming a scheme --
+    // a network-path reference, which inherits the base's, and an absolute
+    // path -- are followed. Refusing them would be a different policy, and
+    // an origin moving an asset to its own CDN is the ordinary case.
+    const char* const followed[] = {
+        "//cdn.example.net/data/survey.copc",
+        "/data/moved.copc",
+    };
+    for (const char* location : followed) {
+        auto script = MakeScript([location](const TransportRequest&, int index) {
+            if (index == 0) return RedirectResponse(location);
+            return MetadataResponse(kSize, "\"v1\"");
+        });
+        const HttpOpenResult opened = OpenWith(script);
+        CHECK(opened.reader != nullptr);
+        CHECK_EQ(script->Count(), 2);
+        if (script->Count() == 2) {
+            CHECK_EQ(script->sent[1].url.compare(0, 8, "https://"), 0);
+        }
+    }
+}
+
+void TestDestinationPolicy() {
+    // §10.2 of the design policy: reach is bounded by declared policy. These
+    // are the halves of it that are the protocol layer's -- the pre-flight on a
+    // literal address, at every hop, and the projection of the transport's own
+    // refusal. The connect-time half is the transport's, and is exercised over
+    // a real socket in `tests/corpus`.
+    {
+        // The default refuses the metadata endpoints, and a literal is refused
+        // before any request is issued for it: the instance-metadata address
+        // never sees a packet from this process.
+        auto script = MakeScript(Wellbehaved("\"v1\""));
+        const HttpOpenResult opened = usdasset::http::testing::OpenWithTransport(
+            "http://169.254.169.254/latest/meta-data/", HttpOptions(), Factory(script));
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+        CHECK(opened.reader == nullptr);
+        CHECK(opened.status.message.find("metadata") != std::string::npos);
+        CHECK_EQ(script->Count(), 0);
+    }
+    {
+        // And at a redirect hop, which is where a hostile origin would put it.
+        // Every spelling that carries the refused address in another family is
+        // the same refusal.
+        const char* const targets[] = {
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::ffff:169.254.169.254]/latest/meta-data/",
+            "https://[fe80::1%25en0]/x",
+        };
+        for (const char* target : targets) {
+            auto script = MakeScript([target](const TransportRequest&, int) {
+                return RedirectResponse(target);
+            });
+            const HttpOpenResult opened = OpenWith(script);
+            CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+            // One request: the one that discovered the hop.
+            CHECK_EQ(script->Count(), 1);
+        }
+    }
+    {
+        // A narrower policy refuses what it says, and nothing else. Loopback
+        // is permitted by default -- the fixture server is loopback -- and a
+        // deployment that refuses it gets the refusal it asked for.
+        HttpOptions options;
+        options.destinations.loopback = false;
+        auto script = MakeScript(Wellbehaved("\"v1\""));
+        const HttpOpenResult refused = usdasset::http::testing::OpenWithTransport(
+            "http://127.0.0.1:8080/a.usda", options, Factory(script));
+        CHECK_EQ(refused.status.code, StatusCode::AccessDenied);
+        CHECK(refused.status.message.find("loopback") != std::string::npos);
+        CHECK_EQ(script->Count(), 0);
+
+        const HttpOpenResult permitted = usdasset::http::testing::OpenWithTransport(
+            "http://127.0.0.1:8080/a.usda", HttpOptions(), Factory(script));
+        CHECK(permitted.reader != nullptr);
+    }
+    {
+        // The policy reaches the transport on every request -- the metadata
+        // request, each redirect hop, and every read -- because the
+        // connect-time half is judged there and a request without it would be
+        // judged by the default instead.
+        HttpOptions options;
+        options.destinations.privateNetworks = false;
+        options.destinations.linkLocal = true;
+        auto script = MakeScript([](const TransportRequest& request, int index) {
+            if (index == 0) return RedirectResponse("/moved.copc");
+            if (request.method == Method::Head) return MetadataResponse(kSize, "\"v1\"");
+            return PartialResponse(request, 0, kSize, "\"v1\"", 0xA5);
+        });
+        HttpOpenResult opened = OpenWith(script, options);
+        CHECK(opened.reader != nullptr);
+        if (opened.reader) {
+            std::vector<unsigned char> buffer(64, 0);
+            CHECK_EQ(opened.reader->Read(0, buffer.data(), 64).status.code,
+                     StatusCode::Ok);
+        }
+        CHECK_EQ(script->Count(), 3);
+        for (const usdassethttptest::SentRequest& sent : script->sent) {
+            CHECK(sent.destinations == options.destinations);
+        }
+    }
+    {
+        // The transport's refusal -- every address the name resolved to was
+        // refused -- is `AccessDenied` naming the class, and is not retried:
+        // asking again asks the same rule the same question.
+        auto script = MakeScript([](const TransportRequest&, int) {
+            TransportResponse response =
+                TransportFailure(TransportError::DestinationRefused);
+            response.refusedClass = usdasset::http::AddressClass::Private;
+            return response;
+        });
+        HttpOptions options;
+        options.maxAttempts = 3;
+        const HttpOpenResult opened = OpenWith(script, options);
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+        CHECK(opened.status.message.find("private") != std::string::npos);
+        CHECK_EQ(script->Count(), 1);
+    }
+}
+
 void TestCallerErrors() {
     auto script = MakeScript(Wellbehaved("\"v1\""));
     HttpOpenResult opened = OpenWith(script);
@@ -840,6 +1065,9 @@ int main() {
     TestRetryBudgetIsSharedAcrossOneRead();
     TestRefusedRangeThatMeansTheAssetMoved();
     TestConflictingContentLengthIsRefused();
+    TestAbandonedHeaderBlockIsNotAResponse();
+    TestRedirectTargetsAreHeldToTheSchemeAllowlist();
+    TestDestinationPolicy();
     TestCallerErrors();
     return usdassettest::Report("usdAssetHttp/protocol");
 }

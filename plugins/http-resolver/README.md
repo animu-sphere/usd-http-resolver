@@ -23,6 +23,8 @@ When this README and that document disagree, the document wins.
 ```json
 "HttpResolver": {
     "bases": ["ArResolver"],
+    "implementsContexts": true,
+    "implementsScopedCaches": true,
     "uriSchemes": ["http", "https"]
 }
 ```
@@ -62,7 +64,8 @@ removed because §4.3 of the
 resolver API, and an identifier *is* the resolver API — a URL that needs
 credentials therefore fails at the origin with `HTTP002` rather than succeeding
 with a secret in every log line. Authentication arrives as the interception
-point in `v0.6.0`, not as a URL component.
+point in `v0.7.0`, supplied through the resolver context, and not as a URL
+component.
 
 Relative references anchor to the layer they were authored in, per RFC 3986
 §5.2, which is what makes a remote scene work at all: a layer published to a CDN
@@ -166,9 +169,11 @@ invalid timestamp costs a reload, never a wrong answer.
 
 ## Configuration
 
-The five transport bounds and the four cache values in
-[CONFIGURATION.md](../../docs/reference/CONFIGURATION.md), read once when the
-resolver is constructed:
+The transport bounds, the destination policy, the cache values, and the
+persistent tier in [CONFIGURATION.md](../../docs/reference/CONFIGURATION.md),
+read once, when the resolver is first used — not when it is constructed, because
+OpenUSD constructs it in every process that opens a stage and a host that only
+ever opens local ones must not have a cache directory created for it:
 
 | Variable | Maps to | Default |
 | --- | --- | --- |
@@ -177,6 +182,7 @@ resolver is constructed:
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | whole-transfer deadline | 300000 |
 | `USD_HTTP_RESOLVER_MAX_RETRIES` | attempts, minus one | 2 |
 | `USD_HTTP_RESOLVER_MAX_REDIRECTS` | redirect hops | 5 |
+| `USD_HTTP_RESOLVER_DESTINATIONS` | address classes a connection may reach | `public,private,loopback` |
 | `USD_HTTP_RESOLVER_BLOCK_SIZE` | cache block size, in bytes | 65536 |
 | `USD_HTTP_RESOLVER_CACHE_BUDGET` | process-wide cache budget, in bytes | 134217728 |
 | `USD_HTTP_RESOLVER_COALESCE_GAP` | blocks of gap merged into one request | 1 |
@@ -196,6 +202,15 @@ Only a `Stable` identity is written there
 directory is reversible to a URL — an entry's identity is a SHA-256 digest,
 because a resolved identifier can be a signed one.
 
+`USD_HTTP_RESOLVER_DESTINATIONS` is the reach an identifier from a layer nobody
+here authored is allowed to have, per §10.2 of the
+[design policy](../../docs/design/DESIGN_POLICY.md). The default refuses
+link-local addresses and the well-known instance-metadata endpoints — by value,
+wherever they sit, because two of them are inside ranges that are otherwise
+private — and keeps loopback and private networks reachable, because local
+fixture servers and intranet hosts are what `http` is registered for. A refusal
+is `HTTP002` naming the class, and no request is sent.
+
 A value that does not parse is a warning at construction and then the default;
 one bad value does not discard the others, and a value that is adjusted rather
 than refused — a block size rounded down to a power of two — warns and takes the
@@ -203,9 +218,23 @@ adjustment. `0` is legal for the two counters and means "do not", and is
 rejected for the three deadlines, because to most transports a zero deadline
 means *no* deadline — the one value §10 of the design policy exists to forbid.
 
-Per-stage configuration through `ArResolverContext` is `v0.6.0`. A host that
-opens two stages against two servers cannot be served by a process-global, and
-that is the surface the environment variables are a bootstrap for.
+Eight of these can also be set per stage, through an `ArResolverContext` made
+from a string with the same names — the transport bounds, the destination
+policy, and the two coalescing limits:
+
+```python
+ctx = Ar.GetResolver().CreateContextFromString(
+    "https", "USD_HTTP_RESOLVER_DESTINATIONS=public; USD_HTTP_RESOLVER_MAX_RETRIES=0")
+stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
+```
+
+The block size, the two budgets, and the persistent directory stay the
+environment's, because every stage in the process shares the store they
+configure. A context is validated when it is created and warns then; what it
+carries afterwards is what it admitted. The rules, and why every identifier this
+bundle owns is declared context-dependent, are in
+[CONFIGURATION.md](../../docs/reference/CONFIGURATION.md) §4 and
+[RESOLVER.md](../../docs/architecture/RESOLVER.md) §6.
 
 ## Plugin discovery and installation
 
@@ -285,7 +314,7 @@ arithmetic, and a mistake in any of them is invisible from the outside:
 | Test | Asserts |
 | --- | --- |
 | `httpResolver_identifier` | normalization, anchoring, what is not claimed, idempotence |
-| `httpResolver_configuration` | the five variables, and what a bad value does |
+| `httpResolver_configuration` | every variable, and what a bad value does |
 | `httpResolver_diagnostics` | the `HTTPxxx` table, the message form, and that no secret survives |
 | `httpResolver_identity` | what asset info may publish for a strong, weak, absent, or contradicted validator, and that no credential reaches it |
 | `httpResolver_stage` | a remote stage over a real socket, against the hostile fixture corpus |
@@ -295,8 +324,9 @@ The fifth is the release's claim: it stands up an origin on loopback, opens a
 a 4 KiB window out of a 1 MiB asset and checks the `Range` header the server
 actually received, and confirms that a `404` is silent, that a failure is not,
 that range-unsupported is terminal, that asset info reports the identity of the
-open rather than of a new request, and that a local stage still opens exactly as
-it did.
+open rather than of a new request, that a resolver context configures the stage
+it is bound to and no other — including through a layer another stage already
+loaded — and that a local stage still opens exactly as it did.
 
 One of its cases asserts nothing at all in a `CHECK`: it resolves an asset it
 never opens, leaving a retained reader to be destroyed during static teardown,
@@ -322,9 +352,11 @@ recorded in [NOTICE](../../NOTICE); nothing in this bundle adds one.
 
 ## Known limitations
 
-- **Nothing cached outlives the process.** The block cache is in front of every
-  asset this bundle opens (`v0.3.0`), and it is in memory only: on-disk
-  persistence is `v0.4.0`, admitted for a strong validator alone.
+- **Only a `Stable` identity outlives the process.** The block cache is in front
+  of every asset this bundle opens (`v0.3.0`), and the on-disk tier under it
+  (`v0.4.0`) admits a strong validator the origin issued and nothing weaker, so
+  an asset with a weak or absent validator is re-fetched by every process that
+  reads it.
 - **Identity is exposed through `GetAssetInfo` and nowhere else.** There is no
   side-channel API, and `GetModificationTimestamp` is invalid by design rather
   than by omission. See *Asset info and identity* above.
