@@ -117,11 +117,12 @@ enum class TransportError {
     /// every line that arrived may have been perfectly well formed -- what was
     /// wrong was how many of them there were.
     HeadersTooLarge,
-    /// Every address the name resolved to was one the request's
-    /// `DestinationPolicy` refuses, so no connection was attempted. Separate
-    /// from `ConnectFailed` because it is not a fact about the network: it is
-    /// the caller's own declared policy, and retrying it would be asking the
-    /// same question of the same rule.
+    /// The request's `DestinationPolicy` refused it before a connection was
+    /// attempted: either the host as the client would send it is a refused
+    /// address, or every address the name resolved to was one. Separate from
+    /// `ConnectFailed` because it is not a fact about the network: it is the
+    /// caller's own declared policy, and retrying it would be asking the same
+    /// question of the same rule.
     DestinationRefused,
     /// The transport itself failed -- out of memory, a handle that would not
     /// initialize. Never a property of the server.

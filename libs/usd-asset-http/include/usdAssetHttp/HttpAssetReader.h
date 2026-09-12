@@ -42,19 +42,33 @@ namespace http {
 
 /// What kind of network an address belongs to, for the destination policy.
 ///
-/// Four classes, and only the four a decision about request forgery turns on
+/// Five classes, and only the five a decision about request forgery turns on
 /// (§10.2 of the design policy). An address is classified by its numeric value
 /// and never by a name, so a hostname that resolves to a loopback address is a
 /// loopback destination however it is spelled.
 ///
+///   Metadata    the well-known instance-metadata and credential endpoints of
+///               the major clouds, wherever they sit: 169.254.169.254,
+///               169.254.170.2, 169.254.170.23, 169.254.0.23,
+///               100.100.100.200, 168.63.129.16, fd00:ec2::254, and
+///               fd00:ec2::23. Checked before the ranges below, because two of
+///               them are inside the private ones and one is public
 ///   Loopback    127.0.0.0/8, 0.0.0.0/8, ::1, and the unspecified address ::,
 ///               which a connect on the common stacks treats as this host
-///   LinkLocal   169.254.0.0/16 and fe80::/10 -- which is where cloud
-///               instance-metadata services live, 169.254.169.254 among them
+///   LinkLocal   169.254.0.0/16 and fe80::/10, apart from the metadata
+///               addresses in them
 ///   Private     10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, the shared address
 ///               space 100.64.0.0/10, the unique-local fc00::/7, and the
-///               deprecated site-local fec0::/10
+///               deprecated site-local fec0::/10, apart from the metadata
+///               addresses in them
 ///   Public      everything else
+///
+/// `Metadata` is a class of its own rather than a part of `LinkLocal` because
+/// the ranges do not contain it. An address range is a statement about routing,
+/// and the property a request-forgery policy cares about -- that answering
+/// this request hands a stranger the instance's credentials -- follows the
+/// provider rather than the range: AWS's IPv6 endpoint is unique-local, and
+/// Alibaba's sits in the shared address space.
 ///
 /// An IPv6 address that carries an IPv4 one -- mapped (`::ffff:a.b.c.d`),
 /// compatible (`::a.b.c.d`), or behind the NAT64 well-known prefix
@@ -65,11 +79,13 @@ enum class AddressClass {
     Private,
     Loopback,
     LinkLocal,
+    Metadata,
 };
 
 /// The stable lowercase spelling of a class: `public`, `private`, `loopback`,
-/// `link-local`. These are also the words the resolver's configuration takes,
-/// so that a message and the setting that would change it use one vocabulary.
+/// `link-local`, `metadata`. These are also the words the resolver's
+/// configuration takes, so that a message and the setting that would change it
+/// use one vocabulary.
 const char* AddressClassName(AddressClass addressClass) noexcept;
 
 /// Which classes of address a reader may connect to.
@@ -84,35 +100,49 @@ const char* AddressClassName(AddressClass addressClass) noexcept;
 ///                               fixture servers and intranet hosts
 ///                               (RESOLVER.md §1), and refusing either would
 ///                               break the uses the scheme exists for
-///   link-local                  refused -- nothing legitimate serves USD from
-///                               a link-local address, and the one thing that
-///                               reliably lives there is the credential
-///                               endpoint of a cloud instance
+///   link-local, metadata        refused -- nothing legitimate serves USD from
+///                               either, and a metadata address is where a
+///                               cloud instance hands out its credentials
 ///
 /// A deployment that wants a narrower reach says so; a render farm that must
 /// never reach its own intranet from a layer it did not author sets `public`
-/// alone.
+/// alone. Permitting `link-local` does not permit `metadata`: the second is
+/// never a side effect of the first.
 ///
-/// Judged twice, because each judgement covers what the other cannot. The
-/// address a connection is made to is judged at connect time, which is what
-/// makes the policy hold for a name that resolves to a refused address and for
-/// every spelling of an address a system resolver accepts. A literal address in
-/// the URL is also judged before any request is issued, at every redirect hop,
-/// which is what makes the policy hold through a proxy -- where the address this
-/// process connects to is the proxy's, and the destination is the proxy's to
-/// resolve.
+/// Judged three times, because each judgement covers what the others cannot.
+/// The address a connection is made to is judged at connect time, which is
+/// what makes the policy hold for a name that resolves to a refused address.
+/// The host the client will actually send is judged before each request, as
+/// the client itself parses it -- decimal, octal, and hexadecimal spellings of
+/// an address, and percent-encoded ones, normalized the way it will normalize
+/// them -- which is what makes the policy hold through a proxy, where the
+/// address this process connects to is the proxy's and the destination is the
+/// proxy's to resolve. And a literal in the URL is judged at every redirect hop
+/// before any transport sees it, so that the rule does not depend on which
+/// client is underneath.
 struct DestinationPolicy {
     bool publicAddresses = true;
     bool privateNetworks = true;
     bool loopback = true;
     bool linkLocal = false;
+    bool metadata = false;
 
     bool Permits(AddressClass addressClass) const noexcept;
+
+    /// True when every class `other` permits, this permits too. A
+    /// destination reached under `other` is reachable under this.
+    bool Covers(const DestinationPolicy& other) const noexcept {
+        return (publicAddresses || !other.publicAddresses) &&
+               (privateNetworks || !other.privateNetworks) &&
+               (loopback || !other.loopback) && (linkLocal || !other.linkLocal) &&
+               (metadata || !other.metadata);
+    }
 
     bool operator==(const DestinationPolicy& other) const noexcept {
         return publicAddresses == other.publicAddresses &&
                privateNetworks == other.privateNetworks &&
-               loopback == other.loopback && linkLocal == other.linkLocal;
+               loopback == other.loopback && linkLocal == other.linkLocal &&
+               metadata == other.metadata;
     }
     bool operator!=(const DestinationPolicy& other) const noexcept {
         return !(*this == other);

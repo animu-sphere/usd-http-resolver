@@ -62,6 +62,7 @@ struct HttpOptions {                 // all of it bounded
     int transferTimeoutMs = 300000;
     int maxRedirects      = 5;
     int maxAttempts       = 3;       // requests per logical operation, retries included
+    DestinationPolicy destinations;  // public, private, loopback; not link-local or metadata
     std::string userAgent;           // empty takes the default
 };
 
@@ -79,9 +80,11 @@ OpenResult     OpenAsset(const std::string& url, const HttpOptions& options);
 ```
 
 `HttpOptions` is a parameter rather than a set of constants so that a test can
-make a deadline elapse in milliseconds. It is not yet resolved from the
-environment or from an `ArResolverContext`; that is the configuration surface in
-`v0.6.0`.
+make a deadline elapse in milliseconds. Nothing here reads the environment:
+resolving these from a deployment's settings — the environment, or a stage's
+`ArResolverContext` — is the resolver's configuration surface
+([CONFIGURATION.md](../../docs/reference/CONFIGURATION.md)), and this module is
+the mechanism underneath it.
 
 ## Dependencies
 
@@ -132,7 +135,8 @@ HTTP/1.1 over libcurl, with almost every convenience turned off:
 | Raw response status | ADR-0002 makes a `200` answering a `Range` request `RangeNotSupported`, and a client that normalizes a partial response into "here are your bytes" cannot implement that |
 | `Accept-Encoding: identity` | A compressed range response would make the byte accounting describe the wire rather than the asset |
 | Bounded write callback | The caller's buffer is the bound. A server answering a 64 KiB range request with a 10 GB body moves 64 KiB and is then cut off |
-| `CURLOPT_OPENSOCKETFUNCTION` | The destination policy's connect-time half: each address libcurl is about to connect to is classified and refused or admitted before a socket exists, which is the one point where a resolved name's address is known and not yet reached |
+| `curl_url` host, before each request | The destination policy judged against the host as libcurl will send it: its own URL parser normalizes `2852039166`, `0xa9fea9fe`, and `%31%36%39.254.169.254` to `169.254.169.254` before a proxy ever sees them, so that is what is judged |
+| `CURLOPT_OPENSOCKETFUNCTION` | The destination policy's connect-time half: each address libcurl is about to connect to is classified and refused or admitted before a socket exists, which is the one point where a resolved name's address is known and not yet reached. Sockets it creates are close-on-exec, so a host that forks does not hand them to its children |
 | `CURLOPT_PROTOCOLS_STR` `http,https` | The scheme allowlist a second time. The parser enforces it; this makes a parser that ever widened widen into a refusal |
 | Bounded header callback | 64 KiB per exchange, interim responses included (`kMaxResponseHeaderBytes`). Without it the header table is a buffer whose size the server chooses: libcurl 8.7.1 on its own accepts a megabyte of ordinary header fields, measured against the corpus's `OversizedHeaders` row |
 | `CURLOPT_NOSIGNAL` | libcurl's alarm-based DNS timeout is not safe to use from a thread |
@@ -228,7 +232,7 @@ response whose weak validator has changed is still positive evidence of
 | Redirect chain past `maxRedirects`; no `Location`; unusable `Location` | `InvalidResponse` |
 | `https` → `http` redirect | `InvalidResponse` |
 | Response that is not HTTP | `InvalidResponse` |
-| Header block past 64 KiB, at any status | `InvalidResponse`, naming the bound; not retried |
+| Header block past 64 KiB, at any status | `InvalidResponse`, naming the bound; not retried, even behind a `503` |
 | DNS, refusal, TLS handshake, reset connection | `NetworkError` |
 | `5xx` or `429` after the retry budget | `NetworkError`, with the status attached |
 | Connect, response, or transfer deadline | `Timeout`, naming which |

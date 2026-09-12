@@ -30,64 +30,85 @@ state them for one stage rather than for the whole process.
   ```
 
   One vocabulary and one parser: a value in a context is refused or adjusted
-  for exactly the reasons the same value in the environment would be. Eight
-  variables may be set per stage — the three deadlines, retries, redirects, the
-  destination policy, and the two coalescing limits. The block size, the two
-  budgets, and the persistent directory stay the environment's, because every
-  stage shares the store they configure and the store's stripes are sized for
-  one block size. The environment is snapshot once, at construction, and a
-  context resolves against the snapshot: precedence is context, then
-  environment, then default. Problems are reported once, when the context is
-  created, and never per bind.
+  for exactly the reasons the same value in the environment would be, judged
+  over the environment it will be layered on. Eight variables may be set per
+  stage — the three deadlines, retries, redirects, the destination policy, and
+  the two coalescing limits. The block size, the two budgets, and the persistent
+  directory stay the environment's, because every stage shares the store they
+  configure and the store's stripes are sized for one block size. Precedence is
+  context, then environment, then default. Values are kept as the parser read
+  them, so `060000` and `60000`, or `private, public` and `public,private`, are
+  one context rather than two to every table OpenUSD keys on one. Problems are
+  reported once, when the context is created, and never per bind.
 
-- **Every identifier this resolver owns is context-dependent**, and it has to
-  be. For a path that is not, OpenUSD's layer registry finds an already-loaded
-  layer by its identifier whatever `Resolve` has just said, so a stage whose
-  context refuses a destination would be handed the layer anyway by any other
-  stage that had opened the URL first. Answering `false` was tried, and that is
-  exactly the case in `httpResolver_stage` that fails.
+- **A stage's context cannot be walked past through another stage.** Four ways
+  it could have been, each closed and each with its case in
+  `httpResolver_stage`. Every identifier this resolver owns is context-dependent,
+  because for a path that is not, OpenUSD's layer registry finds a loaded layer
+  by identifier whatever `Resolve` has just said. The opens `Resolve` retains
+  are keyed by transport options as well as identifier, because a reader keeps
+  the options it was opened with. Resolutions inside an `ArResolverScopedCache`
+  are cached by this resolver, keyed the same way, because OpenUSD caches them
+  by path alone for a resolver that does not — and a scope routinely spans two
+  stages. And asset info answers from memory only for a caller whose policy
+  could have reached the asset, so a refusing stage is not told the size and
+  token of an asset another stage opened.
 
-- **A retained open is handed only to a caller it fits.** The table of opens
-  `Resolve` keeps for the `OpenAsset` that follows is keyed by the transport
-  options as well as the identifier, because a reader keeps the options it was
-  opened with; a reader retained under a permissive policy is never handed to a
-  stage whose context is narrower. Keying by identifier alone was tried too, and
-  the refusing context got a reader.
+- **Installing the bundle still changes nothing about a local-only process.**
+  Implementing contexts means OpenUSD constructs this resolver in every process
+  that opens any stage, so the constructor does nothing: the environment is
+  read, the process stores configured, the persistent directory created, and
+  problems reported at the first resolve, open, asset-info query, or context
+  creation. A child process whose only stage is local, with
+  `USD_HTTP_RESOLVER_PERSISTENT_CACHE_DIR` set, leaves no directory behind; with
+  configuration back in the constructor, it did.
 
 - **A context is readable from Python**, as its canonical string:
   `Ar.ResolverContext('USD_HTTP_RESOLVER_DESTINATIONS=public')`. Without a
   to-Python conversion, `ctx.Get()` raised and `Usd.Stage.__repr__` printed
-  `pathResolverContext=<invalid repr>`; the conversion is registered once Python
-  is running, and a C++ host that never starts an interpreter never pays for it.
+  `pathResolverContext=<invalid repr>`. The conversion is registered once Python
+  is running, under the GIL and no other lock, so a Python thread and a C++
+  thread creating contexts at once cannot wait on each other. The context type
+  lives in this bundle's namespace, because `ArResolverContext` matches context
+  objects by type name.
 
 - **A destination policy**, `USD_HTTP_RESOLVER_DESTINATIONS`: which classes of
-  address — `public`, `private`, `loopback`, `link-local` — a connection may
-  reach. §10.2 of the design policy makes reach a declared policy rather than
-  whatever the host's network allows, because an identifier can arrive from a
-  layer nobody here authored and a resolver that fetches whatever it is told is
-  a request-forgery primitive.
+  address — `public`, `private`, `loopback`, `link-local`, `metadata` — a
+  connection may reach. §10.2 of the design policy makes reach a declared policy
+  rather than whatever the host's network allows, because an identifier can
+  arrive from a layer nobody here authored and a resolver that fetches whatever
+  it is told is a request-forgery primitive.
 
-  The default is `public,private,loopback`, which refuses exactly one class.
-  Loopback and private networks stay reachable, because local fixture servers
-  and intranet hosts are what `http` is registered for and a default that broke
-  them would be overridden everywhere; link-local is refused, because nothing
-  legitimate serves USD from it and the credential endpoint of a cloud instance,
-  `169.254.169.254`, is what reliably lives there.
+  The default is `public,private,loopback`. Loopback and private networks stay
+  reachable, because local fixture servers and intranet hosts are what `http` is
+  registered for and a default that broke them would be overridden everywhere;
+  link-local is refused, and so are the well-known instance-metadata endpoints,
+  which are a class of their own and classified by value, because no range
+  contains them: `169.254.169.254` is where most clouds put theirs, but AWS's
+  IPv6 endpoint is unique-local, Alibaba's is in the shared address space, and
+  Azure's WireServer is public. Permitting `link-local` does not permit
+  `metadata`.
 
-  Judged twice, and neither is redundant. At connect time, against the address
-  libcurl is about to connect to — after the name was resolved, before a socket
-  exists — which is what makes it hold for `localhost`, for a name whose answer
-  changed between lookups, and for `127.1`. And before any request, against a
-  literal in the URL at every redirect hop, which is what makes it hold through
-  a proxy, where the connection is the proxy's. Removing the first leaves the
-  second passing every literal case and lets `localhost` through a policy that
-  refuses loopback; the socket-level case is what catches it.
+  Judged three times, and none is redundant. At connect time, against the
+  address libcurl is about to connect to — after the name was resolved, before a
+  socket exists — which is what makes it hold for `localhost` and for a name
+  whose answer changed between lookups. Before each request, against the host
+  as libcurl's own URL parser will send it, which is what makes it hold through
+  a proxy: libcurl normalizes `2852039166`, `0xa9fea9fe`, and
+  `%31%36%39.254.169.254` to `169.254.169.254` before the proxy sees the
+  request, and without this check each of them reached a proxy that forwarded it
+  there. And at every redirect hop against a canonical literal, before any
+  transport sees it. Removing the connect-time check lets `localhost` through a
+  policy that refuses loopback; removing the client-side one lets the spellings
+  above through a proxy; each has the case that says so.
 
   An IPv6 address carrying an IPv4 one — mapped, compatible, or NAT64 — is the
-  class of the address it carries, so `[::ffff:169.254.169.254]` is link-local.
+  class of the address it carries, so `[::ffff:169.254.169.254]` is `metadata`.
   A refusal is `AccessDenied` (`HTTP002`) naming the class, with no request sent
   and no retry: the code a `403` gets, because a caller does the same thing about
-  both.
+  both. A list is read with its line breaks trimmed, so a list broken across
+  lines is the list written rather than a refused value that falls back to the
+  wider default. Sockets the policy admits are created close-on-exec.
 
 - **The scheme allowlist in the client as well as the parser.** libcurl is told
   `http,https` and nothing else, so a parser that ever widened would widen into a
@@ -101,8 +122,9 @@ state them for one stage rather than for the whole process.
   abandoned at the bound is refused whole, as `InvalidResponse` naming the
   bound, whatever its status — its status line arrived intact, and an open that
   read `Content-Length` and `Accept-Ranges` out of the prefix that fit would be
-  acting on a response nobody finished receiving. It is not retried: asking
-  again does not make the block smaller.
+  acting on a response nobody finished receiving. It is not retried, even when
+  the status line that did arrive was a `503`: asking again does not make the
+  block smaller.
 
   The bound was not optional, and the corpus is how that is known rather than
   argued. With it removed, libcurl 8.7.1 opens an asset behind a megabyte of
@@ -134,6 +156,11 @@ state them for one stage rather than for the whole process.
   default" — which was false: the adjusted value was the one in force. Adjusted
   and refused values are now told apart, and a refused context value says that
   its stage falls back to the environment rather than to the default.
+
+- **The environment is read at the resolver's first use, not at its
+  construction.** Nothing changes for a process that uses the resolver; a
+  process that only opens local stages no longer has its environment read, its
+  process stores reconfigured, or configuration warnings posted on its behalf.
 
 ## `v0.5.0` - 2026-08-27
 

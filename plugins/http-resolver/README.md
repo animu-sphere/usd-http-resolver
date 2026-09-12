@@ -24,6 +24,7 @@ When this README and that document disagree, the document wins.
 "HttpResolver": {
     "bases": ["ArResolver"],
     "implementsContexts": true,
+    "implementsScopedCaches": true,
     "uriSchemes": ["http", "https"]
 }
 ```
@@ -170,7 +171,9 @@ invalid timestamp costs a reload, never a wrong answer.
 
 The transport bounds, the destination policy, the cache values, and the
 persistent tier in [CONFIGURATION.md](../../docs/reference/CONFIGURATION.md),
-read once when the resolver is constructed:
+read once, when the resolver is first used — not when it is constructed, because
+OpenUSD constructs it in every process that opens a stage and a host that only
+ever opens local ones must not have a cache directory created for it:
 
 | Variable | Maps to | Default |
 | --- | --- | --- |
@@ -202,11 +205,11 @@ because a resolved identifier can be a signed one.
 `USD_HTTP_RESOLVER_DESTINATIONS` is the reach an identifier from a layer nobody
 here authored is allowed to have, per §10.2 of the
 [design policy](../../docs/design/DESIGN_POLICY.md). The default refuses
-link-local addresses alone — which is where a cloud instance's credential
-endpoint lives, and where nothing legitimate serves USD from — and keeps
-loopback and private networks reachable, because local fixture servers and
-intranet hosts are what `http` is registered for. A refusal is `HTTP002` naming
-the class, and no request is sent.
+link-local addresses and the well-known instance-metadata endpoints — by value,
+wherever they sit, because two of them are inside ranges that are otherwise
+private — and keeps loopback and private networks reachable, because local
+fixture servers and intranet hosts are what `http` is registered for. A refusal
+is `HTTP002` naming the class, and no request is sent.
 
 A value that does not parse is a warning at construction and then the default;
 one bad value does not discard the others, and a value that is adjusted rather

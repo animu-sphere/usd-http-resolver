@@ -34,7 +34,13 @@
 #include "pxr/usd/ar/defineResolverContext.h"
 #include "pxr/usd/ar/resolverContext.h"
 
-PXR_NAMESPACE_OPEN_SCOPE
+// In this bundle's namespace and not OpenUSD's. `ArResolverContext` finds a
+// context object by comparing type names, so a class called
+// `HttpResolverContext` in OpenUSD's namespace would be the same type, to it,
+// as any other plugin's class of that name -- and the object one resolver
+// found would be cast to the other's layout. The namespace is part of the name
+// it compares.
+namespace usdhttpresolver {
 
 class HttpResolverContext {
 public:
@@ -90,10 +96,17 @@ std::string ArGetDebugString(const HttpResolverContext& context);
 /// Registered once, and only once Python is running: a C++ host that never
 /// starts an interpreter never pays for it, and one that does gets it at the
 /// first context created afterwards. A no-op in a build without Python.
+///
+/// The GIL is the lock. A Python caller of `CreateContextFromString` already
+/// holds it when it arrives here, so any other lock taken first would be
+/// taken in the opposite order by a C++ thread doing the same thing, and the
+/// two would wait on each other forever.
 void HttpResolverContextEnsurePythonConversion();
 
-AR_DECLARE_RESOLVER_CONTEXT(HttpResolverContext);
+}  // namespace usdhttpresolver
 
+PXR_NAMESPACE_OPEN_SCOPE
+AR_DECLARE_RESOLVER_CONTEXT(usdhttpresolver::HttpResolverContext);
 PXR_NAMESPACE_CLOSE_SCOPE
 
 #endif  // USDHTTPRESOLVER_CONTEXT_H

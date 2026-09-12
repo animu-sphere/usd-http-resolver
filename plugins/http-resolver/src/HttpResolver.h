@@ -29,6 +29,7 @@
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/ar/resolverContext.h"
+#include "pxr/usd/ar/threadLocalScopedCache.h"
 #include "pxr/usd/ar/timestamp.h"
 
 #include "Configuration.h"
@@ -43,6 +44,16 @@ class ArWritableAsset;
 
 class HttpResolver final : public ArResolver {
 public:
+    /// Does nothing, deliberately. Configuration happens at first use.
+    ///
+    /// Because this resolver implements contexts, OpenUSD constructs it in
+    /// every process that binds a context -- which is every process that opens
+    /// a stage, local ones included -- and may construct two at once and keep
+    /// one. A constructor that read the environment, rebuilt the process block
+    /// store, created the persistent cache directory, and posted warnings would
+    /// do all of that for a host that never names an `http` URL, twice on a
+    /// race. RESOLVER.md §1 says installing this bundle never changes how a
+    /// local asset opens, and a directory appearing on disk is a change.
     HttpResolver();
     ~HttpResolver() override;
 
@@ -170,7 +181,29 @@ protected:
     /// opening the same URL in another stage first.
     bool _IsContextDependentPath(const std::string& assetPath) const override;
 
+    /// Resolve caching within an `ArResolverScopedCache`, done here rather than
+    /// by OpenUSD.
+    ///
+    /// For a resolver that does not implement scoped caches, OpenUSD caches
+    /// `Resolve` on its behalf -- keyed by the path alone. That key is wrong
+    /// here: under a scope that spans two stages, a path resolved under a
+    /// permissive context would be answered from the cache under a refusing
+    /// one, without this resolver being asked, and the layer registry would
+    /// then find the layer by the path it returned. So the cache is this
+    /// resolver's, keyed as the retained opens are, by identifier and
+    /// configuration. It keeps what OpenUSD's kept -- a failure included, for
+    /// the life of the scope -- because composition resolves one reference
+    /// once per arc, and a scope is what stops that being one request per arc.
+    void _BeginCacheScope(VtValue* cacheScopeData) override;
+    void _EndCacheScope(VtValue* cacheScopeData) override;
+
 private:
+    /// Reads the environment, configures the process stores, and reports what
+    /// was wrong -- once, at the first call that needs any of it. See the
+    /// constructor for why not before.
+    void _EnsureConfigured() const;
+    void _Configure() const;
+
     /// What one call is configured by: the bound context's overrides over the
     /// environment, or the environment alone when nothing is bound.
     struct _Effective {
@@ -187,9 +220,15 @@ private:
     /// resolver serves every stage in the process, each on its own threads.
     _Effective _EffectiveConfiguration() const;
 
-    /// The key the retained-open table is indexed by.
+    /// The key the retained-open table and the scoped resolve cache are
+    /// indexed by.
     static std::string _OpenKey(const std::string& identifier,
                                 const _Effective& effective);
+
+    /// `_Resolve` without the scope: the round trip, retained per §2.3.
+    ArResolvedPath _ResolveOnce(const std::string& identifier,
+                                const std::string& key,
+                                const _Effective& effective) const;
 
     /// One identifier's in-flight or completed open.
     ///
@@ -244,6 +283,13 @@ private:
     /// consumer actually holds.
     struct _Identity {
         usdasset::AssetMetadata metadata;
+
+        /// The destination policies this identity was reached under. Asset
+        /// info answers from memory only for a caller whose own policy covers
+        /// one of them -- one that could have reached the asset itself. A stage
+        /// whose context refuses a destination is not told the size and token
+        /// of an asset another stage opened there.
+        std::vector<usdasset::http::DestinationPolicy> reachedUnder;
     };
 
     /// The validator one identifier has been seen with, and whether it has ever
@@ -273,10 +319,13 @@ private:
     /// permanent -- see `PublishIdentity` -- and because forgetting it is
     /// indistinguishable, from the inside, from the asset never having moved.
     bool _RememberIdentity(const std::string& identifier,
-                           const usdasset::AssetMetadata& metadata) const;
+                           const usdasset::AssetMetadata& metadata,
+                           const usdasset::http::DestinationPolicy& reachedUnder) const;
 
-    /// The remembered identity for `identifier`, if there is one.
+    /// The remembered identity for `identifier`, if there is one that a caller
+    /// under `policy` could have reached.
     bool _KnownIdentity(const std::string& identifier,
+                        const usdasset::http::DestinationPolicy& policy,
                         usdasset::AssetMetadata* metadata,
                         bool* contradicted) const;
 
@@ -305,14 +354,17 @@ private:
     /// never costs correctness.
     static constexpr std::size_t kMaxRetainedOpens = 64;
 
-    /// The environment, as it was when this resolver was constructed.
+    mutable std::once_flag _configureOnce;
+
+    /// The environment, as it was when this resolver was first used.
     ///
     /// Kept rather than re-read, per CONFIGURATION.md §4: a context is resolved
     /// against this, so a host that mutates its environment mid-session does
     /// not change what a stage it opened earlier is configured by -- and the
-    /// environment's own problems were reported once, here, rather than again
-    /// for every context resolved over them.
-    std::map<std::string, std::string> _environment;
+    /// environment's own problems were reported once, when it was read, rather
+    /// than again for every context resolved over them. Written once, under
+    /// `_configureOnce`, and only read after it.
+    mutable std::map<std::string, std::string> _environment;
 
     /// What a call with no context bound is configured by.
     ///
@@ -320,7 +372,15 @@ private:
     /// for. The blocks live in the process-wide store rather than here,
     /// because the budget is process-wide and shared across assets (CACHE.md
     /// section 7) and a store per resolver would not be one budget.
-    _Effective _base;
+    mutable _Effective _base;
+
+    /// One scope's resolutions, shared by every thread the scope was handed
+    /// to. Keyed by `_OpenKey`, never by path.
+    struct _ResolveCache {
+        std::mutex mutex;
+        std::unordered_map<std::string, ArResolvedPath> resolved;
+    };
+    mutable ArThreadLocalScopedCache<_ResolveCache> _resolveCache;
 
     /// Remembered identities the process will hold before dropping the oldest.
     ///

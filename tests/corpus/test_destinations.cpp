@@ -4,19 +4,23 @@
 //
 // `usdAssetHttp_protocol` asserts the halves of the policy the protocol layer
 // owns -- the pre-flight on a literal address, and the projection of a
-// refusal -- against a scripted transport. What it cannot assert is the half
-// that lives in the client: that the address libcurl is about to connect to is
-// judged after the name was resolved and before the socket exists. That needs
-// a name, a resolver, and a listening socket, and the fixture server is the one
-// listening socket this repository has.
+// refusal -- against a scripted transport. What it cannot assert is the two
+// halves that live in the client: that the host is judged as libcurl will send
+// it, and that the address libcurl is about to connect to is judged after the
+// name was resolved and before the socket exists. Those need a client, a
+// resolver, and a listening socket, and the fixture server is the one listening
+// socket this repository has.
 //
 // Loopback is the only destination a CI runner can offer without a network,
-// so every case here is about loopback: permitted by default, and refused when
+// so most cases here are about loopback: permitted by default, and refused when
 // a policy says so -- whether the URL spells the address or names a host that
 // resolves to it. The second of those is the case that matters. A policy that
-// only read the URL would pass the first and let `localhost` through.
+// only read the URL would pass the first and let `localhost` through. The last
+// case uses the fixture as a *proxy*, which is how a refused address that no
+// socket here can reach is still asserted to be refused.
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +40,7 @@ using usdasset::http::HttpOpenResult;
 using usdasset::http::HttpOptions;
 using usdassetfixture::AssetSpec;
 using usdassetfixture::Behavior;
+using usdassetfixture::RequestRecord;
 using usdassetfixture::Server;
 
 constexpr std::size_t kSize = 4096;
@@ -122,11 +127,12 @@ void TestNameIsRefusedAtConnect(Server& server) {
 
 void TestLegacySpellingIsRefusedAtConnect(Server& server) {
     // `127.1` is 127.0.0.1 to every resolver descended from `inet_aton`, and
-    // to libcurl's own URL parser, and it is not a literal to the pre-flight,
-    // which reads canonical dotted quads only. That is deliberate -- a
-    // pre-flight that tried to read every legacy form would be a second parser
-    // for a notorious grammar -- and it is safe only because the connect-time
-    // check sees what the spelling became. This is the case that says so.
+    // to libcurl's own URL parser, and it is not a literal to the protocol
+    // layer's pre-flight, which reads canonical dotted quads only. That is
+    // deliberate -- a second parser for a notorious grammar would be a second
+    // opinion about it -- and it is safe because the transport judges the
+    // host as libcurl will send it, and the connect-time check sees what it
+    // became regardless.
     const std::string url =
         "http://127.1:" + std::to_string(server.Port()) + "/normal";
 
@@ -139,6 +145,89 @@ void TestLegacySpellingIsRefusedAtConnect(Server& server) {
         std::fprintf(stderr, "FAIL [127.1, permitted] %s\n",
                      usdasset::ToString(permitted.status).c_str());
         ++usdassettest::FailureCount();
+    }
+}
+
+/// Sets one environment variable for the life of a scope and puts back what was
+/// there. An empty value removes the variable.
+class ScopedEnvironment {
+public:
+    ScopedEnvironment(const char* name, const std::string& value) : _name(name) {
+#if defined(_MSC_VER)
+#pragma warning(suppress : 4996)
+#endif
+        if (const char* previous = std::getenv(name)) {
+            _had = true;
+            _previous = previous;
+        }
+        Set(value);
+    }
+    ~ScopedEnvironment() { Set(_had ? _previous : std::string()); }
+
+    ScopedEnvironment(const ScopedEnvironment&) = delete;
+    ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
+
+private:
+    void Set(const std::string& value) {
+#if defined(_WIN32)
+        _putenv_s(_name, value.c_str());
+#else
+        if (value.empty()) {
+            unsetenv(_name);
+        } else {
+            setenv(_name, value.c_str(), 1);
+        }
+#endif
+    }
+
+    const char* _name;
+    bool _had = false;
+    std::string _previous;
+};
+
+void TestLegacySpellingIsRefusedThroughAProxy(Server& server) {
+    // Through a proxy the connect-time check sees the proxy's address, and the
+    // destination goes out as text for the proxy to resolve. So a spelling the
+    // client will normalize to a refused address has to be refused as the
+    // client will send it -- and libcurl reads every one of these as
+    // 169.254.169.254 before the proxy sees the request. The fixture server is
+    // the proxy here: it logs whatever arrives, absolute-form targets included,
+    // so "nothing reached the proxy" is a count of its log.
+    ScopedEnvironment proxy("http_proxy", server.BaseUrl());
+    ScopedEnvironment noProxy("no_proxy", std::string());
+    ScopedEnvironment noProxyUpper("NO_PROXY", std::string());
+
+    const char* const spellings[] = {
+        "http://2852039166/latest/meta-data/",
+        "http://0xa9fea9fe/latest/meta-data/",
+        "http://169.254.43518/latest/meta-data/",
+        "http://%31%36%39.254.169.254/latest/meta-data/",
+        "http://169.254.169.254./latest/meta-data/",
+    };
+    for (const char* url : spellings) {
+        server.ClearLog();
+        const HttpOpenResult opened = usdasset::http::Open(url, FastOptions());
+        if (opened.status.code != StatusCode::AccessDenied ||
+            opened.status.message.find("metadata") == std::string::npos) {
+            std::fprintf(stderr, "FAIL [proxy] %s: %s\n", url,
+                         usdasset::ToString(opened.status).c_str());
+            ++usdassettest::FailureCount();
+        }
+        CHECK_EQ(server.RequestCount(), std::size_t(0));
+    }
+
+    // The control, and the reason the case above is not vacuous: under a policy
+    // that permits the metadata class, the same spelling does go to the proxy,
+    // and the proxy is handed the address libcurl normalized it to. Without
+    // the pre-flight, this is what every spelling above would have done.
+    HttpOptions permissive = FastOptions();
+    permissive.destinations.metadata = true;
+    server.ClearLog();
+    usdasset::http::Open("http://2852039166/latest/meta-data/", permissive);
+    const std::vector<RequestRecord> log = server.Log();
+    CHECK(!log.empty());
+    if (!log.empty()) {
+        CHECK(log.front().target.find("169.254.169.254") != std::string::npos);
     }
 }
 
@@ -170,6 +259,7 @@ int main() {
     TestLiteralIsRefusedBeforeConnecting(*server);
     TestNameIsRefusedAtConnect(*server);
     TestLegacySpellingIsRefusedAtConnect(*server);
+    TestLegacySpellingIsRefusedThroughAProxy(*server);
 
     server->Stop();
     return usdassettest::Report("usdAssetHttp/destination-policy");

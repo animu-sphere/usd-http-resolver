@@ -73,7 +73,8 @@ Phase 7 is in progress, ahead of phase 6 for the reason phase 5 was: it is
 code, and the consumer integration is waiting on a fixture and a host. Three of
 its rows have landed. The response header block is bounded, which the corpus
 proved was not optional; the destination policy of §10.2 exists, with a default
-that refuses link-local and nothing else; and the transport bounds and that
+that refuses link-local and the instance-metadata endpoints and nothing else;
+and the transport bounds and that
 policy are a stage's, through `ArResolverContext`, with the environment as the
 default a context overrides. What remains is the request interception point for
 authentication and formation composition.
@@ -231,7 +232,7 @@ therefore ship unexercised.
 | --- | --- |
 | Configuration surface resolved from `ArResolverContext`, not only the environment | Done — `CreateContextFromString` with the environment's own names, eight variables per stage and the four the process shares refused with a reason. Two things had to be decided that the contract had not said. Every identifier is declared context-dependent, because OpenUSD's layer registry otherwise finds a loaded layer by name whatever `Resolve` said, and one stage's destination policy could be walked past by opening the URL in another stage first. And the retained opens are keyed by transport options as well as identifier, because a reader keeps the options it was opened with. Both were checked by removing them, and each removal fails exactly the case written for it |
 | Declared scheme allowlist, re-applied at every redirect hop | Done, as a consequence rather than as a feature — a redirect target goes through the same parser as an original identifier, and that parser accepts `http` and `https` only, so a `Location` naming `file:` is an unusable location. Now with the explicit case it was owed: `usdAssetHttp_protocol` redirects to seven schemes and spellings that must be refused, asserts each is never requested, and asserts the two scheme-less forms that stay inside the allowlist are still followed |
-| Loopback and private-network destination policy, with a documented default | Done — `USD_HTTP_RESOLVER_DESTINATIONS`, default `public,private,loopback`: the corpus is loopback and runs under the default, intranet hosts stay reachable, and link-local — where instance-metadata endpoints live — is refused. Judged at connect time against the resolved address and before any request against a literal in the URL, at every hop. The connect-time half was checked by removing it: `localhost` then walks past a policy that refuses loopback, and the name case in `usdAssetHttp_destination_policy` is the one test in the tree that fails. [CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 |
+| Loopback and private-network destination policy, with a documented default | Done — `USD_HTTP_RESOLVER_DESTINATIONS`, default `public,private,loopback`: the corpus is loopback and runs under the default, intranet hosts stay reachable, and link-local and the instance-metadata endpoints are refused — the latter a class of its own, by value, because AWS's IPv6 endpoint is unique-local and Alibaba's is in the shared address space. Judged at connect time against the resolved address, before each request against the host as libcurl will send it, and at every hop against a canonical literal. Each check was removed in turn: without the connect-time one `localhost` walks past a policy that refuses loopback, and without the client-side one `2852039166` reaches a proxy that forwards it to 169.254.169.254. [CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 |
 | Response header-block and total-response bounds | Done — 64 KiB of header per exchange, counted in the transport before a line is stored, and the caller's buffer for the body. A response abandoned at the bound is refused whole at any status, and never retried. The corpus gained a row for it, `OversizedHeaders`, and the row found that the bound was not optional: without it, libcurl 8.7.1 opened an asset behind a megabyte of header fields |
 | Request interception point for authentication | Outstanding — the seam, no provider |
 | OpenStrata formation composition and pinned artifacts | Outstanding |
@@ -334,6 +335,21 @@ which was correct while one process had one configuration and stopped being
 correct the moment it had several: a reader keeps the options it was opened
 with. Both were found by writing the case first and then removing the fix, and
 each removal fails exactly its own case.
+
+A review of that work before it merged found more, and all of it was the same
+shape: a guarantee that held in the case written for it and not in the one next
+to it. The destination policy judged canonical literals before a request and
+addresses at connect time, and through a proxy neither sees `2852039166` — the
+connect is the proxy's, and libcurl normalizes the spelling to
+`169.254.169.254` before the proxy reads it — so the host is now judged as
+libcurl's own URL parser will send it. Refusing link-local did not refuse the
+metadata endpoints that are not link-local, so those became a class of their
+own. OpenUSD caches `Resolve` by path inside a scoped cache for a resolver that
+does not implement scoped caches, which walked past a per-stage policy the
+same way the layer registry had. And implementing contexts turned out to mean
+being constructed in every process that opens any stage, so a constructor that
+configured the persistent tier created its directory for hosts that never named
+a remote URL. Each fix has a case that fails without it.
 
 The header-block bound found something of its own. The corpus row written for
 it — a correct response padded with a megabyte of ordinary fields — opened an

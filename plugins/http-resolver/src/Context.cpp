@@ -2,8 +2,8 @@
 
 #include "Context.h"
 
+#include <atomic>
 #include <functional>
-#include <mutex>
 #include <utility>
 
 #include "Configuration.h"
@@ -16,13 +16,15 @@
 #include "pxr/external/boost/python/to_python_converter.hpp"
 #endif
 
-PXR_NAMESPACE_OPEN_SCOPE
+PXR_NAMESPACE_USING_DIRECTIVE
+
+namespace usdhttpresolver {
 
 HttpResolverContext::HttpResolverContext(std::map<std::string, std::string> overrides)
     : _overrides(std::move(overrides)) {}
 
 std::string HttpResolverContext::GetAsString() const {
-    return usdhttpresolver::CanonicalContextString(_overrides);
+    return CanonicalContextString(_overrides);
 }
 
 size_t hash_value(const HttpResolverContext& context) {
@@ -48,20 +50,23 @@ struct HttpResolverContextToPython {
 
 void HttpResolverContextEnsurePythonConversion() {
 #ifdef PXR_PYTHON_SUPPORT_ENABLED
-    // A flag under a mutex rather than `std::call_once`, because the question
-    // is not "has this been attempted" but "has this been done": a first call
-    // made before the host started Python must not use up the only chance.
-    static std::mutex mutex;
-    static bool registered = false;
-
-    std::lock_guard<std::mutex> lock(mutex);
-    if (registered || !TfPyIsInitialized()) return;
+    // Not `std::call_once`, because the question is not "has this been
+    // attempted" but "has this been done": a first call made before the host
+    // started Python must not use up the only chance.
+    //
+    // And no lock of its own. The flag is written only while the GIL is held,
+    // so the GIL is what serializes registration; the atomic load before it is
+    // only the fast path, so that a context created after registration does
+    // not queue for the interpreter at all.
+    static std::atomic<bool> registered{false};
+    if (registered.load(std::memory_order_acquire) || !TfPyIsInitialized()) return;
 
     TfPyLock python;
+    if (registered.load(std::memory_order_relaxed)) return;
     pxr_boost::python::to_python_converter<HttpResolverContext,
                                            HttpResolverContextToPython>();
-    registered = true;
+    registered.store(true, std::memory_order_release);
 #endif
 }
 
-PXR_NAMESPACE_CLOSE_SCOPE
+}  // namespace usdhttpresolver

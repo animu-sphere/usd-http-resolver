@@ -121,6 +121,25 @@ void ReadInto(const EnvironmentLookup& lookup, const char* name, long long min,
     *target = static_cast<int>(value);
 }
 
+/// Every address class, in the order a canonical destination list names them.
+constexpr usdasset::http::AddressClass kAddressClasses[] = {
+    usdasset::http::AddressClass::Public,   usdasset::http::AddressClass::Private,
+    usdasset::http::AddressClass::Loopback, usdasset::http::AddressClass::LinkLocal,
+    usdasset::http::AddressClass::Metadata,
+};
+
+/// The canonical spelling of a destination set: the classes it permits, in
+/// `kAddressClasses` order, separated by commas without spaces.
+std::string DestinationsString(const usdasset::http::DestinationPolicy& policy) {
+    std::string text;
+    for (const usdasset::http::AddressClass addressClass : kAddressClasses) {
+        if (!policy.Permits(addressClass)) continue;
+        if (!text.empty()) text += ',';
+        text += usdasset::http::AddressClassName(addressClass);
+    }
+    return text;
+}
+
 /// Parses a destination set: address class names separated by commas, each
 /// spelled as `AddressClassName` spells it.
 ///
@@ -153,21 +172,20 @@ bool ParseDestinations(const std::string& text, usdasset::http::DestinationPolic
     std::size_t at = 0;
     for (;;) {
         const std::size_t comma = text.find(',', at);
-        std::string name = text.substr(
-            at, comma == std::string::npos ? std::string::npos : comma - at);
-        const std::size_t first = name.find_first_not_of(" \t");
-        const std::size_t last = name.find_last_not_of(" \t");
-        name = first == std::string::npos ? std::string()
-                                          : name.substr(first, last - first + 1);
+        // `Trim`, and not a narrower one: a list broken across lines in a
+        // context string, or an environment file saved with CRLF endings, puts
+        // a line break beside a name, and refusing the whole value for it
+        // would put the stage on the default -- a wider policy than the one
+        // written, which is the one direction this parser must not fail in.
+        const std::string name = Trim(text.substr(
+            at, comma == std::string::npos ? std::string::npos : comma - at));
 
         if (name.empty()) {
             *reasonOut = "an empty entry in the list";
             return false;
         }
-        const AddressClass classes[] = {AddressClass::Public, AddressClass::Private,
-                                        AddressClass::Loopback, AddressClass::LinkLocal};
         bool known = false;
-        for (const AddressClass addressClass : classes) {
+        for (const AddressClass addressClass : kAddressClasses) {
             if (name != usdasset::http::AddressClassName(addressClass)) continue;
             known = true;
             switch (addressClass) {
@@ -175,11 +193,13 @@ bool ParseDestinations(const std::string& text, usdasset::http::DestinationPolic
                 case AddressClass::Private: policy.privateNetworks = true; break;
                 case AddressClass::Loopback: policy.loopback = true; break;
                 case AddressClass::LinkLocal: policy.linkLocal = true; break;
+                case AddressClass::Metadata: policy.metadata = true; break;
             }
         }
         if (!known) {
             *reasonOut = "unknown address class '" + name +
-                         "'; expected public, private, loopback, or link-local";
+                         "'; expected public, private, loopback, link-local, or "
+                         "metadata";
             return false;
         }
 
@@ -370,10 +390,6 @@ bool ReadEnvironmentVariable(const char* name, std::string* valueOut) {
     return true;
 }
 
-usdasset::http::HttpOptions OptionsFromEnvironment(
-    std::vector<ConfigurationProblem>* problemsOut) {
-    return OptionsFrom(&ReadEnvironmentVariable, problemsOut);
-}
 
 ResolverConfiguration ConfigurationFrom(
     const EnvironmentLookup& lookup,
@@ -385,10 +401,6 @@ ResolverConfiguration ConfigurationFrom(
     return configuration;
 }
 
-ResolverConfiguration ConfigurationFromEnvironment(
-    std::vector<ConfigurationProblem>* problemsOut) {
-    return ConfigurationFrom(&ReadEnvironmentVariable, problemsOut);
-}
 
 const std::vector<const char*>& ConfiguredVariables() {
     static const std::vector<const char*> variables = {
@@ -422,6 +434,7 @@ const std::vector<const char*>& ContextVariables() {
 
 std::map<std::string, std::string> OverridesFrom(
     const std::string& text,
+    const EnvironmentLookup& base,
     std::vector<ConfigurationProblem>* problemsOut) {
     std::map<std::string, std::string> entries;
 
@@ -459,11 +472,15 @@ std::map<std::string, std::string> OverridesFrom(
                            "shared by every stage in the process, so it is read "
                            "from the environment and not from a context");
                 } else {
+                    // Said before the value is judged, so it says only what
+                    // is true before then: the earlier value is gone. Whether
+                    // the last one is used is the parser's to say, and if it
+                    // is refused that is reported as its own problem below.
                     if (entries.find(name) != entries.end() && problemsOut != nullptr) {
                         ConfigurationProblem repeated =
                             Adjusted(name.c_str(), value,
-                                     "set more than once in one context; the last "
-                                     "value is used");
+                                     "set more than once in one context; only the "
+                                     "last value is considered");
                         repeated.fromContext = true;
                         problemsOut->push_back(std::move(repeated));
                     }
@@ -477,17 +494,49 @@ std::map<std::string, std::string> OverridesFrom(
     }
 
     // The values, through the parsers the environment's go through, all at
-    // once: a coalescing gap is capped against a request ceiling, and checking
-    // each alone would judge one against the other's default.
+    // once and over `base`: a coalescing gap is capped against a request
+    // ceiling and a block size, and judging the context's value against the
+    // built-in default of the other would warn about an adjustment that is not
+    // the one applied. Only problems with the context's own variables are the
+    // context's to report; the environment's were reported when it was read.
     std::vector<ConfigurationProblem> valueProblems;
-    ConfigurationFrom(LookupIn(entries), &valueProblems);
+    const ResolverConfiguration applied =
+        ConfigurationFrom(Layered(entries, base), &valueProblems);
     for (ConfigurationProblem& problem : valueProblems) {
+        if (entries.find(problem.variable) == entries.end()) continue;
         // A refused value leaves the context, so that what the context carries
         // -- and what it compares and hashes by -- is what is in force. An
         // adjusted one stays, and is adjusted again wherever it is applied.
         if (!problem.adjusted) entries.erase(problem.variable);
         problem.fromContext = true;
         if (problemsOut != nullptr) problemsOut->push_back(std::move(problem));
+    }
+
+    // And what stays is kept as the parser read it rather than as it was
+    // written. `060000` and `60000` are one deadline, and `private, public`
+    // and `public,private` one policy; a context that compared them unequal
+    // would be two contexts to every table OpenUSD keys on one -- a stage cache
+    // that missed, a layer stack built twice.
+    for (auto& entry : entries) {
+        const std::string& name = entry.first;
+        const usdasset::http::HttpOptions& transport = applied.transport;
+        if (name == kConnectTimeout) {
+            entry.second = std::to_string(transport.connectTimeoutMs);
+        } else if (name == kReadTimeout) {
+            entry.second = std::to_string(transport.responseTimeoutMs);
+        } else if (name == kTotalTimeout) {
+            entry.second = std::to_string(transport.transferTimeoutMs);
+        } else if (name == kMaxRetries) {
+            entry.second = std::to_string(transport.maxAttempts - 1);
+        } else if (name == kMaxRedirects) {
+            entry.second = std::to_string(transport.maxRedirects);
+        } else if (name == kDestinations) {
+            entry.second = DestinationsString(transport.destinations);
+        } else if (name == kCoalesceGap) {
+            entry.second = std::to_string(applied.cache.coalesceGapBlocks);
+        } else if (name == kMaxRequestBytes) {
+            entry.second = std::to_string(applied.cache.maxRequestBytes);
+        }
     }
 
     return entries;
@@ -505,7 +554,7 @@ std::string CanonicalContextString(const std::map<std::string, std::string>& ove
 }
 
 EnvironmentLookup LookupIn(const std::map<std::string, std::string>& values) {
-    return [values](const char* name, std::string* valueOut) {
+    return [&values](const char* name, std::string* valueOut) {
         const auto found = values.find(name);
         if (found == values.end()) return false;
         valueOut->assign(found->second);
@@ -515,7 +564,7 @@ EnvironmentLookup LookupIn(const std::map<std::string, std::string>& values) {
 
 EnvironmentLookup Layered(const std::map<std::string, std::string>& overrides,
                           EnvironmentLookup base) {
-    return [overrides, base](const char* name, std::string* valueOut) {
+    return [&overrides, base = std::move(base)](const char* name, std::string* valueOut) {
         const auto found = overrides.find(name);
         if (found != overrides.end()) {
             valueOut->assign(found->second);
@@ -547,6 +596,7 @@ std::string TransportFingerprint(const usdasset::http::HttpOptions& options) {
     text += reach.privateNetworks ? 'R' : '-';
     text += reach.loopback ? 'L' : '-';
     text += reach.linkLocal ? 'K' : '-';
+    text += reach.metadata ? 'M' : '-';
     text += ";agent=" + options.userAgent;
     return text;
 }

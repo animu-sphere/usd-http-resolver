@@ -35,23 +35,28 @@ AddressClass ClassifyIPv6(const std::array<std::uint8_t, 16>& address) noexcept;
 /// with no leading zeros and nothing else.
 ///
 /// Strict on purpose, and the strictness is safe rather than merely tidy. The
-/// legacy forms a system resolver also accepts -- `127.1`, `0x7f.0.0.1`,
-/// `017700000001` -- are not literals here, so they reach the connect-time
-/// check as names and are judged there by the address they resolve to. Reading
-/// `010.0.0.1` as decimal would be worse than not reading it: a resolver that
-/// honours the leading zero connects to 8.0.0.1, and a pre-flight that judged
-/// 10.0.0.1 would be judging an address nobody connects to.
+/// legacy forms a client or a system resolver also accepts -- `127.1`,
+/// `0x7f.0.0.1`, `017700000001` -- are not literals here; the transport judges
+/// them after its client has normalized them, and the connect-time check sees
+/// the address they became. Reading `010.0.0.1` as decimal would be worse than
+/// not reading it: a client that honours the leading zero connects to 8.0.0.1,
+/// and a pre-flight that judged 10.0.0.1 would be judging an address nobody
+/// connects to.
 bool ParseIPv4(std::string_view text, std::array<std::uint8_t, 4>* out) noexcept;
 
 /// Parses IPv6 text in RFC 4291 §2.2 form: hexadecimal groups, at most one
 /// `::`, and an optional trailing dotted quad. No brackets and no zone.
 bool ParseIPv6(std::string_view text, std::array<std::uint8_t, 16>* out) noexcept;
 
-/// Classifies a URI host when it is a literal address: a dotted quad, or a
-/// bracketed IPv6 literal with or without an RFC 6874 zone (`[fe80::1%25en0]`).
+/// Classifies a URI host when it is a literal address: a dotted quad, with or
+/// without the one trailing dot of a fully qualified name, or a bracketed IPv6
+/// literal with or without an RFC 6874 zone (`[fe80::1%25en0]`).
 ///
 /// Returns false for a name, which is not a failure: a name is judged at
-/// connect time, by the address it resolves to.
+/// connect time, by the address it resolves to. The legacy spellings a client
+/// or a resolver also reads as an address are left to the caller to normalize
+/// first -- the transport does, with the client's own parser, so that what is
+/// judged is what will be sent.
 bool ClassifyHostLiteral(std::string_view host, AddressClass* out) noexcept;
 
 }  // namespace http

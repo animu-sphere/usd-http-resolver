@@ -831,6 +831,26 @@ void TestAbandonedHeaderBlockIsNotAResponse() {
         CHECK_EQ(script->Count(), 1);
     }
     {
+        // Nor when its status line is one the retry policy would otherwise
+        // act on. A `503` followed by a megabyte of fields is a hostile
+        // response, not a transient one, and retrying it buffers the bound
+        // again for every attempt the budget allows.
+        const int statuses[] = {503, 429, 502, 504};
+        for (const int status : statuses) {
+            auto script = MakeScript([status](const TransportRequest&, int) {
+                TransportResponse response;
+                response.status = status;
+                response.connected = true;
+                response.headers.Add("Retry-After", "0");
+                return AbandonedAtHeaderBound(response);
+            });
+            HttpOptions options;
+            options.maxAttempts = 3;
+            CHECK_EQ(OpenWith(script, options).status.code, StatusCode::InvalidResponse);
+            CHECK_EQ(script->Count(), 1);
+        }
+    }
+    {
         // A redirect whose block did not end is not followed, whatever its
         // `Location` said.
         auto script = MakeScript([](const TransportRequest&, int) {
@@ -917,15 +937,15 @@ void TestDestinationPolicy() {
     // refusal. The connect-time half is the transport's, and is exercised over
     // a real socket in `tests/corpus`.
     {
-        // The default refuses link-local, and a literal is refused before any
-        // request is issued for it: the instance-metadata address never sees a
-        // packet from this process.
+        // The default refuses the metadata endpoints, and a literal is refused
+        // before any request is issued for it: the instance-metadata address
+        // never sees a packet from this process.
         auto script = MakeScript(Wellbehaved("\"v1\""));
         const HttpOpenResult opened = usdasset::http::testing::OpenWithTransport(
             "http://169.254.169.254/latest/meta-data/", HttpOptions(), Factory(script));
         CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
         CHECK(opened.reader == nullptr);
-        CHECK(opened.status.message.find("link-local") != std::string::npos);
+        CHECK(opened.status.message.find("metadata") != std::string::npos);
         CHECK_EQ(script->Count(), 0);
     }
     {

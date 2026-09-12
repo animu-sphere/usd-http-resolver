@@ -2,6 +2,7 @@
 
 #include "HttpResolver.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -44,14 +45,19 @@ usdasset::Status UnsupportedWrite() {
 
 }  // namespace
 
-HttpResolver::HttpResolver() {
+HttpResolver::HttpResolver() = default;
+
+HttpResolver::~HttpResolver() = default;
+
+void HttpResolver::_EnsureConfigured() const {
+    std::call_once(_configureOnce, [this] { _Configure(); });
+}
+
+void HttpResolver::_Configure() const {
     // The environment, once. Everything this resolver is configured by -- the
     // base configuration here, and every context resolved later -- reads this
     // snapshot rather than `getenv`, so one process has one environment.
-    _environment = usdhttpresolver::Snapshot(
-        [](const char* name, std::string* valueOut) {
-            return usdhttpresolver::ReadEnvironmentVariable(name, valueOut);
-        });
+    _environment = usdhttpresolver::Snapshot(&usdhttpresolver::ReadEnvironmentVariable);
 
     std::vector<usdhttpresolver::ConfigurationProblem> problems;
     const usdhttpresolver::ResolverConfiguration configuration =
@@ -90,14 +96,13 @@ HttpResolver::HttpResolver() {
     }
 
     for (const usdhttpresolver::ConfigurationProblem& problem : problems) {
-        // At first use, per CONFIGURATION.md §2, which for a process-global
-        // surface is when the resolver is constructed. A typo that silently
-        // does nothing is worse than one that is reported.
+        // At first use, per CONFIGURATION.md §2 -- which is exactly when this
+        // runs. A typo that silently does nothing is worse than one that is
+        // reported, and a report in a process that never used the resolver is
+        // noise about a setting nothing read.
         usdhttpresolver::ReportConfigurationProblem(problem);
     }
 }
-
-HttpResolver::~HttpResolver() = default;
 
 std::string HttpResolver::_CreateIdentifier(
     const std::string& assetPath,
@@ -128,6 +133,32 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
     // on, even for a layer another stage has already loaded.
     const _Effective effective = _EffectiveConfiguration();
     const std::string key = _OpenKey(identifier, effective);
+
+    // Inside a scope, the scope's answer for this identifier under this
+    // configuration, if it has one. Looked up under the scope's lock and
+    // resolved outside it: a round trip under a lock every thread of the scope
+    // shares would serialize the composition the scope exists to speed up.
+    // Two threads that miss together are single-flighted below, by the
+    // retained entry, and the second insertion is a no-op.
+    const std::shared_ptr<_ResolveCache> scope = _resolveCache.GetCurrentCache();
+    if (scope) {
+        std::lock_guard<std::mutex> lock(scope->mutex);
+        const auto found = scope->resolved.find(key);
+        if (found != scope->resolved.end()) return found->second;
+    }
+
+    const ArResolvedPath resolved = _ResolveOnce(identifier, key, effective);
+
+    if (scope) {
+        std::lock_guard<std::mutex> lock(scope->mutex);
+        scope->resolved.emplace(key, resolved);
+    }
+    return resolved;
+}
+
+ArResolvedPath HttpResolver::_ResolveOnce(const std::string& identifier,
+                                          const std::string& key,
+                                          const _Effective& effective) const {
     const std::shared_ptr<_Opened> entry = _GetOrCreate(key);
 
     std::lock_guard<std::mutex> lock(entry->mutex);
@@ -152,7 +183,7 @@ ArResolvedPath HttpResolver::_Resolve(const std::string& assetPath) const {
         // Remembered here rather than at the open in `_OpenAsset`, because that
         // reader is handed out once and the consumer that asks for its identity
         // asks after it is gone. RESOLVER.md §3.
-        _RememberIdentity(identifier, entry->metadata);
+        _RememberIdentity(identifier, entry->metadata, effective.transport.destinations);
         return ArResolvedPath(identifier);
     }
 
@@ -214,7 +245,7 @@ std::shared_ptr<ArAsset> HttpResolver::_OpenAsset(
     // free; a reader opened here may never have been resolved through this
     // process at all, and this is the only point at which its identity is
     // known.
-    _RememberIdentity(identifier, reader->Metadata());
+    _RememberIdentity(identifier, reader->Metadata(), effective.transport.destinations);
 
     // Captured before the reader is moved from, and valid for as long as the
     // reader is: it is a member of the reader's own implementation, and the
@@ -333,9 +364,13 @@ std::string HttpResolver::_GetExtension(const std::string& assetPath) const {
 
 ArResolverContext HttpResolver::_CreateContextFromString(
     const std::string& contextStr) const {
+    // Validated over the environment it will be layered on, which has to have
+    // been read for that.
+    _EnsureConfigured();
+
     std::vector<usdhttpresolver::ConfigurationProblem> problems;
-    std::map<std::string, std::string> overrides =
-        usdhttpresolver::OverridesFrom(contextStr, &problems);
+    std::map<std::string, std::string> overrides = usdhttpresolver::OverridesFrom(
+        contextStr, usdhttpresolver::LookupIn(_environment), &problems);
 
     // Reported here and nowhere else. A context is created once and bound many
     // times, often from worker threads, and a warning per bind would be one
@@ -346,14 +381,22 @@ ArResolverContext HttpResolver::_CreateContextFromString(
 
     // Before the context exists, so that the first `repr` of a stage opened
     // with it can already print it (Context.h).
-    HttpResolverContextEnsurePythonConversion();
+    usdhttpresolver::HttpResolverContextEnsurePythonConversion();
 
     // A context even when nothing was admitted. An empty one configures a
     // stage exactly as the environment does, and returning no context at all
     // would be indistinguishable, to the host, from a resolver that does not
     // implement contexts -- when what happened is that it read the string and
     // said what was wrong with it.
-    return ArResolverContext(HttpResolverContext(std::move(overrides)));
+    return ArResolverContext(usdhttpresolver::HttpResolverContext(std::move(overrides)));
+}
+
+void HttpResolver::_BeginCacheScope(VtValue* cacheScopeData) {
+    _resolveCache.BeginCacheScope(cacheScopeData);
+}
+
+void HttpResolver::_EndCacheScope(VtValue* cacheScopeData) {
+    _resolveCache.EndCacheScope(cacheScopeData);
 }
 
 bool HttpResolver::_IsContextDependentPath(const std::string& assetPath) const {
@@ -364,8 +407,10 @@ bool HttpResolver::_IsContextDependentPath(const std::string& assetPath) const {
 }
 
 HttpResolver::_Effective HttpResolver::_EffectiveConfiguration() const {
-    const HttpResolverContext* context =
-        _GetCurrentContextObject<HttpResolverContext>();
+    _EnsureConfigured();
+
+    const usdhttpresolver::HttpResolverContext* context =
+        _GetCurrentContextObject<usdhttpresolver::HttpResolverContext>();
     if (context == nullptr || context->GetOverrides().empty()) return _base;
 
     // Resolved per call rather than cached per context. It is a dozen short
@@ -397,7 +442,8 @@ std::string HttpResolver::_OpenKey(const std::string& identifier,
 
 bool HttpResolver::_RememberIdentity(
     const std::string& identifier,
-    const usdasset::AssetMetadata& metadata) const {
+    const usdasset::AssetMetadata& metadata,
+    const usdasset::http::DestinationPolicy& reachedUnder) const {
     std::lock_guard<std::mutex> lock(_identityMutex);
 
     // The fingerprint first, because it is the half that decides an answer's
@@ -421,8 +467,16 @@ bool HttpResolver::_RememberIdentity(
     const auto found = _identities.find(identifier);
     if (found != _identities.end()) {
         found->second.metadata = metadata;
+        std::vector<usdasset::http::DestinationPolicy>& policies =
+            found->second.reachedUnder;
+        // A handful at most -- one per distinct policy that reached it -- so a
+        // linear scan is the whole data structure.
+        if (std::find(policies.begin(), policies.end(), reachedUnder) ==
+            policies.end()) {
+            policies.push_back(reachedUnder);
+        }
     } else {
-        _identities.emplace(identifier, _Identity{metadata});
+        _identities.emplace(identifier, _Identity{metadata, {reachedUnder}});
         _identityOrder.push_back(identifier);
         while (_identityOrder.size() > kMaxRememberedIdentities) {
             _identities.erase(_identityOrder.front());
@@ -434,12 +488,22 @@ bool HttpResolver::_RememberIdentity(
 }
 
 bool HttpResolver::_KnownIdentity(const std::string& identifier,
+                                  const usdasset::http::DestinationPolicy& policy,
                                   usdasset::AssetMetadata* metadata,
                                   bool* contradicted) const {
     std::lock_guard<std::mutex> lock(_identityMutex);
 
     const auto found = _identities.find(identifier);
     if (found == _identities.end()) return false;
+
+    const std::vector<usdasset::http::DestinationPolicy>& policies =
+        found->second.reachedUnder;
+    const bool reachable =
+        std::any_of(policies.begin(), policies.end(),
+                    [&policy](const usdasset::http::DestinationPolicy& reached) {
+                        return policy.Covers(reached);
+                    });
+    if (!reachable) return false;
 
     const auto fingerprint = _fingerprints.find(identifier);
 
@@ -454,7 +518,14 @@ bool HttpResolver::_IdentityFor(const std::string& identifier,
                                 const _Effective& effective,
                                 usdasset::AssetMetadata* metadata,
                                 bool* contradicted) const {
-    if (_KnownIdentity(identifier, metadata, contradicted)) return true;
+    // Only an identity this caller could have reached itself. A stage whose
+    // context refuses a destination is not told the size and token of an
+    // asset another stage opened there -- it is told what it would be told had
+    // nobody opened it, which is, with an empty resolved path, nothing.
+    if (_KnownIdentity(identifier, effective.transport.destinations, metadata,
+                       contradicted)) {
+        return true;
+    }
     if (!mayOpen) return false;
 
     // Nothing in this process has opened it, or the answer has aged out of the
@@ -481,7 +552,8 @@ bool HttpResolver::_IdentityFor(const std::string& identifier,
             // no identity, and the caller would hand a consumer an empty
             // `ArAssetInfo` for an asset it is about to read.
             *metadata = entry->metadata;
-            *contradicted = _RememberIdentity(identifier, *metadata);
+            *contradicted = _RememberIdentity(identifier, *metadata,
+                                              effective.transport.destinations);
             return true;
         }
     }

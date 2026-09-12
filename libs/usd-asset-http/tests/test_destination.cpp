@@ -5,7 +5,7 @@
 // The policy is only as good as the arithmetic under it, and the arithmetic is
 // where request-forgery bypasses live: an address that means loopback spelled
 // in a form the classifier did not expect. So every row below is either a
-// boundary of one of the four classes or a spelling of an address that a
+// boundary of one of the five classes or a spelling of an address that a
 // careless classifier would put in the wrong one -- and the whole file needs no
 // socket, because the transport hands the classifier bytes and the protocol
 // layer hands it text.
@@ -53,8 +53,25 @@ void TestHostLiterals() {
         {"[::]", AddressClass::Loopback},
         {"[0:0:0:0:0:0:0:1]", AddressClass::Loopback},
 
-        // Link-local, which is where instance metadata lives.
-        {"169.254.169.254", AddressClass::LinkLocal},
+        // The instance-metadata endpoints, by value, whichever range they sit
+        // in -- two of them are inside ranges permitted by default.
+        {"169.254.169.254", AddressClass::Metadata},
+        {"169.254.170.2", AddressClass::Metadata},
+        {"169.254.170.23", AddressClass::Metadata},
+        {"169.254.0.23", AddressClass::Metadata},
+        {"100.100.100.200", AddressClass::Metadata},
+        {"168.63.129.16", AddressClass::Metadata},
+        {"[fd00:ec2::254]", AddressClass::Metadata},
+        {"[fd00:ec2::23]", AddressClass::Metadata},
+        {"[FD00:0EC2:0:0:0:0:0:254]", AddressClass::Metadata},
+        // And their neighbours, which are only what their ranges say.
+        {"169.254.169.253", AddressClass::LinkLocal},
+        {"100.100.100.201", AddressClass::Private},
+        {"168.63.129.17", AddressClass::Public},
+        {"[fd00:ec2::255]", AddressClass::Private},
+        {"[fd00:ec3::254]", AddressClass::Private},
+
+        // Link-local, the rest of it.
         {"169.254.0.0", AddressClass::LinkLocal},
         {"169.254.255.255", AddressClass::LinkLocal},
         {"[fe80::1]", AddressClass::LinkLocal},
@@ -94,15 +111,21 @@ void TestHostLiterals() {
         // a naive classifier files as public.
         {"[::ffff:127.0.0.1]", AddressClass::Loopback},
         {"[::ffff:7f00:1]", AddressClass::Loopback},
-        {"[::ffff:169.254.169.254]", AddressClass::LinkLocal},
-        {"[::ffff:a9fe:a9fe]", AddressClass::LinkLocal},
+        {"[::ffff:169.254.169.254]", AddressClass::Metadata},
+        {"[::ffff:a9fe:a9fe]", AddressClass::Metadata},
+        {"[::ffff:169.254.1.1]", AddressClass::LinkLocal},
         {"[::ffff:10.1.2.3]", AddressClass::Private},
         {"[::ffff:8.8.8.8]", AddressClass::Public},
         {"[::127.0.0.1]", AddressClass::Loopback},
-        {"[::169.254.169.254]", AddressClass::LinkLocal},
-        {"[64:ff9b::169.254.169.254]", AddressClass::LinkLocal},
+        {"[::169.254.169.254]", AddressClass::Metadata},
+        {"[64:ff9b::169.254.169.254]", AddressClass::Metadata},
+        {"[64:ff9b::100.100.100.200]", AddressClass::Metadata},
         {"[64:ff9b::7f00:1]", AddressClass::Loopback},
         {"[64:ff9b::8.8.8.8]", AddressClass::Public},
+
+        // The one trailing dot of a fully qualified name is the same address.
+        {"169.254.169.254.", AddressClass::Metadata},
+        {"127.0.0.1.", AddressClass::Loopback},
     };
     for (const LiteralCase& row : cases) {
         AddressClass actual = AddressClass::Public;
@@ -119,10 +142,11 @@ void TestHostLiterals() {
 }
 
 void TestNamesAreNotLiterals() {
-    // A name is judged at connect time, by what it resolves to. So is every
-    // spelling of an address that is not canonical: reading `010.0.0.1` as
-    // 10.0.0.1 would judge an address a resolver that honours the leading zero
-    // never connects to, and the connect-time check sees the real one.
+    // A name is judged at connect time, by what it resolves to. A spelling of
+    // an address that is not canonical is not read here either: the transport
+    // judges it as its client normalizes it, and reading `010.0.0.1` as
+    // 10.0.0.1 here would judge an address a client that honours the leading
+    // zero never connects to.
     const char* const names[] = {
         "example.org",
         "localhost",
@@ -135,7 +159,7 @@ void TestNamesAreNotLiterals() {
         "256.0.0.1",
         "1.2.3",
         "1.2.3.4.5",
-        "1.2.3.4.",
+        "1.2.3.4..",
         ".1.2.3.4",
         "1..2.3",
         "[]",
@@ -211,7 +235,8 @@ void TestIPv4Bytes() {
     std::array<std::uint8_t, 4> out{};
     CHECK(ParseIPv4("192.0.2.255", &out));
     CHECK(out[0] == 192 && out[1] == 0 && out[2] == 2 && out[3] == 255);
-    CHECK(ClassifyIPv4({169, 254, 169, 254}) == AddressClass::LinkLocal);
+    CHECK(ClassifyIPv4({169, 254, 169, 254}) == AddressClass::Metadata);
+    CHECK(ClassifyIPv4({169, 254, 1, 1}) == AddressClass::LinkLocal);
 
     std::array<std::uint8_t, 16> loopback{};
     loopback[15] = 1;
@@ -227,6 +252,18 @@ void TestDefaultPolicy() {
     CHECK(policy.Permits(AddressClass::Private));
     CHECK(policy.Permits(AddressClass::Loopback));
     CHECK(!policy.Permits(AddressClass::LinkLocal));
+    CHECK(!policy.Permits(AddressClass::Metadata));
+
+    // Permitting link-local is not permitting the metadata endpoints in it.
+    DestinationPolicy linkLocal;
+    linkLocal.linkLocal = true;
+    CHECK(!linkLocal.Permits(AddressClass::Metadata));
+
+    // Covers: every destination reachable under the narrower policy is
+    // reachable under the wider one, and not the other way round.
+    CHECK(linkLocal.Covers(policy));
+    CHECK(!policy.Covers(linkLocal));
+    CHECK(policy.Covers(policy));
 
     DestinationPolicy publicOnly;
     publicOnly.privateNetworks = false;
@@ -244,6 +281,8 @@ void TestDefaultPolicy() {
              std::string("loopback"));
     CHECK_EQ(std::string(AddressClassName(AddressClass::LinkLocal)),
              std::string("link-local"));
+    CHECK_EQ(std::string(AddressClassName(AddressClass::Metadata)),
+             std::string("metadata"));
 }
 
 }  // namespace

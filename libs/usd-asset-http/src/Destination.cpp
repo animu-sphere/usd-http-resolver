@@ -72,6 +72,47 @@ bool AllZero(const std::array<std::uint8_t, 16>& address, std::size_t first,
     return true;
 }
 
+/// The well-known instance-metadata and credential endpoints, by value.
+///
+/// A list and not a range, because no range contains them: they are where
+/// each provider chose to put them. 169.254.169.254 is the common one -- AWS,
+/// Azure, Google, Oracle, OpenStack, and most of the rest -- and the others
+/// are the ones that are not there: AWS's container and pod credential agents
+/// (169.254.170.2, 169.254.170.23), Tencent's metadata service (169.254.0.23),
+/// Alibaba's (100.100.100.200, inside the shared address space), and Azure's
+/// WireServer (168.63.129.16, inside public space).
+bool IsMetadataIPv4(const std::array<std::uint8_t, 4>& address) noexcept {
+    static constexpr std::uint8_t kKnown[][4] = {
+        {169, 254, 169, 254},
+        {169, 254, 170, 2},
+        {169, 254, 170, 23},
+        {169, 254, 0, 23},
+        {100, 100, 100, 200},
+        {168, 63, 129, 16},
+    };
+    for (const auto& known : kKnown) {
+        if (address[0] == known[0] && address[1] == known[1] &&
+            address[2] == known[2] && address[3] == known[3]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// AWS's IPv6 metadata endpoint and pod credential agent, fd00:ec2::254 and
+/// fd00:ec2::23 -- both inside unique-local space, which is why they cannot
+/// be left to the range they happen to sit in.
+bool IsMetadataIPv6(const std::array<std::uint8_t, 16>& address) noexcept {
+    if (address[0] != 0xfd || address[1] != 0x00 || address[2] != 0x0e ||
+        address[3] != 0xc2 || !AllZero(address, 4, 14)) {
+        return false;
+    }
+    // The last group is hexadecimal as written: `::254` is 0x0254, and `::23`
+    // is 0x0023.
+    return (address[14] == 0x02 && address[15] == 0x54) ||
+           (address[14] == 0x00 && address[15] == 0x23);
+}
+
 }  // namespace
 
 const char* AddressClassName(AddressClass addressClass) noexcept {
@@ -80,6 +121,7 @@ const char* AddressClassName(AddressClass addressClass) noexcept {
         case AddressClass::Private: return "private";
         case AddressClass::Loopback: return "loopback";
         case AddressClass::LinkLocal: return "link-local";
+        case AddressClass::Metadata: return "metadata";
     }
     return "unknown";
 }
@@ -90,11 +132,15 @@ bool DestinationPolicy::Permits(AddressClass addressClass) const noexcept {
         case AddressClass::Private: return privateNetworks;
         case AddressClass::Loopback: return loopback;
         case AddressClass::LinkLocal: return linkLocal;
+        case AddressClass::Metadata: return metadata;
     }
     return false;
 }
 
 AddressClass ClassifyIPv4(const std::array<std::uint8_t, 4>& address) noexcept {
+    // First, and by value: two of these sit inside ranges that are permitted
+    // by default, and the range they sit in says nothing about what answers.
+    if (IsMetadataIPv4(address)) return AddressClass::Metadata;
     // 0.0.0.0/8 is "this host on this network". A connect to 0.0.0.0 reaches
     // the local machine on Linux and macOS alike, so it is loopback for the
     // purpose this classification serves, whatever the registry calls it.
@@ -135,6 +181,7 @@ AddressClass ClassifyIPv6(const std::array<std::uint8_t, 16>& address) noexcept 
         address[3] == 0x9b && AllZero(address, 4, 12)) {
         return ClassifyIPv4(TrailingIPv4(address));
     }
+    if (IsMetadataIPv6(address)) return AddressClass::Metadata;
     if (address[0] == 0xfe && (address[1] & 0xc0) == 0x80) return AddressClass::LinkLocal;
     if (address[0] == 0xfe && (address[1] & 0xc0) == 0xc0) return AddressClass::Private;
     if ((address[0] & 0xfe) == 0xfc) return AddressClass::Private;
@@ -219,8 +266,14 @@ bool ClassifyHostLiteral(std::string_view host, AddressClass* out) noexcept {
         return true;
     }
 
+    // One trailing dot is the fully qualified spelling of the same address --
+    // libcurl keeps it, and a proxy or a system resolver that reads the host
+    // as an address reads it without the dot. Two are not an address at all.
+    std::string_view quad = host;
+    if (!quad.empty() && quad.back() == '.') quad.remove_suffix(1);
+
     std::array<std::uint8_t, 4> v4{};
-    if (!ParseIPv4(host, &v4)) return false;
+    if (!ParseIPv4(quad, &v4)) return false;
     *out = ClassifyIPv4(v4);
     return true;
 }

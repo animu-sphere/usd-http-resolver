@@ -19,8 +19,11 @@
 
 #if defined(_WIN32)
 // `curl.h` has already included Winsock on Windows, which is where
-// `sockaddr_in6` and `socket` live there.
+// `sockaddr_in6` and `socket` live there. `windows.h` is for
+// `SetHandleInformation`.
+#include <windows.h>
 #else
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #endif
@@ -218,7 +221,87 @@ curl_socket_t OnOpenSocket(void* userdata, curlsocktype purpose, curl_sockaddr* 
         return CURL_SOCKET_BAD;
     }
     ++exchange.addressesAdmitted;
-    return socket(address->family, address->socktype, address->protocol);
+
+    // Created here, which means created without whatever libcurl would have
+    // done itself -- so the one property a host depends on is set here too. A
+    // DCC that forks render workers or shell tools while a reader holds a
+    // connection must not hand that socket to every child it starts.
+#if defined(_WIN32)
+    const curl_socket_t created =
+        socket(address->family, address->socktype, address->protocol);
+    if (created != CURL_SOCKET_BAD) {
+        SetHandleInformation(reinterpret_cast<HANDLE>(created), HANDLE_FLAG_INHERIT, 0);
+    }
+#elif defined(SOCK_CLOEXEC)
+    // Atomically, where the platform can: a fork between `socket` and `fcntl`
+    // would inherit the descriptor anyway.
+    const curl_socket_t created =
+        socket(address->family, address->socktype | SOCK_CLOEXEC, address->protocol);
+#else
+    const curl_socket_t created =
+        socket(address->family, address->socktype, address->protocol);
+    if (created != CURL_SOCKET_BAD) fcntl(created, F_SETFD, FD_CLOEXEC);
+#endif
+    return created;
+}
+
+bool HasNonAscii(const std::string& text) noexcept {
+    for (const char c : text) {
+        if (static_cast<unsigned char>(c) >= 0x80) return true;
+    }
+    return false;
+}
+
+/// The destination policy's pre-flight half, as the client will see the host.
+///
+/// The protocol layer judges a literal it can read, and reads canonical
+/// spellings only. That is not enough through a proxy, where the connect-time
+/// check sees the proxy's address and the host goes out as text: libcurl reads
+/// `2852039166`, `0xa9fea9fe`, `169.254.43518`, and `%31%36%39.254.169.254` as
+/// 169.254.169.254, and normalizes each to it before the proxy ever sees the
+/// request. So the host is taken from libcurl's own URL parser -- the one
+/// `curl_easy_perform` will use on the same string -- and judged as that.
+///
+/// A host that is not ASCII is asked for in the ASCII form the client would put
+/// on the wire, where this libcurl can produce one; a compatibility mapping can
+/// turn look-alike digits into an address. A libcurl without IDN support sends
+/// such a host as written, and what a proxy then makes of it is the proxy's.
+///
+/// Returns false, with the refused class, when the policy refuses the host.
+/// Anything this cannot read -- a URL libcurl will itself refuse, an allocation
+/// that failed -- is left to the transfer and the connect-time check.
+bool PermittedByClient(const std::string& url, const DestinationPolicy& policy,
+                       std::optional<AddressClass>* refusedOut) {
+    CURLU* parsed = curl_url();
+    if (parsed == nullptr) return true;
+
+    std::string host;
+    if (curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK) {
+        char* text = nullptr;
+        if (curl_url_get(parsed, CURLUPART_HOST, &text, 0) == CURLUE_OK && text != nullptr) {
+            host = text;
+        }
+        curl_free(text);
+#if LIBCURL_VERSION_NUM >= 0x075800
+        if (HasNonAscii(host)) {
+            char* ascii = nullptr;
+            if (curl_url_get(parsed, CURLUPART_HOST, &ascii, CURLU_PUNYCODE) == CURLUE_OK &&
+                ascii != nullptr) {
+                host = ascii;
+            }
+            curl_free(ascii);
+        }
+#endif
+    }
+    curl_url_cleanup(parsed);
+
+    AddressClass addressClass = AddressClass::Public;
+    if (!host.empty() && ClassifyHostLiteral(host, &addressClass) &&
+        !policy.Permits(addressClass)) {
+        *refusedOut = addressClass;
+        return false;
+    }
+    return true;
 }
 
 /// The progress callback needs the handle to read elapsed time from, so the
@@ -390,6 +473,15 @@ public:
 
     TransportResponse Perform(const TransportRequest& request) override {
         TransportResponse response;
+
+        // Before a handle, a connection, or a byte: a host the client would
+        // send to a refused address is not sent anywhere, proxy or not.
+        std::optional<AddressClass> refused;
+        if (!PermittedByClient(request.url, request.destinations, &refused)) {
+            response.error = TransportError::DestinationRefused;
+            response.refusedClass = refused;
+            return response;
+        }
 
         CURL* handle = _pool.Acquire();
         if (handle == nullptr) {

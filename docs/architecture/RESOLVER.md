@@ -23,10 +23,16 @@ The bundle registers a URI-scheme resolver, not the primary resolver:
 "Types": {
     "HttpResolver": {
         "bases": ["ArResolver"],
+        "implementsContexts": true,
+        "implementsScopedCaches": true,
         "uriSchemes": ["http", "https"]
     }
 }
 ```
+
+The two `implements` flags are §6's, and neither changes what a local asset
+does: they are what lets a stage's context configure this resolver, and what
+keeps OpenUSD from caching its resolutions by path alone.
 
 Consequences that are contract, not detail:
 
@@ -145,7 +151,9 @@ two revisions, and each is individually consistent, which is exactly the
 guarantee §2.1 of [ASSET_READER.md](ASSET_READER.md) makes.
 
 A failure is **not** retained. Caching one would turn a server that was
-restarting into an asset that does not exist for the rest of the process.
+restarting into an asset that does not exist for the rest of the process. The
+one place a failure is kept is inside an `ArResolverScopedCache`, for the life
+of the scope, because that is what a scope is for (§6) and a scope ends.
 
 The table of retained opens is **bounded**. A resolve that is never followed by
 an open is legal and normal — a host probing for existence does it constantly —
@@ -392,7 +400,7 @@ extended to the hosts that configure them. What the object carries is the
 overrides as written, after validation; what they produce is resolved against
 the environment when a call is made under it.
 
-Three consequences are contract rather than detail.
+Five consequences are contract rather than detail.
 
 **A context sets what binds a reader, and not what the process shares.** The
 transport bounds, the destination policy, and the coalescing limits may be set
@@ -415,10 +423,39 @@ walked past by opening the same URL in another stage first, and
 retained opens is keyed by the identifier *and* the transport options the
 reader was opened with, because a reader keeps those options for its lifetime.
 A reader a resolve retained under one policy is never handed to an `OpenAsset`
-under a narrower one; that call opens again, under its own. Identity, by
-contrast, is shared across contexts: a validator describes the bytes at a URL,
-not the configuration that fetched them, and §3.2's record of a republish is
-kept per identifier.
+under a narrower one; that call opens again, under its own.
+
+**A scoped cache is this resolver's, and keyed the same way.** Inside an
+`ArResolverScopedCache`, OpenUSD caches `Resolve` on behalf of any resolver that
+does not implement scoped caches — by path alone. A scope routinely spans more
+than one stage, and a path resolved under a permissive context would then be
+answered under a refusing one without this resolver being asked. So the bundle
+declares `implementsScopedCaches` and keeps the scope's resolutions itself,
+keyed by identifier and configuration. It keeps what OpenUSD's cache kept,
+failures included, for the life of the scope, because composition resolves one
+reference once per arc and the scope is what stops that costing one request per
+arc.
+
+**Identity is shared across contexts, but not told across a policy.** A
+validator describes the bytes at a URL, not the configuration that fetched
+them, and §3.2's record of a republish is kept per identifier. What asset info
+will not do is answer from memory for a caller who could not have reached the
+asset: an identity is remembered with the destination policies it was reached
+under, and answered only for a caller whose own policy covers one of them. A
+stage whose context refuses a destination is told what it would have been told
+had nobody opened the asset there.
+
+Implementing contexts has a cost that is paid in the constructor's shape rather
+than in behavior. OpenUSD constructs every resolver that implements contexts or
+scoped caches in any process that binds a context or opens a scope — which is
+every process that opens a stage, local ones included — and may construct two
+at once and keep one. So the constructor does nothing: the environment is read,
+the process stores are configured, the persistent directory is created, and the
+environment's problems are reported at the first resolve, open, asset-info query,
+or context creation. §1's promise that installing this bundle never changes how
+a local asset opens includes not creating a directory for a host that never
+named a remote one, and `httpResolver_stage` asserts it from a child process
+whose first contact with the resolver is a local stage.
 
 What a context reaches is what OpenUSD resolves and opens while it is bound, and
 the boundary is worth stating because it is OpenUSD's rather than this

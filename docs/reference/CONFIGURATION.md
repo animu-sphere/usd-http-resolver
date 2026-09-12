@@ -3,9 +3,9 @@
 This document defines the configuration surface. The five transport bounds are
 implemented as of `v0.2.0`, the four cache variables as of `v0.3.0`, the two
 persistence variables as of `v0.4.0`, and the destination policy as of `v0.7.0`;
-all twelve are read by `plugins/http-resolver`, once, when the resolver is
-constructed. Eight of them can also be set per stage, through an
-`ArResolverContext`, as of `v0.7.0` (§4).
+all twelve are read by `plugins/http-resolver`, once, when the resolver is first
+used. Eight of them can also be set per stage, through an `ArResolverContext`,
+as of `v0.7.0` (§4).
 
 ## 1. Two mechanisms, in order
 
@@ -39,7 +39,7 @@ that the defaults are wrong.
 | `USD_HTTP_RESOLVER_TOTAL_TIMEOUT_MS` | `300000` | Total per-request deadline, headers and body |
 | `USD_HTTP_RESOLVER_MAX_RETRIES` | `2` | Retry ceiling for retryable failures; `0` disables retry |
 | `USD_HTTP_RESOLVER_MAX_REDIRECTS` | `5` | Redirect chain ceiling; `0` refuses to follow any |
-| `USD_HTTP_RESOLVER_DESTINATIONS` | `public,private,loopback` | Address classes a connection may reach, as a comma-separated set of `public`, `private`, `loopback`, and `link-local`; see §2.1 |
+| `USD_HTTP_RESOLVER_DESTINATIONS` | `public,private,loopback` | Address classes a connection may reach, as a comma-separated set of `public`, `private`, `loopback`, `link-local`, and `metadata`; see §2.1 |
 | `USD_HTTP_RESOLVER_METRICS_DUMP` | unset | When set, dumps the metrics aggregate at process exit |
 
 An unparseable value is a diagnostic at first use, not a silent fallback to the
@@ -48,8 +48,8 @@ fails.
 
 The three deadlines are the ones the backend separates so that `Timeout`
 (`HTTP006`) can name which one elapsed, which DIAGNOSTICS.md requires of it. The
-value read is the one the resolver was constructed with, unless the stage's
-context sets another (§4).
+value read is the one the resolver read when it was first used, unless the
+stage's context sets another (§4).
 
 The four cache defaults are measured constants and the measurement that chose
 them is [BLOCK_POLICY.md](BLOCK_POLICY.md). Two of them are labelled there as
@@ -85,42 +85,59 @@ declared policy rather than by whatever the host's network happens to allow.
 
 | Class | Addresses |
 | --- | --- |
+| `metadata` | the well-known instance-metadata and credential endpoints, by value: `169.254.169.254`, `169.254.170.2`, `169.254.170.23`, `169.254.0.23`, `100.100.100.200`, `168.63.129.16`, `fd00:ec2::254`, and `fd00:ec2::23` |
 | `loopback` | `127.0.0.0/8` and `::1`; and `0.0.0.0/8` and `::`, because a connect to them reaches this host |
-| `link-local` | `169.254.0.0/16` and `fe80::/10`, which is where cloud instance-metadata services live |
-| `private` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, the shared address space `100.64.0.0/10`, `fc00::/7`, and the deprecated `fec0::/10` |
+| `link-local` | `169.254.0.0/16` and `fe80::/10`, apart from the metadata addresses in them |
+| `private` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, the shared address space `100.64.0.0/10`, `fc00::/7`, and the deprecated `fec0::/10`, apart from the metadata addresses in them |
 | `public` | everything else |
+
+`metadata` is checked first and is a class of its own, because no range
+contains it. An address range is a statement about routing, and the property a
+request-forgery policy cares about — that answering this request hands a
+stranger the instance's credentials — follows the provider rather than the
+range. `169.254.169.254` is where most clouds put it; AWS's IPv6 endpoint is
+unique-local, Alibaba's is in the shared address space, and Azure's WireServer
+is public. A policy that refused link-local and called the metadata endpoint
+refused would be true of one address out of eight.
 
 An IPv6 address that carries an IPv4 one — mapped, compatible, or behind the
 NAT64 well-known prefix — is the class of the IPv4 address, because that is
-where the connection ends up. `[::ffff:169.254.169.254]` is link-local.
+where the connection ends up. `[::ffff:169.254.169.254]` is `metadata`.
 
 **The default is `public,private,loopback`, and it is a middle rather than
 either end.** Loopback and private networks stay reachable because `http` is
 registered for local fixture servers and intranet hosts
 ([RESOLVER.md](../architecture/RESOLVER.md) §1), and a default that broke the
 uses the scheme exists for would be a default every deployment overrode.
-Link-local is refused because nothing legitimate serves USD from it and the one
-thing reliably found there is the credential endpoint of a cloud instance. A
-deployment that wants less reach says so: `public` alone for a render farm that
-must never reach its own network from a layer it did not author, `private` alone
-for one that must never leave it — for the whole process in the environment, or
-for one stage in its context (§4).
+Link-local and metadata are refused because nothing legitimate serves USD from
+either, and a metadata address is where a cloud instance hands out its
+credentials. Permitting `link-local` does not permit `metadata`; that is never
+a side effect. A deployment that wants less reach says so: `public` alone for a
+render farm that must never reach its own network from a layer it did not
+author, `private` alone for one that must never leave it — for the whole process
+in the environment, or for one stage in its context (§4).
 
-The policy is judged twice, and neither judgement is redundant:
+The policy is judged three times, and none of the three is redundant:
 
 - **At connect time**, against the numeric address the transport is about to
   connect to, after the name was resolved and before a socket exists. This is
-  the check that makes the policy hold at all: for a name that resolves to a
-  refused address, for a name whose answer changed between lookups, and for
-  every legacy spelling of an address a system resolver accepts. A name with
-  several addresses is refused only when every one of them is; a refused IPv6
-  address followed by a permitted IPv4 one that did not answer is a network
-  failure, not a refusal.
-- **Before any request**, against a literal address in the URL, at every
-  redirect hop. This is the check that holds through a proxy, where the address
-  this process connects to is the proxy's and the destination is the proxy's to
-  resolve. It reads canonical spellings only; a non-canonical one is left to the
-  first check, which sees the address it actually becomes.
+  the check that makes the policy hold for a name at all: for a name that
+  resolves to a refused address, and for a name whose answer changed between
+  lookups. A name with several addresses is refused only when every one of them
+  is; a refused IPv6 address followed by a permitted IPv4 one that did not
+  answer is a network failure, not a refusal.
+- **Before each request, as the client will send the host.** The host is taken
+  from libcurl's own URL parser — the one the transfer will use on the same
+  string — so that `2852039166`, `0xa9fea9fe`, `169.254.43518`, and
+  `%31%36%39.254.169.254` are each judged as the `169.254.169.254` libcurl
+  normalizes them to. This is the check that holds through a proxy, where the
+  address this process connects to is the proxy's and the destination goes out
+  as text for the proxy to resolve. A non-ASCII host is judged in the ASCII form
+  the client would put on the wire, where the libcurl in use can produce one.
+- **At every redirect hop, before any transport sees it**, against a literal in
+  the URL in its canonical spelling. This is the one that does not depend on
+  which client is underneath, and it is what makes a redirect to
+  `http://169.254.169.254/` a refusal of a string rather than of a connection.
 
 A refusal is `AccessDenied` (`HTTP002`), naming the class, and no request is
 sent. The code is the one a `403` gets because a caller does the same thing
@@ -129,16 +146,20 @@ named so that the person told goes to their own policy rather than to the
 origin's permissions.
 
 A value is a set, not a level, because the classes are not an order. Whitespace
-around a name is tolerated; an unknown name refuses the whole value and keeps
-the default, because a policy that silently dropped the word it did not
-recognize is a different policy from the one written.
+around a name is tolerated — spaces, tabs, and line breaks, so that a list
+broken across lines, or an environment file saved with CRLF endings, is the list
+that was written. An unknown name refuses the whole value and keeps the default,
+because a policy that silently dropped the word it did not recognize is a
+different policy from the one written.
 
-One interaction is named rather than solved. Through a proxy, a *name* is
+Two interactions are named rather than solved. Through a proxy, a *name* is
 resolved by the proxy, so the policy cannot see where it leads, and the
 connect-time check judges the proxy's own address instead: a proxy on loopback
-needs `loopback` in the set. A literal in the URL is still judged, which is why
-a redirect to `http://169.254.169.254/` is refused through a proxy as well as
-without one.
+needs `loopback` in the set. And a libcurl built without IDN support sends a
+non-ASCII host as written; if a proxy then maps it — look-alike digits folded to
+ASCII ones — into an address, that address is the proxy's to police. A libcurl
+with IDN support converts the host first, and the converted form is what is
+judged.
 
 ## 3. What is not configurable
 
@@ -185,12 +206,18 @@ turn a correctness property into a deployment mistake:
 ArResolverContext  >  environment variable  >  built-in default
 ```
 
-The environment is read once, when the resolver is constructed, and kept. A
-context is resolved against that snapshot rather than against `getenv`, so a
-host that mutates its environment mid-session does not change what a stage it
-opened earlier is configured by — and a reader keeps the options it was opened
-with, so a stage's configuration is bound when its assets are opened, not per
-request.
+The environment is read once, at the resolver's first use, and kept. First use
+rather than construction, and the difference is a promise kept: because this
+resolver implements contexts, OpenUSD constructs it in every process that opens
+any stage, local ones included, and a constructor that read the environment
+would configure the process stores, create the persistent cache directory, and
+warn about settings for a host that never names an `http` URL. So construction
+does nothing, and the first resolve, open, asset-info query, or context creation
+does the rest. A context is resolved against that snapshot rather than against
+`getenv`, so a host that mutates its environment mid-session does not change
+what a stage it opened earlier is configured by — and a reader keeps the options
+it was opened with, so a stage's configuration is bound when its assets are
+opened, not per request.
 
 A context is created from a string, through OpenUSD, with either scheme name —
 one resolver type serves both:
@@ -204,11 +231,14 @@ stage = Usd.Stage.Open("https://example.org/scenes/main.usda", ctx)
 
 The string is `NAME=value` entries separated by `;`. The names are the
 environment's, spelled exactly as §2 spells them, and each value goes through
-the parser the environment's would: refused or adjusted for the same reasons,
-and reported the same way. Whitespace around an entry, a name, or a value is
-tolerated, and so is an empty entry — a trailing `;` is what concatenation
-leaves behind. A name set twice keeps the last value, as an environment
-assignment would, and says so.
+the parser the environment's would — over the environment it will be layered
+on, so that a coalescing gap is judged against the request ceiling that will
+actually apply — and is refused or adjusted for the same reasons, reported the
+same way. Whitespace around an entry, a name, or a value is tolerated, and so is
+an empty entry — a trailing `;` is what concatenation leaves behind. A name set
+twice considers only the last value, as an environment assignment would, and
+says so; if that last value is refused, that is said too, and the stage takes
+the environment's value.
 
 Eight variables may be set in a context, and four may not:
 
@@ -230,20 +260,26 @@ told, when it is created, that the value is read from the environment.
 Problems are reported once, when the context is created, and never at bind
 time: a context is created once and bound on every thread that composes the
 stage, and a warning per bind would be one typo rendered once per prim. What a
-context carries is what it admitted, so two contexts that say the same thing
-compare and hash equal however they were spelled, and a context whose every
-entry was refused configures a stage exactly as no context does.
+context carries is what it admitted, *as the parser read it* — `60000` for
+`060000`, `public,private` for `private, public` — so two contexts that say the
+same thing compare and hash equal however they were spelled, and are one context
+to every table OpenUSD keys on one. A context whose every entry was refused
+configures a stage exactly as no context does.
 
 In Python, a context reads back as its canonical string —
 `Ar.ResolverContext('USD_HTTP_RESOLVER_DESTINATIONS=public')` — which is what
 `Usd.Stage.__repr__` prints for a stage opened with one.
 
-Two properties follow for the destination policy in particular, and both are
-asserted in `httpResolver_stage`. A stage whose context refuses a destination
-cannot reach it through a layer another stage has already loaded: every
-identifier this resolver owns is context-dependent, which is what makes
-OpenUSD's layer registry look the layer up by the path `Resolve` returned
-rather than by its name ([RESOLVER.md](../architecture/RESOLVER.md) §6). And it
-cannot reach it through a reader another stage's resolve left behind: a
-retained open is handed only to a caller that would have opened it under the
-same transport options.
+Four properties follow for the destination policy in particular, and each is
+asserted in `httpResolver_stage` ([RESOLVER.md](../architecture/RESOLVER.md) §6).
+A stage whose context refuses a destination cannot reach it through a layer
+another stage has already loaded: every identifier this resolver owns is
+context-dependent, which is what makes OpenUSD's layer registry look the layer
+up by the path `Resolve` returned rather than by its name. It cannot reach it
+through a reader another stage's resolve left behind: a retained open is handed
+only to a caller that would have opened it under the same transport options. It
+cannot reach it through an `ArResolverScopedCache` that spans both stages: this
+resolver keeps the scope's cache itself, keyed by configuration, rather than
+letting OpenUSD key it by path. And it is not told the asset's size and token by
+asset info: an identity is answered from memory only for a caller whose policy
+could have reached the asset itself.

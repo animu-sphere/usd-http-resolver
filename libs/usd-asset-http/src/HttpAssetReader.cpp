@@ -116,7 +116,7 @@ std::string Where(const Uri& uri) {
     return " (" + ElideSecrets(uri.ToIdentity()) + ")";
 }
 
-/// The destination policy's refusal, from either of its two checks.
+/// The destination policy's refusal, from whichever of its checks refused.
 ///
 /// `AccessDenied`, and not a code of its own, on the test DIAGNOSTICS.md §1
 /// sets for a code: what a caller does about it is what it does about a `403`
@@ -327,14 +327,14 @@ ExchangeResult PerformExchange(Transport& transport,
     int redirects = 0;
 
     for (;;) {
-        // The destination policy's pre-flight half, at every hop and before
-        // any request for it. A literal address in the URL is judged here by
-        // what it spells; the transport judges every address it actually
-        // connects to, and the two are not redundant. Behind a proxy the
-        // address this process connects to is the proxy's, so this is the only
-        // check that sees the destination at all -- and a redirect to
-        // `http://169.254.169.254/` is refused as a string, without a
-        // connection, rather than as an address after one.
+        // The destination policy's pre-flight, at every hop and before any
+        // transport sees the request. A canonical literal in the URL is judged
+        // here by what it spells, so that the rule holds whichever client is
+        // underneath and a redirect to `http://169.254.169.254/` is refused as
+        // a string rather than as a connection. The transport judges twice
+        // more: the host as its client will actually send it, which is what
+        // holds through a proxy for every other spelling, and every address it
+        // connects to.
         AddressClass literal = AddressClass::Public;
         if (ClassifyHostLiteral(current.host, &literal) &&
             !options.destinations.Permits(literal)) {
@@ -370,9 +370,16 @@ ExchangeResult PerformExchange(Transport& transport,
             // Retried only when nothing usable came back. A response whose
             // headers arrived is the caller's to judge, and a body that stopped
             // early is resumed by the read loop rather than re-fetched whole.
+            //
+            // A block abandoned at the header bound is never retried, whatever
+            // its status line said. Its `503` is the one part of it that
+            // arrived, and it is not evidence of anything a second attempt
+            // could change -- it is an invitation to buffer the same 64 KiB
+            // again, as many times as the budget allows.
             const bool retryable =
-                response.status == 0 ? IsRetryableTransportError(response.error)
-                                     : IsRetryableStatus(response.status);
+                response.error == TransportError::HeadersTooLarge ? false
+                : response.status == 0 ? IsRetryableTransportError(response.error)
+                                       : IsRetryableStatus(response.status);
             if (!retryable) break;
             --*retriesRemaining;
             sink.Retry();

@@ -458,8 +458,8 @@ and against any literal in the URL at every hop
 `public,private,loopback`, which is how the fixture and the deployment are told
 apart without forbidding either: the corpus is loopback and runs under the
 default, intranet hosts are private and are what `http` is registered for, and
-the one class refused — link-local, where a cloud instance's credential endpoint
-lives — is one nothing legitimate serves USD from. A deployment that wants a
+the two classes refused — link-local, and the well-known instance-metadata
+endpoints wherever they sit — are ones nothing legitimate serves USD from. A deployment that wants a
 narrower reach states it, and a refusal is `AccessDenied` naming the class.
 
 ## 11. Testing
@@ -687,8 +687,9 @@ Done and no longer pending:
 
 - The configuration surface and the network policy that needed it. The
   destination policy of §10.2 is `USD_HTTP_RESOLVER_DESTINATIONS`, judged at
-  connect time and before every hop, with a default that refuses link-local and
-  nothing else; the response header block of §10.1 is bounded; and the
+  connect time, before each request as the client will send the host, and at
+  every hop, with a default that refuses link-local and the instance-metadata
+  endpoints and nothing else; the response header block of §10.1 is bounded; and the
   transport bounds and the policy are a stage's through `ArResolverContext`,
   with the environment as the default a context overrides
   ([CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 and §4). Two things

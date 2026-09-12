@@ -12,6 +12,7 @@
                         "bases": ["ArResolver"],
                         "displayName": "HTTP range-read asset resolver",
                         "implementsContexts": true,
+                        "implementsScopedCaches": true,
                         "uriSchemes": ["http", "https"]
                     }
                 }

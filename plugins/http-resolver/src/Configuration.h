@@ -61,9 +61,9 @@ struct ConfigurationProblem {
 using EnvironmentLookup =
     std::function<bool(const char* name, std::string* valueOut)>;
 
-/// Reads one variable from the process environment: the `EnvironmentLookup`
-/// every `...FromEnvironment` function uses, and the only place this bundle
-/// calls `getenv`.
+/// Reads one variable from the process environment, and the only place this
+/// bundle calls `getenv`. The resolver takes a `Snapshot` through it once, and
+/// everything after that reads the snapshot.
 bool ReadEnvironmentVariable(const char* name, std::string* valueOut);
 
 /// The transport options `lookup` describes, starting from the defaults.
@@ -72,10 +72,6 @@ bool ReadEnvironmentVariable(const char* name, std::string* valueOut);
 /// rather than discarding the whole configuration.
 usdasset::http::HttpOptions OptionsFrom(
     const EnvironmentLookup& lookup,
-    std::vector<ConfigurationProblem>* problemsOut);
-
-/// The same, against the process environment.
-usdasset::http::HttpOptions OptionsFromEnvironment(
     std::vector<ConfigurationProblem>* problemsOut);
 
 /// The cache policy `lookup` describes, starting from the shipped defaults.
@@ -115,9 +111,6 @@ ResolverConfiguration ConfigurationFrom(
     const EnvironmentLookup& lookup,
     std::vector<ConfigurationProblem>* problemsOut);
 
-ResolverConfiguration ConfigurationFromEnvironment(
-    std::vector<ConfigurationProblem>* problemsOut);
-
 /// The variables this version reads, in the order CONFIGURATION.md lists them.
 /// Exposed so a test asserts the set rather than restating it.
 const std::vector<const char*>& ConfiguredVariables();
@@ -138,17 +131,22 @@ const std::vector<const char*>& ContextVariables();
 /// Parses a context string: `NAME=value` entries separated by `;`, each `NAME`
 /// one of `ContextVariables()` spelled exactly as the environment spells it.
 ///
-/// Returns the entries admitted, keyed by name. One vocabulary rather than two:
-/// a value is checked by the parser the environment's value would go through,
-/// and refused or adjusted for the same reasons. Whitespace around an entry,
-/// a name, or a value is tolerated, and so is an empty entry -- a trailing `;`
-/// is what concatenation leaves behind. A name set twice keeps the last value,
-/// the way an environment assignment would, and says so.
+/// Returns the entries admitted, keyed by name, each value in its canonical
+/// spelling -- the number the parser read, or the destination classes in a
+/// fixed order -- so that two contexts that say the same thing are equal. One
+/// vocabulary rather than two: a value is checked by the parser the
+/// environment's value would go through, over `base` (the environment the
+/// context will be layered on), and refused or adjusted for the same reasons.
+/// Whitespace around an entry, a name, or a value is tolerated, and so is an
+/// empty entry -- a trailing `;` is what concatenation leaves behind. A name
+/// set twice considers only the last value, the way an environment assignment
+/// would, and says so.
 ///
 /// Everything not admitted is a problem marked `fromContext`, and the stage
 /// that binds the context takes the environment's value for it instead.
 std::map<std::string, std::string> OverridesFrom(
     const std::string& text,
+    const EnvironmentLookup& base,
     std::vector<ConfigurationProblem>* problemsOut);
 
 /// The canonical spelling of a set of overrides: `NAME=value` entries, sorted
@@ -157,11 +155,15 @@ std::map<std::string, std::string> OverridesFrom(
 std::string CanonicalContextString(const std::map<std::string, std::string>& overrides);
 
 /// A lookup over a fixed set of values.
+///
+/// It refers to `values` rather than copying it -- a lookup is built per call
+/// under a context and a copy of the environment per call is a cost with no
+/// purpose -- so `values` must outlive it.
 EnvironmentLookup LookupIn(const std::map<std::string, std::string>& values);
 
 /// A lookup that answers from `overrides` first and from `base` after:
 /// CONFIGURATION.md §4's precedence, context over environment over default,
-/// as a function.
+/// as a function. Refers to `overrides`, which must outlive it.
 EnvironmentLookup Layered(const std::map<std::string, std::string>& overrides,
                           EnvironmentLookup base);
 
