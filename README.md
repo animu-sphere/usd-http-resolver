@@ -88,6 +88,9 @@ each release shipped is in
 | What lands, in what order | [docs/roadmap/README.md](docs/roadmap/README.md) |
 | How the modules are split | [docs/architecture/WORKSPACE.md](docs/architecture/WORKSPACE.md) |
 | How a consumer integrates | [docs/roadmap/consumer-integration.md](docs/roadmap/consumer-integration.md) |
+| How to contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Community expectations | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
+| How to report a vulnerability | [SECURITY.md](SECURITY.md) |
 | Everything else | [docs/README.md](docs/README.md) |
 
 ## Design commitments

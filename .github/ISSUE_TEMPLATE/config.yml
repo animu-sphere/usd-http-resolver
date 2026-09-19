@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/animu-sphere/usd-http-resolver/security/advisories/new
+    about: Use GitHub Private Vulnerability Reporting. Do not disclose vulnerabilities in a public issue.
+  - name: Read the contributor guide
+    url: https://github.com/animu-sphere/usd-http-resolver/blob/main/CONTRIBUTING.md
+    about: Check build, test, documentation, and review requirements before opening an issue or pull request.
