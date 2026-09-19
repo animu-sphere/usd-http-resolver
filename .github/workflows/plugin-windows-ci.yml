@@ -92,8 +92,12 @@ jobs:
           mkdir -p .ost-ci/bootstrap-bin
           asset="ost-cli-x86_64-pc-windows-msvc.zip"
           base="https://github.com/$OST_REPOSITORY/releases/download/v$OST_VERSION"
-          curl -fsSLo "$asset" "$base/$asset"
-          curl -fsSLo "$asset.sha256" "$base/$asset.sha256"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-max-time 120 --connect-timeout 20 --max-time 300 \
+            -o "$asset" "$base/$asset"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-max-time 120 --connect-timeout 20 --max-time 300 \
+            -o "$asset.sha256" "$base/$asset.sha256"
           actual="$( (command -v sha256sum > /dev/null && sha256sum "$asset" || shasum -a 256 "$asset") | cut -d' ' -f1 )"
           published="$(cut -d' ' -f1 "$asset.sha256")"
           if [ "$actual" != "$published" ]; then
