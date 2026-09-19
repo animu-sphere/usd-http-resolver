@@ -1,4 +1,8 @@
-# usd-http-resolver
+# OpenUSD Http Resolver
+
+[![CI](https://github.com/animu-sphere/usd-http-resolver/actions/workflows/core-ci.yml/badge.svg)](https://github.com/animu-sphere/usd-http-resolver/actions/workflows/core-ci.yml)
+[![License](https://img.shields.io/github/license/animu-sphere/usd-http-resolver)](LICENSE)
+[![OpenUSD](https://img.shields.io/badge/OpenUSD-26.08-4C78A8)](docs/compatibility/OPENUSD.md)
 
 An OpenUSD asset resolver for `http://` and `https://`, and the I/O substrate
 beneath it.
@@ -29,12 +33,14 @@ index, and the chunks actually in view — not 10 GB.
 
 ## Status
 
-**`v0.4.0` is released: a `UsdStage` opens over HTTP, a clustered read of a
+**`v0.5.0` is released: a `UsdStage` opens over HTTP, a clustered read of a
 remote asset costs three requests where it cost eighteen, and a process that
 starts cold pays nothing for a window an earlier one fetched. The read contract,
 the local backend, the shared boundary suite, the hostile-server corpus, the
 HTTP backend, the `ArResolver` bundle, the block cache, identity exposure, and
-the on-disk cache tier are in the tree and passing.**
+the on-disk cache tier are in the tree and passing. The aggregate resolver
+product's installed-artifact probe opens a remote root layer and its relative
+child, and requires a successful byte-range request.**
 
 That ordering is the point. `v0.1.0` shipped a local file reader, which is not
 interesting; what was interesting is that it arrived with the harness that makes
@@ -130,9 +136,10 @@ the per-format compatibility matrix, are in §4 of
 
 ## First consumer
 
-`usd-pointcloud-plugins` reads COPC over this resolver in `v0.5.0` — with no
-HTTP code of its own, no build dependency, and no change to its COPC reader. If
-it needs one, the abstraction leaked and the fix belongs here.
+`usd-pointcloud-plugins` is the first planned consumer integration in
+`v0.6.0`. It should read COPC over this resolver with no HTTP code of its own,
+no build dependency, and no change to its COPC reader. If it needs one, the
+abstraction leaked and the fix belongs here.
 
 ## Building
 

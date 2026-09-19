@@ -4,16 +4,17 @@ This repository is an OpenStrata project. It builds either through `ost`, which
 resolves and composes a certified OpenUSD runtime, or through plain CMake — and,
 for everything under `libs/`, with no OpenUSD at all.
 
-Status: `libs/usd-asset-io`, `libs/usd-asset-local`, and the shared boundary
-suite in `tests/` build and test today. No bundle exists yet, so the `ost
-plugin` steps below are the workflow the first bundle lands into rather than
-something you can run.
+Status: `libs/usd-asset-io`, `libs/usd-asset-local`, the shared boundary suite
+in `tests/`, and the `plugins/http-resolver` bundle build and test today. The
+v0.5.0 aggregate product and its packaged probe are covered by the release
+workflow; the `ost plugin` commands below cover bundle and workspace
+verification.
 
 ## Requirements
 
 | Tool | Version |
 | --- | --- |
-| `ost` | 0.22.7 or newer |
+| `ost` | 0.22.10 or newer |
 | CMake | 3.23 or newer |
 | Ninja | any recent |
 | A C++17 compiler | MSVC 143, Clang, or GCC |
@@ -29,7 +30,7 @@ ost doctor
 ost library build libs/usd-asset-io        # one descriptor-owned library
 ost library test  libs/usd-asset-io
 
-ost plugin build http-resolver             # once the bundle exists
+ost plugin build http-resolver
 ost plugin test  http-resolver
 ost plugin test --workspace --up-to 4
 ```

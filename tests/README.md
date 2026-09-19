@@ -55,7 +55,7 @@ Nothing in it chooses a default from wall clock. Loopback has no round-trip time
 worth the name, and the whole argument for merging small reads is about a
 round-trip time this harness cannot produce; the defaults come from the request
 counts and the byte counts, under a premise about round-trip cost that the
-record states outright and `v0.5.0` is where it gets tested.
+record states outright and `v0.6.0` is where it gets tested.
 
 ## The baseline
 

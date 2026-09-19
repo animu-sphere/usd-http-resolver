@@ -211,7 +211,7 @@ therefore ship unexercised.
 | Component-owned acceptance probe, installed with the product | Done — `share/usd-http-resolver/probes/packaged_probe.py`, mapped in as product data so acceptance runs from the artifact |
 | Probe proves registration *and* transport, not just loading | Done — a remote root layer, a relative child layer followed to a second remote layer, and a byte-range request that must succeed |
 | No producer build directory on any path the probe uses | Done — that separation is the reason the probe exists rather than reusing `httpResolver_stage` |
-| OpenStrata 0.22.8 release pins, generated CI refreshed | Done — canonical OpenUSD 26.08 pins regenerated on the v0.22.8 line |
+| OpenStrata 0.22.10 release pin, generated CI refreshed | Done — current CI and canonical OpenUSD 26.08 pins use the v0.22.10 line |
 | Reproducibility: two identical package operations, same SHA-256 inventory | Done — a release gate, walked; platform digests live in the generated release evidence rather than in the source record |
 | Behavior unchanged from `v0.4.0` | Asserted — transport, validator, cache, diagnostics, and configuration contracts all carried forward; the I/O baseline is `v0.4.0`'s, because the reader and cache algorithms did not move |
 | OpenStrata formation composition | Deferred to `v0.7.0` — a product exists; a formation pinning this resolver and a consumer bundle by digest against one certified runtime does not |

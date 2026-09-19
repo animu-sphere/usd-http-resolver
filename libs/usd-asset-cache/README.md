@@ -231,8 +231,10 @@ nothing.
 
 - `v0.4.0`: persistence, admitted per asset by validator strength, and the
   identity exposure that goes with it (CACHE.md §8).
-- `v0.5.0`: the first measurement over real distance. The block size chosen
+- `v0.5.0`: the packaged resolver product and artifact-owned acceptance probe;
+  the cache algorithms and their defaults do not change.
+- `v0.6.0`: the first measurement over real distance. The block size chosen
   here is chosen on request counts under a stated premise about round-trip cost
-  that loopback cannot price; `v0.5.0` is where the premise gets tested.
-- `v0.6.0`: cache configuration through `ArResolverContext`, so that two stages
+  that loopback cannot price; this is where the premise gets tested.
+- `v0.7.0`: cache configuration through `ArResolverContext`, so that two stages
   in one process can have two policies.
