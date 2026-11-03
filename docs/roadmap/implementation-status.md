@@ -4,7 +4,7 @@ Task-level tracking of what is done, in progress, and outstanding. Behavior
 belongs in [capability matrix](../reference/CAPABILITY_MATRIX.md); this file
 tracks work.
 
-Last updated: 2026-09-11.
+Last updated: 2026-11-03.
 
 Phases 0 and 1 are complete and `v0.1.0` is released. The read contract, the
 local backend, and the shared boundary suite are in the tree and passing; the
@@ -76,8 +76,9 @@ proved was not optional; the destination policy of §10.2 exists, with a default
 that refuses link-local and the instance-metadata endpoints and nothing else;
 and the transport bounds and that
 policy are a stage's, through `ArResolverContext`, with the environment as the
-default a context overrides. What remains is the request interception point for
-authentication and formation composition.
+default a context overrides. The request interception point has landed in the
+backend, with no provider behind it. What remains is supplying one to a stage
+through the resolver, and formation composition.
 
 **`v0.2.0` is released.** The gate is walked and
 [its record](../releases/v0.2.0.md) is written. Gates 4 and 6 bound for the first
@@ -211,7 +212,7 @@ therefore ship unexercised.
 | Component-owned acceptance probe, installed with the product | Done — `share/usd-http-resolver/probes/packaged_probe.py`, mapped in as product data so acceptance runs from the artifact |
 | Probe proves registration *and* transport, not just loading | Done — a remote root layer, a relative child layer followed to a second remote layer, and a byte-range request that must succeed |
 | No producer build directory on any path the probe uses | Done — that separation is the reason the probe exists rather than reusing `httpResolver_stage` |
-| OpenStrata 0.22.10 release pin, generated CI refreshed | Done — current CI and canonical OpenUSD 26.08 pins use the v0.22.10 line |
+| OpenStrata 0.22.10 release pin, generated CI refreshed | Done — and since moved to the v0.23.19 line; the canonical OpenUSD 26.08 runtime pins did not change, because the leaf tags still name the same digests |
 | Reproducibility: two identical package operations, same SHA-256 inventory | Done — a release gate, walked; platform digests live in the generated release evidence rather than in the source record |
 | Behavior unchanged from `v0.4.0` | Asserted — transport, validator, cache, diagnostics, and configuration contracts all carried forward; the I/O baseline is `v0.4.0`'s, because the reader and cache algorithms did not move |
 | OpenStrata formation composition | Deferred to `v0.7.0` — a product exists; a formation pinning this resolver and a consumer bundle by digest against one certified runtime does not |
@@ -234,7 +235,8 @@ therefore ship unexercised.
 | Declared scheme allowlist, re-applied at every redirect hop | Done, as a consequence rather than as a feature — a redirect target goes through the same parser as an original identifier, and that parser accepts `http` and `https` only, so a `Location` naming `file:` is an unusable location. Now with the explicit case it was owed: `usdAssetHttp_protocol` redirects to seven schemes and spellings that must be refused, asserts each is never requested, and asserts the two scheme-less forms that stay inside the allowlist are still followed |
 | Loopback and private-network destination policy, with a documented default | Done — `USD_HTTP_RESOLVER_DESTINATIONS`, default `public,private,loopback`: the corpus is loopback and runs under the default, intranet hosts stay reachable, and link-local and the instance-metadata endpoints are refused — the latter a class of its own, by value, because AWS's IPv6 endpoint is unique-local and Alibaba's is in the shared address space. Judged at connect time against the resolved address, before each request against the host as libcurl will send it, and at every hop against a canonical literal. Each check was removed in turn: without the connect-time one `localhost` walks past a policy that refuses loopback, and without the client-side one `2852039166` reaches a proxy that forwards it to 169.254.169.254. [CONFIGURATION.md](../reference/CONFIGURATION.md) §2.1 |
 | Response header-block and total-response bounds | Done — 64 KiB of header per exchange, counted in the transport before a line is stored, and the caller's buffer for the body. A response abandoned at the bound is refused whole at any status, and never retried. The corpus gained a row for it, `OversizedHeaders`, and the row found that the bound was not optional: without it, libcurl 8.7.1 opened an asset behind a megabyte of header fields |
-| Request interception point for authentication | Outstanding — the seam, no provider |
+| Request interception point for authentication | Done in the backend — `HttpOptions::interceptor`, the seam with no provider. Asked per request and per attempt; consulted only for the origin the asset was opened at, after the destination policy has judged the hop; protocol-owned headers, request-splitting values, and more than 16 KiB refused; a decline is `AccessDenied` with nothing sent; no added value reaches a message, identity, or cache key. `usdAssetHttp_interception` has a case per rule and the origin check was removed to confirm it fails; `usdAssetHttp_corpus_projection` proves the header reaches a real origin through libcurl. The resolver's retained opens are keyed by interceptor identity |
+| Supplying an interceptor to a stage through the resolver | Outstanding — the context's to carry, and a context made from a string cannot carry an object; needs a way for a host to name a provider without linking this repository |
 | OpenStrata formation composition and pinned artifacts | Outstanding |
 | Reproducible binary output | Outstanding — measured at the `v0.2.0` gate: two builds agree on 24 of 28 installed files, and the four that differ differ only in embedded build timestamps. Closing it is a link flag and belongs with the packaging work |
 
@@ -319,9 +321,22 @@ dependency, resolved as libcurl in
    measured exactly and whose denominator is zero. `v0.6.0` is where distance
    arrives, and it is why read-ahead is scheduled behind it rather than beside
    the cache work it belongs to.
-3. The rest of phase 7: the request interception point for authentication — a
-   seam with no provider, which now has somewhere to be supplied from, since a
-   credential provider is the context's to carry — and formation composition.
+3. The rest of phase 7: a way to supply the request interception point to a
+   stage — a credential provider is the context's to carry, and a context made
+   from a string cannot carry an object — and formation composition.
+
+Done, and no longer next: the request interception point, in the backend. The
+design question was not the interface — one method that appends headers — but
+where the rules live, and the answer is below the seam rather than in each
+provider. A provider that forgets to scope its token to an origin is the
+ordinary case, not the hostile one, so the backend never asks it about a
+request to any other origin; and it is asked after the destination policy, so
+a redirect to an instance-metadata address is refused before anything has
+looked up a credential for it. Two things it settled that the policy had not
+said: a read of an asset whose open was redirected to another origin goes
+there bare, because the scope is the origin the caller named rather than the
+one the server chose; and the block cache needs no change, because access is
+decided per reader at open, by the origin, before any cached block is served.
 
 Done, and no longer next: the configuration surface and the network policy. The
 contract had said what they were for and not two things they turned out to
