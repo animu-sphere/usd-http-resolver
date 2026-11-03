@@ -467,8 +467,13 @@ thread of its own, with nothing bound, is configured by the environment — and
 the reader it gets keeps that configuration for its lifetime, because a reader
 is bound when it is opened and not per read.
 
-A credential provider is the context's to carry when authentication arrives.
-Nothing here carries one yet.
+A credential provider is the context's to carry. The point it attaches to
+exists — `usdAssetHttp`'s `RequestInterceptor`, scoped to the opened origin and
+asked per request — and the retained opens are already keyed by it, so a reader
+opened with one stage's interceptor is never handed to a stage with another, or
+with none. What does not exist yet is the half that belongs here: a way for a
+host to give a stage an interceptor without linking this repository, which a
+context made from a string cannot carry by itself.
 
 ## 7. Thread safety
 

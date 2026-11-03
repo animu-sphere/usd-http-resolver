@@ -148,7 +148,40 @@ state them for one stage rather than for the whole process.
   authority — and the two scheme-less forms that stay inside the allowlist, a
   network-path reference and an absolute path, are still followed.
 
+- **The request interception point for authentication, in the backend.** §4.3
+  of the design policy, as a seam with no provider behind it:
+  `HttpOptions::interceptor` is a `RequestInterceptor` the backend asks, for
+  every request and every attempt, which headers to add. The rules that keep a
+  credential from leaking are the backend's, not each provider's. It is
+  consulted only for the origin the asset was opened at — a redirect to another
+  origin, and every read of an asset whose open ended there, is sent bare and
+  the interceptor is not asked. The destination policy judges a hop first, so a
+  redirect to an instance-metadata address never reaches a provider. `Range`,
+  `If-Range`, the other conditionals, `Host`, framing, encoding, connection
+  headers, and `User-Agent` cannot be set; a name must be a token and a value
+  non-empty with no control character but tab, so a header cannot split the
+  request; and at most 16 KiB may be added. Declining, or throwing, is
+  `AccessDenied` with nothing sent and no retry; an interceptor's own malformed
+  header is `InvalidArgument`, also with nothing sent; and no added value, nor
+  the text of an exception, reaches a message, an identity, or a cache key.
+  `usdAssetHttp_interception` has a case per rule, and removing the origin check
+  fails it; the corpus projection proves the header reaches a real origin
+  through libcurl, against a fixture asset that answers `401` to anything else.
+  The resolver keys its retained opens by interceptor identity, so a reader
+  opened with one interceptor is never handed to a caller with another. Supplying
+  one to a stage through the resolver is not part of this change.
+
 ### Changed
+
+- **`ost` 0.23.19.** The OpenStrata bootstrap pin moves from 0.22.10, and
+  `.github/workflows/ost-source-ci.yml` is regenerated from the matrix by it.
+  The canonical OpenUSD 26.08 runtime pins are unchanged: the three leaf tags
+  were re-resolved against the registry and still name the pinned digests, and
+  26.08 is the newest version published. The Windows lane reads its pin from
+  the matrix and needed no edit. The two bundle cells now declare
+  `host_python: "3.13"`, as the workspace cells already did: 0.23's
+  `ost runtime validate` runs a linked `find_package(pxr)` consumer, which on
+  Linux cannot load without a `libpython3.13` on the loader path.
 
 - **An adjusted configuration value says it was used.** A block size rounded
   down to a power of two, or a coalescing gap capped under the request ceiling,

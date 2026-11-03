@@ -44,8 +44,11 @@ runtime present, and this module's tests run in that configuration.
   ([RESOLVER.md](../../docs/architecture/RESOLVER.md) §2.1). This module parses
   a URL only as far as following a redirect requires, and takes an absolute
   `http` or `https` URI as given.
-- **Authentication.** Out of `v0.x` scope. Credentials in a URL's userinfo are
-  carried to the socket and removed from every identity, message, and counter.
+- **Authentication.** No credential provider exists here, and none will: the
+  module owns the seam a provider attaches to (`RequestInterceptor`, below) and
+  the rules that keep what it adds from leaking, and nothing that knows a token,
+  a key, or an identity service. Credentials in a URL's userinfo are carried to
+  the socket and removed from every identity, message, and counter.
 - **Interpreting bytes.** No format knowledge exists here or anywhere in this
   repository.
 - **A whole-asset fallback when a server will not serve ranges.** Terminal, per
@@ -64,7 +67,14 @@ struct HttpOptions {                 // all of it bounded
     int maxAttempts       = 3;       // requests per logical operation, retries included
     DestinationPolicy destinations;  // public, private, loopback; not link-local or metadata
     std::string userAgent;           // empty takes the default
+    std::shared_ptr<const RequestInterceptor> interceptor;  // null adds nothing
 };
+
+class RequestInterceptor {           // the authentication seam; no provider ships
+    virtual bool Intercept(const InterceptedRequest& request,
+                           std::vector<RequestHeader>* headersOut) const = 0;
+};
+bool IsInterceptableHeader(const std::string& name, const std::string& value) noexcept;
 
 class HttpAssetReader final : public AssetReader {
     const AssetMetadata& Metadata() const override;
@@ -85,6 +95,40 @@ resolving these from a deployment's settings — the environment, or a stage's
 `ArResolverContext` — is the resolver's configuration surface
 ([CONFIGURATION.md](../../docs/reference/CONFIGURATION.md)), and this module is
 the mechanism underneath it.
+
+### The authentication seam
+
+§4.3 of the [design policy](../../docs/design/DESIGN_POLICY.md) makes
+authentication an extension point rather than a parameter, and this is the
+point. A credential never enters the API as a value: an interceptor is an
+object the backend *asks*, per request, which headers to add — and the rules
+that would make a credential leak are enforced here rather than left for each
+provider to remember.
+
+| Rule | What it refuses |
+| --- | --- |
+| Origin scope | The interceptor is consulted only for requests to the origin the asset was opened at — scheme, host, and effective port. A redirect elsewhere is followed bare, and so is every read of an asset whose open was redirected elsewhere; the interceptor is not even asked. A CDN in front of an object store keeps working; the store's credential does not travel to it |
+| Policy first | The destination policy judges a hop before the interceptor is asked, so a hop to an instance-metadata address never costs a lookup and never carries a header |
+| Protocol owned | `Range`, `If-Range`, the other conditionals, `Host`, framing, encoding, connection management, and `User-Agent` cannot be set. The arithmetic every read is checked by rests on them |
+| No request splitting | A name must be an RFC 9110 token and a value non-empty with no CR, LF, NUL, or other control character but tab. An empty value is refused because libcurl reads `Name:` as "remove this header" |
+| Bounded | `kMaxInterceptedHeaderBytes`, 16 KiB of added header per request, and one header per name |
+| Never repeated | No added value reaches a `Status`, a metrics dump, an identity, or a cache key. A refused header is named only when it is one of the reserved names above; a malformed name is as likely as not a whole `Name: value` line |
+
+The interceptor is asked again for every attempt, so a token that expired
+between a `503` and its retry is replaced rather than presented again, and it is
+told which attempt and which redirect hop it is answering for. Declining — or
+throwing — fails the operation with `AccessDenied`, sends nothing, and is not
+retried; the backend repeats nothing the interceptor said about why. An
+interceptor's own mistake (a reserved name, a malformed header, too many bytes)
+is `InvalidArgument`, also with nothing sent.
+
+Access is decided by the origin, per reader, at open. The block cache is keyed
+on identity and validator rather than on who asked, so a second caller reads
+cached blocks only after its own open — made with its own credentials — has
+been answered `200` for the same strong validator. A reader keeps its
+interceptor for its lifetime, like every other option; handing it to a caller
+configured with another interceptor is handing over the first caller's
+credentials, which is why the resolver's retained-open key includes it.
 
 ## Dependencies
 
@@ -302,6 +346,10 @@ string, and the corpus test asserts that rather than assuming it.
 - **`Metadata()` may be called concurrently with anything.** It is fixed at open
   and immutable for the reader's lifetime.
 - **Two readers on one asset share nothing.** Each owns its transport.
+- **A `RequestInterceptor` is called concurrently**, from whichever thread
+  issued the request, for the life of every reader opened with it. It must be
+  thread-safe; the `shared_ptr` in `HttpOptions` keeps it alive as long as any
+  reader that may call it.
 - `dst` is caller-owned. The reader writes only within `[dst, dst + size)`,
   whatever the transport delivered, and retains no reference to it after
   returning. Bytes inside that range but beyond `bytesRead` are unspecified on
@@ -358,8 +406,8 @@ Four suites, and they are not interchangeable:
 
 | Suite | Where | Asserts |
 | --- | --- | --- |
-| Module tests | `tests/` | URI arithmetic, address classification, framing as a pure function of headers, and the protocol policies over a scripted transport |
-| Corpus projection | `tests/corpus/` | Which hostile server behavior produces which `StatusCode`, against a real server |
+| Module tests | `tests/` | URI arithmetic, address classification, framing as a pure function of headers, and the protocol policies over a scripted transport — including, in `usdAssetHttp_interception`, every rule of the authentication seam, each written so that removing the rule fails it |
+| Corpus projection | `tests/corpus/` | Which hostile server behavior produces which `StatusCode`, against a real server — and that an interceptor's header reaches it through libcurl, checked by an origin that answers `401` to anything else |
 | Destination policy | `tests/corpus/` | The connect-time half of the policy, through a real resolver: a name that resolves to a refused address is refused before a socket exists |
 | Boundary suite | `tests/boundary/` | The read contract, byte-equivalent to the local backend over an independent oracle |
 
@@ -421,9 +469,10 @@ No redistribution constraint applies to a plugin binary. Recorded in
 - `v0.3.0`: nothing in this module. The block cache decorates it from outside,
   keyed on the validator captured here.
 - `v0.4.0`: no change expected. Identity exposure is the resolver's surface.
-- `v0.6.0`: `HttpOptions` resolved from the environment and from
-  `ArResolverContext`, and the request interception point authentication will
-  attach to.
+- `v0.7.0`: done here — `HttpOptions` resolved from the environment and from
+  `ArResolverContext` (by the resolver), and the request interception point.
+  What remains is the resolver's half: a way for a host to supply an
+  interceptor to a stage without linking this repository.
 
 ## Contracts implemented
 

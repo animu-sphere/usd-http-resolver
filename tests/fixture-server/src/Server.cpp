@@ -56,6 +56,7 @@ struct Knobs {
     int changeAfterRequests = 1;
     int transientFailures = 1;
     std::size_t headerBytes = 0;
+    std::string requiredAuthorization;
 };
 
 /// The longest padding field OversizedHeaders emits. Small enough that no
@@ -148,6 +149,7 @@ public:
         state.knobs.changeAfterRequests = spec.changeAfterRequests;
         state.knobs.transientFailures = spec.transientFailures;
         state.knobs.headerBytes = spec.headerBytes;
+        state.knobs.requiredAuthorization = spec.requiredAuthorization;
         state.current = std::move(current);
         state.pending = std::move(pending);
 
@@ -426,6 +428,7 @@ private:
         record.ifNoneMatch = request.Header("If-None-Match");
         record.host = request.Header("Host");
         record.userAgent = request.Header("User-Agent");
+        record.authorization = request.Header("Authorization");
         record.status = status;
 
         std::lock_guard<std::mutex> lock(_mutex);
@@ -460,6 +463,13 @@ private:
         if (!plan.found) {
             return Respond(*peer, request, 404, {}) ? Disposition::KeepAlive
                                                     : Disposition::Aborted;
+        }
+
+        if (!plan.knobs.requiredAuthorization.empty() &&
+            request.Header("Authorization") != plan.knobs.requiredAuthorization) {
+            return Respond(*peer, request, 401, {{"WWW-Authenticate", "Bearer"}})
+                       ? Disposition::KeepAlive
+                       : Disposition::Aborted;
         }
 
         switch (plan.knobs.behavior) {

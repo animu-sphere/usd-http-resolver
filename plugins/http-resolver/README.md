@@ -360,9 +360,11 @@ recorded in [NOTICE](../../NOTICE); nothing in this bundle adds one.
 - **Identity is exposed through `GetAssetInfo` and nowhere else.** There is no
   side-channel API, and `GetModificationTimestamp` is invalid by design rather
   than by omission. See *Asset info and identity* above.
-- **No authentication.** Public HTTP is the target. A URL carrying credentials
-  has them removed from its identifier, and the request then fails at the origin
-  rather than succeeding with a secret in the logs.
+- **No authentication yet.** Public HTTP is the target. A URL carrying
+  credentials has them removed from its identifier, and the request then fails
+  at the origin rather than succeeding with a secret in the logs. The backend's
+  request interception point exists, and retained opens are keyed by it; this
+  bundle has no way yet for a host to supply one to a stage.
 - **Range-unsupported is terminal.** No whole-asset fallback, per
   [ADR-0002](../../docs/adr/0002-range-unsupported-policy.md).
 - **A metadata request is a `HEAD`.** A server that refuses `HEAD` is reported

@@ -189,6 +189,15 @@ struct TransportRequest {
 
     std::string userAgent;
 
+    /// Headers a `RequestInterceptor` added, already admitted by
+    /// `IsInterceptableHeader` and the byte bound, and already scoped to the
+    /// opened origin. The transport sends them after its own and judges
+    /// nothing about them: by the time a request is here, every decision about
+    /// whether these may go to this URL has been made above the line.
+    ///
+    /// A transport never logs, echoes, or reports one. They are credentials.
+    std::vector<RequestHeader> headers;
+
     Timeouts timeouts;
 
     /// Which classes of address a connection may be opened to. Judged by the

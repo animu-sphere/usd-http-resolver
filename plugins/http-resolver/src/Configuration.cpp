@@ -598,6 +598,16 @@ std::string TransportFingerprint(const usdasset::http::HttpOptions& options) {
     text += reach.linkLocal ? 'K' : '-';
     text += reach.metadata ? 'M' : '-';
     text += ";agent=" + options.userAgent;
+    // The interceptor, by identity. A reader presents its interceptor's
+    // credentials for its lifetime, so one opened under a provider is not
+    // another caller's to read -- and two providers that would say the same
+    // thing are still two, because nothing outside them can know that. The
+    // address is stable for as long as it can collide: every reader keeps its
+    // interceptor alive, so no later one can be allocated where it lives.
+    text += ";interceptor=";
+    text += options.interceptor
+                ? std::to_string(reinterpret_cast<std::uintptr_t>(options.interceptor.get()))
+                : std::string("none");
     return text;
 }
 

@@ -673,9 +673,10 @@ one integration that decides whether the abstraction is real.
    number, which prices a round trip at nearly zero and therefore cannot price
    the trade this architecture makes. This is not a separate task from 1 so much
    as the reason 1 is first.
-3. **The authentication interception point**, per §4.3 — the seam, and no
-   provider. It has somewhere to live now: a credential provider is the
-   context's to carry, and the context exists.
+3. **Supplying the authentication interception point to a stage**, per §4.3.
+   The seam itself exists in the backend; what remains is the resolver's half —
+   a credential provider is the context's to carry, and a host must be able to
+   give one to a stage without linking this repository.
 4. **Adaptive read-ahead**, cache level 3 in §5, *after* 2 and not before it.
 
 Deliberately not on this list, and each for a stated reason: freezing the
@@ -684,6 +685,16 @@ read-ahead tuned on loopback (§5); an async surface before the synchronous one 
 measured (§15); and any second transport before the first has a consumer (§4.4).
 
 Done and no longer pending:
+
+- The authentication interception point of §4.3, in the backend:
+  `HttpOptions::interceptor`, a `RequestInterceptor` asked per request and per
+  attempt which headers to add, with no provider behind it. The rules that keep
+  a credential from leaking are the backend's rather than each provider's: it
+  is consulted only for the origin the asset was opened at, so a redirect to a
+  CDN is followed bare; the destination policy judges a hop before it is asked;
+  the headers range reads and revision binding depend on cannot be set, nor a
+  value that would split the request; and nothing it adds reaches a message, an
+  identity, or a cache key. Each rule has a case that fails without it.
 
 - The configuration surface and the network policy that needed it. The
   destination policy of §10.2 is `USD_HTTP_RESOLVER_DESTINATIONS`, judged at

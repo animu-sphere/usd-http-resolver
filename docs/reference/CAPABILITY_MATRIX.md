@@ -130,7 +130,9 @@ not planned                   explicitly out of scope
 | Content encoding refused, not decoded | implemented | `Accept-Encoding: identity` on every request. A compressed range response would make the byte accounting describe the wire rather than the asset, and a decompressing client is a client with an unbounded output for a bounded input |
 | Bounded whole-asset fallback | deferred | Its own residency model; needs a new ADR and a demonstrated need |
 | Multipart ranges | not planned in v0.x | Admitted only if measured to beat coalescing |
-| Authentication | not planned in v0.x | An interception point arrives in `v0.7.0`; no provider |
+| Authentication: the request interception point | implemented, in `usdAssetHttp` | `HttpOptions::interceptor`, asked per request and per attempt which headers to add. Scoped to the opened origin — a redirect to another origin, and every read after one, is sent bare; judged after the destination policy; reserved protocol headers, request-splitting values, and more than 16 KiB refused; a decline is `AccessDenied` with nothing sent; no added value reaches a message, identity, or cache key. Asserted rule by rule in `usdAssetHttp_interception` and over a real socket in `usdAssetHttp_corpus_projection` |
+| Authentication: supplying an interceptor through the resolver | not implemented | The resolver keys retained opens by interceptor identity already; what does not exist is a way for a host to hand one to a stage without linking this repository. A credential provider is the context's to carry ([RESOLVER.md](../architecture/RESOLVER.md) §6) |
+| Authentication: a concrete provider | not planned in v0.x | The point is the seam, not SigV4 |
 | S3-compatible backend | not planned in v0.x | Deferred; must fit the contract unchanged |
 | Package-internal ranges | not planned in v0.x | Deferred |
 | Wasm `fetch` backend | research | Constrains the HTTP client choice made in `v0.2.0` |
