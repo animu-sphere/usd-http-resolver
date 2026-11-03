@@ -197,6 +197,14 @@ cells:
   # L3, L4, and L5 do pass, and they are not asserted here because they sit on
   # the far side of L2. They were walked by hand and recorded in report 02;
   # raising this to 5 is a one-line change the day `ost` asks L2 for dispatch.
+#
+# `host_python` is declared here for the reason it is on the workspace cells,
+# and it became necessary at ost 0.23: `ost runtime validate` gained a
+# `consumer-link` check that builds and *runs* a small `find_package(pxr)`
+# consumer, and on Linux that executable dies with "libpython3.13.so.1.0:
+# cannot open shared object file" unless the pinned setup-python step has put
+# one on the loader path. macOS takes it too, so the two cells pass for the
+# same reason.
   - name: http-resolver-pr-linux
     lane: pull_request
     runner: linux-hosted
@@ -209,6 +217,7 @@ cells:
     profile: usd
     require_openusd: cy2026/linux/x86_64/gl
     require_openusd_version: "26.08"
+    host_python: "3.13"
     host_packages:
       apt: [libx11-dev, libxt-dev, libxext-dev, libgl1-mesa-dev, libcurl4-openssl-dev]
     up_to: 1
@@ -225,4 +234,5 @@ cells:
     profile: usd
     require_openusd: cy2026/macos/arm64/metal
     require_openusd_version: "26.08"
+    host_python: "3.13"
     up_to: 1

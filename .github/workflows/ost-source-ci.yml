@@ -54,7 +54,7 @@ jobs:
             runner_profile: linux-hosted
             bundle: plugins/http-resolver
             runtime_remote: "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:8d2d599489ee623044f4360ad3a2b979e2966e6ad2f949e5aa9083570e59cc4f"
-            host_python: ""
+            host_python: "3.13"
             host_packages_apt: "libx11-dev libxt-dev libxext-dev libgl1-mesa-dev libcurl4-openssl-dev"
             host_packages_brew: ""
           - name: http-resolver-pr-macos-arm64
@@ -75,7 +75,7 @@ jobs:
             runner_profile: macos-arm64-hosted
             bundle: plugins/http-resolver
             runtime_remote: "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:8486d94286b60cc20b53c926757f1802442569f9d9a7eecdadf2c9895b2efeb6"
-            host_python: ""
+            host_python: "3.13"
             host_packages_apt: ""
             host_packages_brew: ""
     steps:

@@ -178,7 +178,10 @@ state them for one stage rather than for the whole process.
   The canonical OpenUSD 26.08 runtime pins are unchanged: the three leaf tags
   were re-resolved against the registry and still name the pinned digests, and
   26.08 is the newest version published. The Windows lane reads its pin from
-  the matrix and needed no edit.
+  the matrix and needed no edit. The two bundle cells now declare
+  `host_python: "3.13"`, as the workspace cells already did: 0.23's
+  `ost runtime validate` runs a linked `find_package(pxr)` consumer, which on
+  Linux cannot load without a `libpython3.13` on the loader path.
 
 - **An adjusted configuration value says it was used.** A block size rounded
   down to a power of two, or a coalescing gap capped under the request ceiling,
