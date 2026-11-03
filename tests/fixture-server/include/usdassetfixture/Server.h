@@ -52,6 +52,11 @@ struct RequestRecord {
     std::string host;
     std::string userAgent;
 
+    /// `Authorization`, verbatim. Recorded so that a test can prove a request
+    /// interceptor's header reached the wire -- and that it did not reach a
+    /// request it must not.
+    std::string authorization;
+
     /// The status the server answered with. `0` when it deliberately never
     /// answered -- the reset and the still-stalling cases.
     int status = 0;

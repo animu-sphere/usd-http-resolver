@@ -727,6 +727,44 @@ void TestNotFoundAndAccessDenied(Server& server) {
     CHECK_STATUS(FetchOnce(port, GetRequest("/never-registered-at-all")), 404);
 }
 
+void TestRequiredAuthorization(Server& server) {
+    // Not a corpus behavior: an origin that wants a credential. What is
+    // asserted is that it refuses exactly what it should, so that a backend
+    // test reading `200` from it has proved the header arrived.
+    CaseScope scope("required authorization");
+    const unsigned short port = server.Port();
+
+    AssetSpec spec;
+    spec.path = "/authorized";
+    spec.content = MakeContent(64);
+    spec.etag = "\"auth\"";
+    spec.requiredAuthorization = "Bearer fixture";
+    server.Serve(spec);
+
+    server.ClearLog();
+    const RawResponse bare = FetchOnce(port, GetRequest("/authorized"));
+    CHECK_STATUS(bare, 401);
+    CHECK_EQ(bare.Header("WWW-Authenticate"), std::string("Bearer"));
+
+    const RawResponse wrong =
+        FetchOnce(port, GetRequest("/authorized", {{"Authorization", "Bearer other"}}));
+    CHECK_STATUS(wrong, 401);
+
+    const RawResponse right =
+        FetchOnce(port, HeadRequest("/authorized", {{"Authorization", "Bearer fixture"}}),
+                  5000, false);
+    CHECK_STATUS(right, 200);
+    CHECK_EQ(right.Header("ETag"), std::string("\"auth\""));
+
+    const auto log = server.Log();
+    CHECK_EQ(log.size(), static_cast<std::size_t>(3));
+    if (log.size() == 3) {
+        CHECK(log[0].authorization.empty());
+        CHECK_EQ(log[1].authorization, std::string("Bearer other"));
+        CHECK_EQ(log[2].authorization, std::string("Bearer fixture"));
+    }
+}
+
 void TestTransientServerError(Server& server,
                               const std::vector<unsigned char>& content) {
     CaseScope scope(BehaviorName(Behavior::TransientServerError));
@@ -1101,6 +1139,7 @@ int main() {
     TestConnectionResetMidBody(*server, content);
     TestRangeNotSatisfiable(*server);
     TestNotFoundAndAccessDenied(*server);
+    TestRequiredAuthorization(*server);
     TestTransientServerError(*server, content);
     TestValidatorForms(*server);
     TestRequestLog(*server);

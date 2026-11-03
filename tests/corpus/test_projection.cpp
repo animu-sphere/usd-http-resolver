@@ -16,12 +16,14 @@
 // the read contract -- that is `tests/boundary`, over an oracle, and no server
 // is involved in it.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "usdAssetHttp/HttpAssetReader.h"
@@ -494,6 +496,72 @@ void TestNoCredentialInAnyMessage(Server& server) {
     CHECK(rendered.find("user") == std::string::npos);
 }
 
+// --- the authentication seam -------------------------------------------------
+
+/// An interceptor that presents one fixed credential. The simplest provider
+/// there is, and the only one this repository will ever contain: it exists to
+/// prove the seam reaches a real socket through the real client.
+class FixedCredential final : public usdasset::http::RequestInterceptor {
+public:
+    explicit FixedCredential(std::string value) : _value(std::move(value)) {}
+    bool Intercept(const usdasset::http::InterceptedRequest&,
+                   std::vector<usdasset::http::RequestHeader>* headersOut) const override {
+        headersOut->push_back({"Authorization", _value});
+        return true;
+    }
+
+private:
+    std::string _value;
+};
+
+void TestInterceptedCredentialReachesTheOrigin(Server& server) {
+    const std::string path = "/needs-credential";
+    const std::string secret = "Bearer corpus-s3cret";
+    AssetSpec spec = MakeSpec(path, Behavior::Normal);
+    spec.requiredAuthorization = secret;
+    server.Serve(spec);
+
+    {
+        // Without the seam, the origin refuses: `401` is `AccessDenied`.
+        const HttpOpenResult opened = usdasset::http::Open(server.Url(path), FastOptions());
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+    }
+    {
+        // With it, the open and every read carry the header -- checked by the
+        // server, which answers nothing else -- and the bytes are the asset's.
+        server.ClearLog();
+        HttpOptions options = FastOptions();
+        options.interceptor = std::make_shared<FixedCredential>(secret);
+        const HttpOpenResult opened = usdasset::http::Open(server.Url(path), options);
+        CHECK_EQ(opened.status.code, StatusCode::Ok);
+        if (opened.reader) {
+            const std::vector<unsigned char> expected = MakeContent(kSize);
+            std::vector<unsigned char> buffer(512);
+            const ReadResult read = opened.reader->Read(1000, buffer.data(), buffer.size());
+            CHECK_EQ(read.status.code, StatusCode::Ok);
+            CHECK_EQ(read.bytesRead, buffer.size());
+            CHECK(std::equal(buffer.begin(), buffer.end(), expected.begin() + 1000));
+            CHECK(opened.reader->Metadata().resolvedIdentifier.find("s3cret") ==
+                  std::string::npos);
+        }
+        const std::vector<RequestRecord> log = server.Log();
+        CHECK_EQ(log.size(), std::size_t(2));
+        for (const RequestRecord& record : log) {
+            CHECK_EQ(record.authorization, secret);
+            CHECK_EQ(record.status, record.method == "HEAD" ? 200 : 206);
+        }
+    }
+    {
+        // The wrong credential reaches the origin and is refused there; the
+        // message names the refusal and not the credential.
+        HttpOptions options = FastOptions();
+        options.interceptor = std::make_shared<FixedCredential>("Bearer wrong-s3cret");
+        const HttpOpenResult opened = usdasset::http::Open(server.Url(path), options);
+        CHECK_EQ(opened.status.code, StatusCode::AccessDenied);
+        CHECK(usdasset::ToString(opened.status).find("s3cret") == std::string::npos);
+    }
+}
+
 void TestCoverage() {
     // The projection claims to cover the corpus. This is what makes the claim
     // checkable: a behavior added to the enum without a projection added beside
@@ -532,6 +600,7 @@ int main() {
     TestConnectionResets(*server);
     TestAbsenceAndRefusal(*server);
     TestNoCredentialInAnyMessage(*server);
+    TestInterceptedCredentialReachesTheOrigin(*server);
     TestCoverage();
 
     server->Stop();

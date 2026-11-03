@@ -281,6 +281,178 @@ bool IsResumable(TransportError error) noexcept {
            error == TransportError::ConnectionLost;
 }
 
+// --- interception ------------------------------------------------------------
+//
+// §4.3 of the design policy: authentication is an extension point, not a
+// parameter. Everything here is about what the backend refuses on the
+// interceptor's behalf, because a seam that is safe only when every provider
+// remembers the rules is a seam that leaks the first time one does not.
+
+/// RFC 9110 §5.6.2 `tchar`.
+bool IsTokenChar(unsigned char c) noexcept {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+        return true;
+    }
+    switch (c) {
+        case '!': case '#': case '$': case '%': case '&': case '\'': case '*':
+        case '+': case '-': case '.': case '^': case '_': case '`': case '|':
+        case '~':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsToken(const std::string& text) noexcept {
+    if (text.empty()) return false;
+    for (const char c : text) {
+        if (!IsTokenChar(static_cast<unsigned char>(c))) return false;
+    }
+    return true;
+}
+
+std::string LowerAscii(const std::string& text) {
+    std::string lower = text;
+    for (char& c : lower) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return lower;
+}
+
+/// The headers this backend's correctness rests on, lowercase.
+///
+/// Not a list of dangerous headers but of owned ones: each is either sent by
+/// this backend with a value a framing or revision-binding rule depends on, or
+/// changes how the response is framed, encoded, or delivered. An interceptor
+/// that set `Range` would break the arithmetic every read is checked by; one
+/// that set `If-None-Match` could turn a range read into a `304`; one that set
+/// `Accept-Encoding` would make byte offsets describe the wire rather than the
+/// asset. `Authorization`, `Cookie`, and every vendor header are absent on
+/// purpose: they are what the seam is for.
+bool IsReservedHeader(const std::string& name) noexcept {
+    static const char* const kReserved[] = {
+        "accept-encoding",   "connection",       "content-encoding",
+        "content-length",    "expect",           "host",
+        "if-match",          "if-modified-since", "if-none-match",
+        "if-range",          "if-unmodified-since", "keep-alive",
+        "proxy-connection",  "range",            "te",
+        "trailer",           "transfer-encoding", "upgrade",
+        "user-agent",
+    };
+    for (const char* reserved : kReserved) {
+        std::size_t i = 0;
+        for (; i < name.size() && reserved[i] != '\0'; ++i) {
+            char c = name[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (c != reserved[i]) break;
+        }
+        if (i == name.size() && reserved[i] == '\0') return true;
+    }
+    return false;
+}
+
+bool IsSafeFieldValue(const std::string& value) noexcept {
+    if (value.empty()) return false;
+    for (const char c : value) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        // RFC 9110 §5.5: field content is visible characters, spaces, tabs,
+        // and obs-text. Every other control character is refused, and CR, LF,
+        // and NUL are the ones that matter: each can end this header early.
+        if ((u < 0x20 && u != '\t') || u == 0x7f) return false;
+    }
+    return true;
+}
+
+bool SameOrigin(const Uri& a, const Uri& b) noexcept {
+    const int portA = a.port != 0 ? a.port : a.DefaultPort();
+    const int portB = b.port != 0 ? b.port : b.DefaultPort();
+    return a.scheme == b.scheme && a.host == b.host && portA == portB;
+}
+
+/// Asks `interceptor` about one request and admits what it answers.
+///
+/// Returns false with the failure in `*failureOut` when the request must not be
+/// sent. Nothing the interceptor returned reaches that failure's message: not a
+/// value, and not a name unless it is one of this backend's own reserved names,
+/// because a malformed name is as likely as not a whole `Name: value` line
+/// pasted into the name field.
+bool Intercept(const RequestInterceptor& interceptor,
+               Method method,
+               const Uri& uri,
+               int redirectHop,
+               int attempt,
+               std::vector<RequestHeader>* headersOut,
+               Status* failureOut) {
+    InterceptedRequest view;
+    view.method = method == Method::Head ? "HEAD" : "GET";
+    view.url = uri.ToIdentity();
+    view.scheme = uri.scheme;
+    view.host = uri.host;
+    view.port = uri.port != 0 ? uri.port : uri.DefaultPort();
+    view.redirectHop = redirectHop;
+    view.attempt = attempt;
+
+    std::vector<RequestHeader> headers;
+    bool accepted = false;
+    try {
+        accepted = interceptor.Intercept(view, &headers);
+    } catch (...) {
+        // An exception is a decline, and its text is not ours to repeat: a
+        // provider that failed to fetch a token is the likeliest thing to have
+        // put the token endpoint's answer in its `what()`.
+        accepted = false;
+    }
+    if (!accepted) {
+        *failureOut = Status::Error(StatusCode::AccessDenied,
+                                    "the request interceptor declined the request" +
+                                        Where(uri));
+        return false;
+    }
+
+    std::size_t total = 0;
+    std::vector<std::string> seen;
+    seen.reserve(headers.size());
+    for (const RequestHeader& header : headers) {
+        if (!IsInterceptableHeader(header.name, header.value)) {
+            const std::string lower = LowerAscii(header.name);
+            const std::string what =
+                IsToken(header.name) && IsReservedHeader(header.name)
+                    ? "the request interceptor tried to set " + lower +
+                          ", which this backend sends itself"
+                    : std::string("the request interceptor supplied a header that "
+                                  "cannot be sent: a name that is not a token, or "
+                                  "an empty value or one with a control character");
+            *failureOut = Status::Error(StatusCode::InvalidArgument, what + Where(uri));
+            return false;
+        }
+        std::string lower = LowerAscii(header.name);
+        for (const std::string& earlier : seen) {
+            if (earlier == lower) {
+                *failureOut =
+                    Status::Error(StatusCode::InvalidArgument,
+                                  "the request interceptor supplied the same header "
+                                  "more than once" +
+                                      Where(uri));
+                return false;
+            }
+        }
+        seen.push_back(std::move(lower));
+        // `name: value\r\n`, as it goes on the wire.
+        total += header.name.size() + 2 + header.value.size() + 2;
+        if (total > kMaxInterceptedHeaderBytes) {
+            *failureOut = Status::Error(
+                StatusCode::InvalidArgument,
+                "the request interceptor added more than " +
+                    std::to_string(kMaxInterceptedHeaderBytes) + " bytes of header" +
+                    Where(uri));
+            return false;
+        }
+    }
+
+    *headersOut = std::move(headers);
+    return true;
+}
+
 // --- one logical exchange ----------------------------------------------------
 
 struct ExchangeResult {
@@ -310,8 +482,14 @@ struct ExchangeResult {
 /// Total work is therefore bounded by `maxRedirects + maxAttempts` requests,
 /// each with its own deadline, which is how §10's "cap retries and total time"
 /// is satisfied without a second clock.
+///
+/// `origin` is the URL the asset was opened at, and the only origin
+/// `options.interceptor` is consulted for. It is not `start`: a read starts at
+/// wherever the open's redirects ended, and an open redirected to another
+/// origin must not carry the first origin's credentials there on every read.
 ExchangeResult PerformExchange(Transport& transport,
                                const HttpOptions& options,
+                               const Uri& origin,
                                const Uri& start,
                                Method method,
                                const std::string& range,
@@ -344,9 +522,25 @@ ExchangeResult PerformExchange(Transport& transport,
         }
 
         TransportResponse response;
+        int attempt = 0;
 
         for (;;) {
+            ++attempt;
             TransportRequest request;
+            // After the destination pre-flight above and before the request
+            // exists: a hop the policy refuses never reaches a provider, and a
+            // hop to another origin is sent bare. Asked per attempt rather than
+            // once per exchange, so a token that expired between a `503` and
+            // its retry is replaced rather than presented again.
+            if (options.interceptor && SameOrigin(current, origin)) {
+                Status refused;
+                if (!Intercept(*options.interceptor, method, current, redirects,
+                               attempt, &request.headers, &refused)) {
+                    result.finalUri = current;
+                    result.status = std::move(refused);
+                    return result;
+                }
+            }
             request.url = current.ToString();
             request.method = method;
             request.range = range;
@@ -483,11 +677,13 @@ class HttpAssetReader::Impl {
 public:
     Impl(std::unique_ptr<Transport> transport,
          HttpOptions options,
+         Uri origin,
          Uri uri,
          AssetMetadata metadata,
          std::string ifRangeValue)
         : transport(std::move(transport)),
           options(std::move(options)),
+          origin(std::move(origin)),
           uri(std::move(uri)),
           metadata(std::move(metadata)),
           ifRangeValue(std::move(ifRangeValue)),
@@ -497,6 +693,7 @@ public:
 
     std::unique_ptr<Transport> transport;
     HttpOptions options;
+    Uri origin;                 ///< As opened, before redirects: the interceptor's scope.
     Uri uri;                    ///< Post-redirect, with credentials, for the wire.
     AssetMetadata metadata;     ///< Immutable for the reader's lifetime.
     std::string ifRangeValue;   ///< Empty when no conditional guard may be sent.
@@ -583,7 +780,7 @@ ReadResult HttpAssetReader::Read(std::uint64_t offset, void* dst, std::size_t si
         const std::size_t remaining = range.length - done;
 
         const ExchangeResult exchange = PerformExchange(
-            *_impl->transport, _impl->options, _impl->uri, Method::Get,
+            *_impl->transport, _impl->options, _impl->origin, _impl->uri, Method::Get,
             FormatByteRange(at, remaining), _impl->ifRangeValue, out + done, remaining,
             &retriesRemaining, sink);
         if (!exchange.status.IsOk()) {
@@ -829,7 +1026,7 @@ struct HttpReaderFactory {
         PendingSink sink;
         int retriesRemaining = options.maxAttempts > 0 ? options.maxAttempts - 1 : 0;
         const ExchangeResult exchange =
-            PerformExchange(*transport, options, uri, Method::Head, std::string(),
+            PerformExchange(*transport, options, uri, uri, Method::Head, std::string(),
                             std::string(), nullptr, 0, &retriesRemaining, sink);
         if (!exchange.status.IsOk()) {
             result.status = exchange.status;
@@ -894,7 +1091,7 @@ struct HttpReaderFactory {
         metadata.contentType = response.headers.Get("Content-Type");
 
         std::unique_ptr<HttpAssetReader::Impl> impl(new HttpAssetReader::Impl(
-            std::move(transport), options, exchange.finalUri, std::move(metadata),
+            std::move(transport), options, uri, exchange.finalUri, std::move(metadata),
             captured.ifRangeValue));
         sink.ReplayInto(impl->metrics);
         impl->metrics.OpenLatency().Record(ElapsedMicroseconds(started));
@@ -903,6 +1100,10 @@ struct HttpReaderFactory {
         return result;
     }
 };
+
+bool IsInterceptableHeader(const std::string& name, const std::string& value) noexcept {
+    return IsToken(name) && !IsReservedHeader(name) && IsSafeFieldValue(value);
+}
 
 HttpOpenResult Open(const std::string& url) { return Open(url, HttpOptions()); }
 

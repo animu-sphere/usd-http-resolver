@@ -8,6 +8,7 @@
 // assert one row and skip the rest.
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -638,6 +639,25 @@ void TestTransportFingerprint() {
     usdasset::http::HttpOptions metadata;
     metadata.destinations.metadata = true;
     CHECK(TransportFingerprint(metadata) != TransportFingerprint(defaults));
+
+    // A reader presents its interceptor's credentials for its lifetime, so two
+    // interceptors are two fingerprints even when they would say the same
+    // thing, and the same one is one.
+    struct Nothing final : usdasset::http::RequestInterceptor {
+        bool Intercept(const usdasset::http::InterceptedRequest&,
+                       std::vector<usdasset::http::RequestHeader>*) const override {
+            return true;
+        }
+    };
+    usdasset::http::HttpOptions first;
+    first.interceptor = std::make_shared<Nothing>();
+    usdasset::http::HttpOptions second;
+    second.interceptor = std::make_shared<Nothing>();
+    usdasset::http::HttpOptions sameAsFirst;
+    sameAsFirst.interceptor = first.interceptor;
+    CHECK(TransportFingerprint(first) != TransportFingerprint(defaults));
+    CHECK(TransportFingerprint(first) != TransportFingerprint(second));
+    CHECK_EQ(TransportFingerprint(first), TransportFingerprint(sameAsFirst));
 }
 
 }  // namespace

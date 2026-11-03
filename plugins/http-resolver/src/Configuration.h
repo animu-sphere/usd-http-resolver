@@ -183,7 +183,8 @@ std::map<std::string, std::string> Snapshot(const EnvironmentLookup& lookup);
 /// retry and redirect bounds, the destination policy -- because a reader keeps
 /// the options it was opened with. Handing one opened under a permissive policy
 /// to a stage whose context refuses that destination would let the stage read
-/// from somewhere its own policy forbids.
+/// from somewhere its own policy forbids. The request interceptor is in it too,
+/// by identity: a reader opened with one caller's credentials is not another's.
 std::string TransportFingerprint(const usdasset::http::HttpOptions& options);
 
 }  // namespace usdhttpresolver

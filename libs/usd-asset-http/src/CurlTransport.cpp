@@ -527,6 +527,16 @@ public:
         // byte accounting below describe the wire rather than the asset, and
         // every framing check in this backend is arithmetic about asset offsets.
         appendHeader("Accept-Encoding: identity");
+        // The interceptor's headers, after this backend's own. Each was
+        // admitted above the seam -- a token name, no reserved name, a value
+        // with no line break and not empty -- so none can replace one of the
+        // lines above, suppress one libcurl adds, or end this header and start
+        // another. A failed append abandons the request like any other: a
+        // credential that silently went missing is a `401` reported as though
+        // the origin had refused a caller who in fact never asked.
+        for (const RequestHeader& added : request.headers) {
+            appendHeader(added.name + ": " + added.value);
+        }
 
         if (!headersBuilt) {
             curl_slist_free_all(headers);

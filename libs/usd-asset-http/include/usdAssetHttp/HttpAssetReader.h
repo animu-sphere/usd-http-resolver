@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "usdAssetIo/AssetReader.h"
 #include "usdAssetIo/Metrics.h"
@@ -149,6 +150,114 @@ struct DestinationPolicy {
     }
 };
 
+/// One header a `RequestInterceptor` adds to a request.
+struct RequestHeader {
+    std::string name;
+    std::string value;
+};
+
+/// What a `RequestInterceptor` is told about the request it is asked about.
+///
+/// Enough to scope a credential and to sign a request, and nothing about the
+/// asset: no size, no validator, no bytes. An interceptor decides who is
+/// asking, never what the answer is.
+struct InterceptedRequest {
+    /// `GET` or `HEAD`.
+    std::string method;
+
+    /// The URL this request is sent to, with any userinfo removed. The query is
+    /// kept verbatim, because a request signer needs exactly what goes on the
+    /// wire.
+    std::string url;
+
+    /// The origin, split out so that an interceptor scoping a credential to one
+    /// does not have to parse `url` to do it. `scheme` and `host` are
+    /// lowercase, `host` is bracketed for an IPv6 literal, and `port` is the
+    /// effective port -- the scheme's default when the URL names none.
+    std::string scheme;
+    std::string host;
+    int port = 0;
+
+    /// Redirect hops already followed to reach this URL within the current
+    /// open or read. `0` for the URL the operation started at.
+    int redirectHop = 0;
+
+    /// 1 for the first time this exact request is issued; higher for a retry.
+    /// A provider whose token expired between attempts gets to mint another.
+    int attempt = 1;
+};
+
+/// The authentication seam: §4.3 of the design policy.
+///
+///   request interceptor     <- this
+///   credential provider     <- an implementation of it; none ships here
+///   environment / session   <- where a provider gets what it presents
+///
+/// A credential never enters this module's API as a value. It enters as an
+/// object that is asked, request by request, which headers to add -- and
+/// everything that would make a credential leak is the backend's to refuse
+/// rather than the interceptor's to remember:
+///
+///   origin scope     consulted only for requests to the origin the asset was
+///                    opened at: same scheme, host, and effective port. A
+///                    redirect to any other origin is followed with no
+///                    intercepted header, as browsers and libcurl both do for
+///                    `Authorization`, and so is a read whose open was
+///                    redirected there. An `https` to `http` hop is already
+///                    refused outright
+///   policy first     the destination policy judges a hop before the
+///                    interceptor is asked, so a hop the policy refuses never
+///                    costs a credential lookup, and never carries one
+///   protocol owned   a header this backend's correctness depends on --
+///                    `Range`, `If-Range`, the other conditionals, `Host`,
+///                    framing, encoding, connection management, `User-Agent`
+///                    -- cannot be set, and a header that could split the
+///                    request cannot be built (`IsInterceptableHeader`)
+///   bounded          at most `kMaxInterceptedHeaderBytes` of added header per
+///                    request
+///   never repeated   no added value reaches a `Status` message, a metrics
+///                    dump, a cache key, an identity, or anything persisted.
+///                    A refused header is named in a message only when its
+///                    name is a well-formed reserved one; a malformed name may
+///                    be a value pasted into the wrong field
+///
+/// Called on whatever thread issued the request, concurrently, for the life of
+/// every reader opened with it -- so it must be thread-safe and must outlive
+/// none of them, which the `shared_ptr` in `HttpOptions` takes care of.
+///
+/// Returning false declines the request: it is not sent, and the operation
+/// fails with `AccessDenied` and is not retried, because a retry would ask the
+/// same provider the same question. An exception is a decline. The backend
+/// never repeats anything the interceptor said about why.
+class RequestInterceptor {
+public:
+    virtual ~RequestInterceptor() = default;
+
+    /// Appends to `headersOut`, which arrives empty, the headers to add to
+    /// `request`. Returns false to decline it.
+    virtual bool Intercept(const InterceptedRequest& request,
+                           std::vector<RequestHeader>* headersOut) const = 0;
+};
+
+/// The most bytes of header one interception may add, counted as
+/// `name: value\r\n`. A bearer token is tens of bytes and a SigV4 header set a
+/// few hundred; common origins refuse a request whose whole header block passes
+/// 8 KiB, so 16 KiB is a bound on a defect rather than a limit on a credential.
+constexpr std::size_t kMaxInterceptedHeaderBytes = 16 * 1024;
+
+/// Whether an interceptor may add a header named `name` with value `value`.
+///
+/// The name is an RFC 9110 token and not one the protocol owns. The value is
+/// non-empty and carries no control character but horizontal tab -- no CR, no
+/// LF, no NUL -- so that it cannot end the header it is in and begin another.
+/// An empty value is refused because the client underneath treats `Name:` with
+/// nothing after it as an instruction to remove a header it would otherwise
+/// send, which is not something a credential provider has any business doing.
+///
+/// Exposed so that a provider can check what it builds, and so that the rule
+/// is a function with a test rather than a sentence.
+bool IsInterceptableHeader(const std::string& name, const std::string& value) noexcept;
+
 /// Transport policy, all of it bounded.
 ///
 /// These are the knobs §10 of the design policy requires to exist -- "bound
@@ -195,6 +304,16 @@ struct HttpOptions {
 
     /// Sent as `User-Agent`. Empty takes the module's default.
     std::string userAgent;
+
+    /// Asked for headers to add to every request to the origin the asset is
+    /// opened at -- the open's `HEAD`, every range `GET`, every retry, and
+    /// every same-origin redirect hop. Null, the default, adds nothing: public
+    /// HTTP is the target, and no provider ships with this module.
+    ///
+    /// A reader keeps this for its lifetime, as it keeps every other option. A
+    /// caller that hands out readers opened under one interceptor to callers
+    /// configured with another is handing out one caller's credentials.
+    std::shared_ptr<const RequestInterceptor> interceptor;
 };
 
 /// A reader over one remote asset, bound to the revision that asset had when it

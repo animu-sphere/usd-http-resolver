@@ -215,6 +215,15 @@ struct AssetSpec {
     /// orders of magnitude past any header block an ordinary origin sends, so a
     /// client that accepts it has no bound worth the name.
     std::size_t headerBytes = 1024 * 1024;
+
+    /// When non-empty, every request for this asset whose `Authorization` is
+    /// not exactly this value is answered `401` with `WWW-Authenticate:
+    /// Bearer`, before the behavior is consulted. Not a behavior of its own:
+    /// an origin that wants a credential is not hostile, and the corpus rows
+    /// are the hostile ones. It is the origin the authentication seam is
+    /// tested against, so that "the header reached the wire" is something the
+    /// server checked rather than something the client said it sent.
+    std::string requiredAuthorization;
 };
 
 }  // namespace usdassetfixture

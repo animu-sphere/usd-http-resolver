@@ -17,6 +17,7 @@
 set(_usd_asset_http_tests
     destination
     framing
+    interception
     protocol
     uri)
 

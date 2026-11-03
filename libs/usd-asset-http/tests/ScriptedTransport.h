@@ -61,6 +61,8 @@ struct SentRequest {
     /// reach it on every request -- redirect hops and reads included -- and a
     /// request that arrived without it is a request judged by the default.
     usdasset::http::DestinationPolicy destinations;
+    /// What a request interceptor added, as the transport was handed it.
+    std::vector<usdasset::http::RequestHeader> headers;
 };
 
 /// The script: a function of the request and how many have come before it.
@@ -95,6 +97,7 @@ public:
             sent.ifRange = request.ifRange;
             sent.capacity = request.bodyCapacity;
             sent.destinations = request.destinations;
+            sent.headers = request.headers;
             _script->sent.push_back(std::move(sent));
             index = static_cast<int>(_script->sent.size()) - 1;
         }
