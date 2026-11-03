@@ -34,11 +34,13 @@ schema: 1
 bootstrap:
   ost:
     # Canonical OpenUSD 26.08 SDK leaves, produced with ost 0.22.3.
-    # ost 0.22.10 consumes their current manifest and supports locked composition.
+    # ost 0.23.19 consumes their current manifest and supports locked composition;
+    # the three leaf tags were re-resolved when the pin moved and still name
+    # the digests below, so the runtime pins are unchanged.
     # Windows/Linux use gl; macOS arm64 uses metal. Archive and OCI identities
     # are separate pins. This replaces the retired pre-canonical artifacts and
     # the 0.21.0 schema-compatibility workaround (historical OST report 03).
-    version: "0.22.10"
+    version: "0.23.19"
     repository: animu-sphere/open-strata
 
 runners:

@@ -357,7 +357,7 @@ member descriptor exists.
 11. A directory is created when its first tested capability exists.
 12. A release that changes I/O behavior records a metrics baseline.
 
-## Composed-runtime packaging (OST v0.22.10)
+## Composed-runtime packaging (OST v0.23.19)
 
 The aggregate membership is explicitly pinned by `workspace.release_members` in
 `openstrata.toml`. Component-owned acceptance probes are installed under
@@ -367,4 +367,4 @@ is caller-owned evidence and must not modify the immutable composed prefix.
 
 Package producers need the aggregate payload projection correction first found
 during OST v0.22.8 dogfooding. Current source builds are pinned to released
-OST v0.22.10.
+OST v0.23.19.

@@ -14,7 +14,7 @@ verification.
 
 | Tool | Version |
 | --- | --- |
-| `ost` | 0.22.10 or newer |
+| `ost` | 0.23.19 or newer |
 | CMake | 3.23 or newer |
 | Ninja | any recent |
 | A C++17 compiler | MSVC 143, Clang, or GCC |
